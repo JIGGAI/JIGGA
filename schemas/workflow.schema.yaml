@@ -1,0 +1,32 @@
+# JIGGA Workflow Schema Draft
+id: string
+name: string
+purpose: string
+status: draft|suggested|planned|approved|active|paused|deprecated|archived
+trigger:
+  schedule: string
+  event: string
+  manual: boolean
+inputs:
+  key:
+    type: string
+    required: boolean
+steps:
+  - id: string
+    agent: string
+    action: string
+    input: object
+    output: string
+    approval: required|not_required
+    optional: boolean
+    on_fail:
+      action: string
+      target: string
+outputs:
+  - string
+memory:
+  write_summary: boolean
+  write_raw: boolean
+permissions:
+  required:
+    - string

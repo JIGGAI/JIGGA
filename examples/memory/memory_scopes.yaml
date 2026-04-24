@@ -1,0 +1,77 @@
+memory_scopes:
+  full_user:
+    name: Full User Memory
+    description: Complete user memory reserved for trusted core agents.
+    includes:
+      - memory/raw
+      - memory/structured
+      - memory/summaries
+      - memory/indexes
+    excludes:
+      - secrets
+    retrieval:
+      keyword: true
+      vector: true
+      summaries: true
+      max_context_tokens: 24000
+    sensitivity:
+      allow_sensitive: true
+      require_approval_for_raw: true
+
+  manager_view:
+    name: Manager View
+    description: Broad summary of user preferences, goals, projects, and recurring patterns.
+    includes:
+      - memory/structured/preferences.yaml
+      - memory/summaries/user_goals.md
+      - memory/summaries/key_projects.md
+      - memory/summaries/recurring_patterns.md
+    excludes:
+      - memory/raw/private
+      - secrets
+    retrieval:
+      keyword: true
+      vector: true
+      summaries: true
+      max_context_tokens: 12000
+    sensitivity:
+      allow_sensitive: false
+      require_approval_for_raw: true
+
+  content_team_view:
+    name: Content Team View
+    description: Brand voice, content strategy, source material, and approved publishing preferences.
+    includes:
+      - memory/summaries/brand_voice.md
+      - memory/summaries/content_strategy.md
+      - memory/structured/content_preferences.yaml
+    excludes:
+      - memory/raw/email
+      - memory/raw/calendar
+      - secrets
+    retrieval:
+      keyword: true
+      vector: true
+      summaries: true
+      max_context_tokens: 10000
+    sensitivity:
+      allow_sensitive: false
+      require_approval_for_raw: true
+
+  task_only:
+    name: Task Only
+    description: No persistent memory unless explicitly passed in the task.
+    includes: []
+    excludes:
+      - memory/raw
+      - memory/structured
+      - memory/summaries
+      - secrets
+    retrieval:
+      keyword: false
+      vector: false
+      summaries: false
+      max_context_tokens: 4000
+    sensitivity:
+      allow_sensitive: false
+      require_approval_for_raw: true

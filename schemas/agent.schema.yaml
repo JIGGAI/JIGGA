@@ -1,0 +1,30 @@
+# JIGGA Agent Schema Draft
+id: string
+name: string
+role: string
+description: string
+model: string
+memory_scope: string
+tools:
+  - string
+wake:
+  schedules:
+    - cron: string
+      event: string
+  events:
+    - string
+  accepts_agent_requests: boolean
+permissions:
+  memory:
+    scope: string
+  filesystem:
+    allow:
+      - string
+    deny:
+      - string
+  network:
+    mode: allow|ask|deny
+  shell:
+    mode: allow|restricted|ask|deny
+workflows:
+  - string

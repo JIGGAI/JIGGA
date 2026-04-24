@@ -1,0 +1,24 @@
+# JIGGA Task Schema Draft
+id: string
+title: string
+description: string
+status: pending|claimed|running|blocked|needs_approval|failed|completed|archived
+created_by: user|agent|workflow|schedule
+assigned_to: string
+team: string
+workflow: string
+priority: low|normal|high|urgent
+input:
+  files:
+    - string
+  text: string
+output:
+  files:
+    - string
+  summary: string
+memory_writes:
+  - type: string
+    content: string
+    confidence: low|medium|high
+created_at: datetime
+updated_at: datetime

@@ -1,0 +1,21 @@
+# JIGGA Team Schema Draft
+id: string
+name: string
+purpose: string
+memory_scope: string
+agents:
+  - id: string
+    role: string
+    required: boolean
+default_workflows:
+  - string
+policies:
+  approvals:
+    required_for:
+      - string
+routing:
+  default_assignee: string
+  handoffs:
+    - from: string
+      to: string
+      when: string

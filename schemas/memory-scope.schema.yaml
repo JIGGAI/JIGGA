@@ -1,0 +1,16 @@
+# JIGGA Memory Scope Schema Draft
+id: string
+name: string
+description: string
+includes:
+  - string
+excludes:
+  - string
+retrieval:
+  keyword: boolean
+  vector: boolean
+  summaries: boolean
+  max_context_tokens: integer
+sensitivity:
+  allow_sensitive: boolean
+  require_approval_for_raw: boolean

@@ -1,0 +1,38 @@
+id: daily_briefing_agent
+name: Daily Briefing Agent
+role: Summarizes the user's calendar, email, and priorities each morning.
+description: A trusted personal admin agent that prepares a concise morning briefing.
+model: gpt-5.5
+memory_scope: manager_view
+tools:
+  - calendar.list_events
+  - email.search
+  - notifications.send
+  - memory.write_summary
+wake:
+  schedules:
+    - cron: "30 7 * * 1-5"
+      event: morning_briefing
+  events:
+    - task.assigned.daily_briefing_agent
+  accepts_agent_requests: true
+permissions:
+  memory:
+    scope: manager_view
+  calendar: read
+  email: read
+  notifications: send
+  filesystem:
+    allow:
+      - ~/.jigga/memory/summaries
+    deny:
+      - ~/.ssh
+      - ~/.aws
+      - ~/Library/Keychains
+  network:
+    mode: deny
+  shell:
+    mode: deny
+workflows:
+  - morning_day_summary
+  - meeting_reminders
