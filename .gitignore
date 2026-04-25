@@ -16,3 +16,8 @@ build/
 
 # OS
 .DS_Store
+
+# JIGGA local private instructions
+JIGGA.local.md
+**/JIGGA.local.md
+.jigga/memory/indexes/

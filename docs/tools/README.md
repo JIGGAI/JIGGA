@@ -20,6 +20,7 @@ The goal is to give JIGGA an OpenClaw-like breadth of useful tools while keeping
 12. [Model Router & Fallbacks](MODEL_ROUTER_FALLBACKS.md)
 13. [Skill Security Scanner](SKILL_SECURITY_SCANNER.md)
 14. [Observability, Audit Logs & Traces](OBSERVABILITY_AUDIT_TRACES.md)
+15. [MCP & Capability Registry](MCP_AND_CAPABILITY_REGISTRY.md)
 
 ## Design Rule
 

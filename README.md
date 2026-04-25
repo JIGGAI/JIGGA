@@ -108,6 +108,23 @@ steps:
     approval: not_required
 ```
 
+
+## Claude Code-Inspired Core Architecture Guides
+
+These guides adapt useful Claude Code-style primitives into JIGGA's broader AI OS model:
+
+- [Claude Code Patterns to Adopt](docs/core/CLAUDE_CODE_PATTERNS_TO_ADOPT.md)
+- [Project Directory & Local AI Layer](docs/core/PROJECT_DIRECTORY.md)
+- [Memory & Instructions Files](docs/core/MEMORY_AND_INSTRUCTIONS.md)
+- [Permission Modes](docs/core/PERMISSION_MODES.md)
+- [Hooks & Lifecycle Events](docs/core/HOOKS_LIFECYCLE.md)
+- [Path-Scoped Rules](docs/core/PATH_SCOPED_RULES.md)
+- [Context Inspection & Compaction](docs/core/CONTEXT_COMPACTION.md)
+- [Subagent Context Isolation](docs/agents/SUBAGENT_CONTEXT_ISOLATION.md)
+- [MCP & Capability Registry](docs/tools/MCP_AND_CAPABILITY_REGISTRY.md)
+
+See [`examples/project/`](examples/project/) for an example `.jigga/` project-local AI layer.
+
 ## Repository Structure
 
 ```text
@@ -118,6 +135,9 @@ docs/
   WORKFLOWS.md
   SECURITY_SANDBOXING.md
   MVP_ROADMAP.md
+  core/
+  agents/
+  tools/
 schemas/
   agent.schema.yaml
   team.schema.yaml
