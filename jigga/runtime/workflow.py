@@ -8,6 +8,7 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.memory import build_context_package, write_memory_result
+from jigga.runtime.policy import evaluate_workflow_step
 
 
 def _required_permissions(workflow: WorkflowConfig) -> list[str]:
@@ -16,13 +17,12 @@ def _required_permissions(workflow: WorkflowConfig) -> list[str]:
 
 
 def _step_policy(step: WorkflowStep, workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> dict[str, str | None]:
-    if step.approval == "required":
-        return {"status": "needs_approval", "reason": f"Step {step.id} requires approval."}
-    if step.agent and step.agent not in agents:
-        if step.optional:
-            return {"status": "skipped", "reason": f"Optional agent {step.agent} is not configured."}
-        return {"status": "blocked", "reason": f"Agent {step.agent} is not configured."}
-    return {"status": "allow", "reason": None}
+    agent = agents.get(step.agent or "")
+    decision = evaluate_workflow_step(step, agent)
+    status = {"ask": "needs_approval", "deny": "blocked", "allow": "allow"}[decision.status]
+    if decision.status == "allow" and step.agent and step.agent not in agents and step.optional:
+        status = "skipped"
+    return {"status": status, "reason": decision.reason, "permission": decision.permission}
 
 
 def plan_workflow(workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> dict[str, Any]:
@@ -107,8 +107,9 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
 
     plan = plan_workflow(workflow, agents)
     if not plan["can_run"]:
-        append_event(logs_dir, "workflow.plan_blocked", status="needs_approval", workflow=workflow_id, plan=plan)
-        return {"status": "blocked", "plan": plan}
+        status = "needs_approval" if any(step["policy"]["status"] == "needs_approval" for step in plan["steps"]) else "blocked"
+        append_event(logs_dir, "workflow.plan_blocked", status=status, workflow=workflow_id, plan=plan)
+        return {"status": status, "plan": plan}
 
     run_id = new_id("workflow_run")
     run_dir = home / "runs" / "workflows" / workflow_id / run_id

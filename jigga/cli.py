@@ -11,7 +11,9 @@ from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
+from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
+from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
 from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
@@ -46,6 +48,20 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_plan.add_argument("--json", action="store_true", dest="json_output")
     workflow_run = workflow_sub.add_parser("run")
     workflow_run.add_argument("workflow_id")
+    workflow_suggest = workflow_sub.add_parser("suggest")
+    workflow_suggest.add_argument("--min-count", type=int, default=2)
+    workflow_apply = workflow_sub.add_parser("apply")
+    workflow_apply.add_argument("suggestion_id")
+    workflow_apply.add_argument("--approve", action="store_true")
+
+    plan = sub.add_parser("plan", help="Plan runtime config changes")
+    plan.add_argument("--json", action="store_true", dest="json_output")
+
+    apply_cmd = sub.add_parser("apply", help="Apply runtime config snapshot")
+    apply_cmd.add_argument("--approve", action="store_true")
+
+    validate = sub.add_parser("validate", help="Validate runtime configs")
+    validate.add_argument("--json", action="store_true", dest="json_output")
 
     scheduler = sub.add_parser("scheduler", help="Inspect scheduler due events")
     scheduler_sub = scheduler.add_subparsers(dest="scheduler_command", required=True)
@@ -130,6 +146,34 @@ def main(argv: list[str] | None = None) -> int:
                     print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
             elif args.workflow_command == "run":
                 print_json(run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, args.workflow_id))
+            elif args.workflow_command == "suggest":
+                print_json(suggest_workflows(paths.logs, min_count=args.min_count))
+            elif args.workflow_command == "apply":
+                print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs, approve=args.approve))
+            return 0
+
+        if args.command == "plan":
+            result = plan_runtime(get_paths(args.home))
+            if args.json_output:
+                print_json(result)
+            else:
+                print(f"Plan: {result['status']}")
+                for change in result["changes"]:
+                    approval = f" requires {change['requires_approval']}" if change.get("requires_approval") else ""
+                    print(f"- {change['change']} {change['path']}{approval}")
+            return 0
+
+        if args.command == "apply":
+            print_json(apply_runtime(get_paths(args.home), approve=args.approve))
+            return 0
+
+        if args.command == "validate":
+            result = validate_runtime_configs(get_paths(args.home))
+            if args.json_output:
+                print_json(result)
+            else:
+                for kind, values in result.items():
+                    print(f"{kind}: {', '.join(values) if values else 'none'}")
             return 0
 
         if args.command == "scheduler":
