@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jigga.core.config import load_agents, load_teams
+from jigga.core.config import load_agents, load_memory_scopes, load_teams, load_workflows
 from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.state import read_state, write_state
@@ -13,17 +13,22 @@ def inspect_state(home: str | Path | None = None) -> dict:
     paths = get_paths(home)
     agents = load_agents(paths.agents)
     teams = load_teams(paths.teams)
+    workflows = load_workflows(paths.workflows)
+    memory_scopes = load_memory_scopes(paths.memory)
     tasks = list_tasks(paths.tasks)
     state = read_state(paths.state)
     loaded_at = now_iso()
     state.agents = {key: {"source": value.source, "loaded_at": loaded_at} for key, value in agents.items()}
     state.teams = {key: {"source": value.source, "loaded_at": loaded_at} for key, value in teams.items()}
+    state.workflows = {key: {"source": value.source, "status": value.status, "loaded_at": loaded_at} for key, value in workflows.items()}
     state.tasks = {task.id: {"state": task.state, "assignee": task.assignee, "updated_at": task.updated_at} for task in tasks}
     write_state(paths.state, state)
     return {
         "home": str(paths.home),
         "agents": sorted(agents),
         "teams": sorted(teams),
+        "workflows": sorted(workflows),
+        "memory_scopes": sorted(memory_scopes),
         "tasks": [task.to_dict() for task in tasks],
         "state": state.to_dict(),
     }

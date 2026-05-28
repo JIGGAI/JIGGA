@@ -65,6 +65,69 @@ class TeamConfig:
 
 
 @dataclass
+class WorkflowStep:
+    id: str
+    action: str
+    agent: str | None = None
+    input: dict[str, Any] = field(default_factory=dict)
+    output: str | None = None
+    approval: str | None = None
+    optional: bool = False
+    on_fail: dict[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkflowStep":
+        return cls(**_filter(cls, data))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class WorkflowConfig:
+    id: str
+    name: str
+    purpose: str | None = None
+    status: str = "draft"
+    trigger: dict[str, Any] = field(default_factory=dict)
+    inputs: dict[str, Any] = field(default_factory=dict)
+    steps: list[WorkflowStep] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
+    memory: dict[str, Any] = field(default_factory=dict)
+    permissions: dict[str, Any] = field(default_factory=dict)
+    source: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], source: str | None = None) -> "WorkflowConfig":
+        prepared = dict(data)
+        prepared["steps"] = [WorkflowStep.from_dict(step) for step in prepared.get("steps", [])]
+        obj = cls(**_filter(cls, prepared))
+        obj.source = source
+        return obj
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class MemoryScope:
+    id: str
+    name: str | None = None
+    description: str | None = None
+    includes: list[str] = field(default_factory=list)
+    excludes: list[str] = field(default_factory=list)
+    retrieval: dict[str, Any] = field(default_factory=dict)
+    sensitivity: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, scope_id: str, data: dict[str, Any]) -> "MemoryScope":
+        return cls(id=scope_id, **_filter(cls, data))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Task:
     id: str
     title: str
@@ -91,6 +154,7 @@ class State:
     last_supervisor_tick_at: str | None = None
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     teams: dict[str, dict[str, Any]] = field(default_factory=dict)
+    workflows: dict[str, dict[str, Any]] = field(default_factory=dict)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod

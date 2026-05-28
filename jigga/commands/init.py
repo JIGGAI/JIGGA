@@ -47,6 +47,10 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
             (ex / "agents" / "content_strategist.yaml", paths.agents / "content_strategist.yaml"),
             (ex / "teams" / "personal_admin_team.yaml", paths.teams / "personal_admin_team.yaml"),
             (ex / "teams" / "social_content_team.yaml", paths.teams / "social_content_team.yaml"),
+            (ex / "workflows" / "morning_day_summary.yaml", paths.workflows / "morning_day_summary.yaml"),
+            (ex / "workflows" / "meeting_reminders.yaml", paths.workflows / "meeting_reminders.yaml"),
+            (ex / "workflows" / "social_content_syndication.yaml", paths.workflows / "social_content_syndication.yaml"),
+            (ex / "memory" / "memory_scopes.yaml", paths.memory / "memory_scopes.yaml"),
         ]:
             copy_if_missing(source, target)
 

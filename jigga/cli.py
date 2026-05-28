@@ -10,8 +10,11 @@ from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
+from jigga.runtime.memory import inspect_memory
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
+from jigga.runtime.workflow import plan_workflow, run_workflow
+from jigga.core.config import load_agents, load_workflows
 
 
 def print_json(value: Any) -> None:
@@ -28,6 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
+
+    memory = sub.add_parser("memory", help="Inspect memory scopes and layers")
+    memory_sub = memory.add_subparsers(dest="memory_command", required=True)
+    memory_sub.add_parser("inspect", help="Inspect configured memory scopes")
+
+    workflow = sub.add_parser("workflow", help="Plan and run workflows")
+    workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_plan = workflow_sub.add_parser("plan")
+    workflow_plan.add_argument("workflow_id")
+    workflow_plan.add_argument("--json", action="store_true", dest="json_output")
+    workflow_run = workflow_sub.add_parser("run")
+    workflow_run.add_argument("workflow_id")
 
     run = sub.add_parser("run", help="Run an agent manually")
     run.add_argument("kind", choices=["agent"])
@@ -71,7 +86,37 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"JIGGA home: {result['home']}")
                 print(f"Agents: {', '.join(result['agents']) if result['agents'] else 'none'}")
                 print(f"Teams: {', '.join(result['teams']) if result['teams'] else 'none'}")
+                print(f"Workflows: {', '.join(result['workflows']) if result['workflows'] else 'none'}")
+                print(f"Memory scopes: {', '.join(result['memory_scopes']) if result['memory_scopes'] else 'none'}")
                 print(f"Tasks: {len(result['tasks'])}")
+            return 0
+
+        if args.command == "memory":
+            paths = get_paths(args.home)
+            if args.memory_command == "inspect":
+                print_json(inspect_memory(paths.memory))
+            return 0
+
+        if args.command == "workflow":
+            paths = get_paths(args.home)
+            if args.workflow_command == "plan":
+                workflows = load_workflows(paths.workflows)
+                workflow = workflows.get(args.workflow_id)
+                if workflow is None:
+                    raise ValueError(f"Workflow not found: {args.workflow_id}")
+                plan = plan_workflow(workflow, load_agents(paths.agents))
+                if args.json_output:
+                    print_json(plan)
+                else:
+                    print(f"Workflow: {workflow.id} — {workflow.name}")
+                    print(f"Status: {workflow.status}")
+                    print(f"Permissions: {', '.join(plan['permissions']) if plan['permissions'] else 'none declared'}")
+                    for step in plan["steps"]:
+                        reason = f": {step['policy']['reason']}" if step["policy"].get("reason") else ""
+                        print(f"- {step['id']}: {step['action']} [{step['policy']['status']}{reason}]")
+                    print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
+            elif args.workflow_command == "run":
+                print_json(run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, args.workflow_id))
             return 0
 
         if args.command == "run":
