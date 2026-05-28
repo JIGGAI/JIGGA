@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +12,10 @@ from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.memory import inspect_memory
+from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
+from jigga.runtime.team import run_team
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import load_agents, load_workflows
 
@@ -43,6 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_plan.add_argument("--json", action="store_true", dest="json_output")
     workflow_run = workflow_sub.add_parser("run")
     workflow_run.add_argument("workflow_id")
+
+    scheduler = sub.add_parser("scheduler", help="Inspect scheduler due events")
+    scheduler_sub = scheduler.add_subparsers(dest="scheduler_command", required=True)
+    scheduler_due = scheduler_sub.add_parser("due", help="List due events for the current time")
+    scheduler_due.add_argument("--at", help="Evaluate due events at an ISO timestamp")
+
+    team = sub.add_parser("team", help="Run team runtime skeleton")
+    team_sub = team.add_subparsers(dest="team_command", required=True)
+    team_run = team_sub.add_parser("run")
+    team_run.add_argument("team_id")
 
     run = sub.add_parser("run", help="Run an agent manually")
     run.add_argument("kind", choices=["agent"])
@@ -117,6 +130,19 @@ def main(argv: list[str] | None = None) -> int:
                     print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
             elif args.workflow_command == "run":
                 print_json(run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, args.workflow_id))
+            return 0
+
+        if args.command == "scheduler":
+            paths = get_paths(args.home)
+            if args.scheduler_command == "due":
+                at = datetime.fromisoformat(args.at) if args.at else None
+                print_json(serialize_events(due_events(paths.agents, paths.workflows, now=at)))
+            return 0
+
+        if args.command == "team":
+            paths = get_paths(args.home)
+            if args.team_command == "run":
+                print_json(run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, args.team_id))
             return 0
 
         if args.command == "run":
