@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from jigga.core.io import copy_if_missing, ensure_dir, write_json, write_yaml
+from jigga.core.models import State
+from jigga.core.paths import examples_dir, get_paths
+
+
+def init_runtime(home: str | Path | None = None, examples: bool = False):
+    paths = get_paths(home)
+    for directory in [
+        paths.home,
+        paths.agents,
+        paths.teams,
+        paths.workflows,
+        paths.tasks,
+        paths.memory / "raw",
+        paths.memory / "structured",
+        paths.memory / "summaries",
+        paths.memory / "indexes",
+        paths.logs,
+        paths.policies,
+        paths.approvals,
+        paths.runs,
+    ]:
+        ensure_dir(directory)
+
+    if not paths.config.exists():
+        write_yaml(
+            paths.config,
+            {
+                "version": 1,
+                "home": str(paths.home),
+                "supervisor": {"interval_seconds": 60, "max_wakes_per_agent_per_hour": 12},
+                "defaults": {"memory_scope": "task_only", "permission_mode": "ask"},
+            },
+        )
+
+    if not paths.state.exists():
+        write_json(paths.state, State().to_dict())
+
+    if examples:
+        ex = examples_dir()
+        for source, target in [
+            (ex / "agents" / "daily_briefing_agent.yaml", paths.agents / "daily_briefing_agent.yaml"),
+            (ex / "agents" / "content_strategist.yaml", paths.agents / "content_strategist.yaml"),
+            (ex / "teams" / "personal_admin_team.yaml", paths.teams / "personal_admin_team.yaml"),
+            (ex / "teams" / "social_content_team.yaml", paths.teams / "social_content_team.yaml"),
+        ]:
+            copy_if_missing(source, target)
+
+    return paths

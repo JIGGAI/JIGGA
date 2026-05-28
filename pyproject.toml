@@ -1,0 +1,20 @@
+[project]
+name = "jigga"
+version = "0.1.0"
+description = "Local-first operating system for personal AI workers."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0.2"
+]
+
+[project.scripts]
+jigga = "jigga.cli:main"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

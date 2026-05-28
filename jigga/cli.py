@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from jigga.commands.init import init_runtime
+from jigga.commands.state import inspect_state
+from jigga.core.paths import get_paths
+from jigga.runtime.agent import run_agent
+from jigga.runtime.supervisor import supervisor_tick
+from jigga.runtime.tasks import create_task, list_tasks, set_task_state
+
+
+def print_json(value: Any) -> None:
+    print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="jigga", description="Local-first operating system for personal AI workers.")
+    parser.add_argument("--home", type=Path, default=None, help="JIGGA home directory")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    init = sub.add_parser("init", help="Create a local runtime directory")
+    init.add_argument("--examples", action="store_true", help="Copy bundled example agents and teams")
+
+    state = sub.add_parser("state", help="Inspect local runtime state")
+    state.add_argument("--json", action="store_true", dest="json_output")
+
+    run = sub.add_parser("run", help="Run an agent manually")
+    run.add_argument("kind", choices=["agent"])
+    run.add_argument("agent_id")
+
+    supervisor = sub.add_parser("supervisor", help="Supervisor daemon commands")
+    supervisor_sub = supervisor.add_subparsers(dest="supervisor_command", required=True)
+    supervisor_sub.add_parser("tick", help="Run one supervisor polling tick")
+
+    task = sub.add_parser("task", help="Manage local task queue")
+    task_sub = task.add_subparsers(dest="task_command", required=True)
+    task_create = task_sub.add_parser("create")
+    task_create.add_argument("--title", required=True)
+    task_create.add_argument("--description")
+    task_create.add_argument("--assignee")
+    task_create.add_argument("--workflow", dest="workflow_id")
+    task_list = task_sub.add_parser("list")
+    task_list.add_argument("--json", action="store_true", dest="json_output")
+    task_set = task_sub.add_parser("set-state")
+    task_set.add_argument("task_id")
+    task_set.add_argument("state")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "init":
+            paths = init_runtime(args.home, examples=args.examples)
+            print(f"Initialized JIGGA home: {paths.home}")
+            if args.examples:
+                print("Copied example agents and teams.")
+            return 0
+
+        if args.command == "state":
+            result = inspect_state(args.home)
+            if args.json_output:
+                print_json(result)
+            else:
+                print(f"JIGGA home: {result['home']}")
+                print(f"Agents: {', '.join(result['agents']) if result['agents'] else 'none'}")
+                print(f"Teams: {', '.join(result['teams']) if result['teams'] else 'none'}")
+                print(f"Tasks: {len(result['tasks'])}")
+            return 0
+
+        if args.command == "run":
+            paths = get_paths(args.home)
+            print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id))
+            return 0
+
+        if args.command == "supervisor":
+            if args.supervisor_command == "tick":
+                print_json(supervisor_tick(args.home))
+            return 0
+
+        if args.command == "task":
+            paths = get_paths(args.home)
+            if args.task_command == "create":
+                task = create_task(paths.tasks, args.title, args.description, args.assignee, args.workflow_id)
+                print_json(task.to_dict())
+            elif args.task_command == "list":
+                tasks = [task.to_dict() for task in list_tasks(paths.tasks)]
+                if args.json_output:
+                    print_json(tasks)
+                else:
+                    for task in tasks:
+                        print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}\t{task['title']}")
+            elif args.task_command == "set-state":
+                print_json(set_task_state(paths.tasks, args.task_id, args.state).to_dict())
+            return 0
+
+        parser.print_help()
+        return 2
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

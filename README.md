@@ -151,6 +151,35 @@ examples/
   memory/
 ```
 
+## Runtime MVP
+
+The first runtime slice implements the Week 1 foundation from [`docs/MVP_ROADMAP.md`](docs/MVP_ROADMAP.md): local runtime initialization, config loading, task queue files, state, logs, a supervisor tick, and a basic agent runner.
+
+```bash
+# Optional but recommended: isolated environment
+/home/linuxbrew/.linuxbrew/bin/python3 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install -e .
+
+# Create ~/.jigga-style runtime directories and copy example agents/teams
+python -m jigga.cli init --examples
+
+# Inspect loaded agents, teams, and task state
+python -m jigga.cli state
+
+# Create a local task for an agent
+python -m jigga.cli task create --title "Draft morning briefing" --assignee daily_briefing_agent
+
+# Run one supervisor polling tick; pending assigned tasks wake the target agent
+python -m jigga.cli supervisor tick
+
+# Or run an agent manually
+python -m jigga.cli run agent daily_briefing_agent
+```
+
+Use `--home <path>` or `JIGGA_HOME=<path>` to run against an isolated runtime directory instead of `~/.jigga`.
+
 ## Terraform-Style CLI Direction
 
 Planned interface:
@@ -167,9 +196,9 @@ jigga workflow apply morning_day_summary
 
 ## Status
 
-This repo currently contains the initial product and architecture plan, starter schemas, and example configurations.
+This repo contains the initial product and architecture plan, starter schemas, example configurations, and the first Python runtime foundation.
 
-See [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full handoff plan.
+See [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/MVP_ROADMAP.md`](docs/MVP_ROADMAP.md) for the full handoff plan.
 
 ## Additional Architecture Guides
 
