@@ -14,6 +14,7 @@ from jigga.runtime.agent import run_agent
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
+from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
 from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
@@ -80,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor = sub.add_parser("supervisor", help="Supervisor daemon commands")
     supervisor_sub = supervisor.add_subparsers(dest="supervisor_command", required=True)
     supervisor_sub.add_parser("tick", help="Run one supervisor polling tick")
+    supervisor_start = supervisor_sub.add_parser("start", help="Run the supervisor loop")
+    supervisor_start.add_argument("--interval-seconds", type=float, default=60)
+    supervisor_start.add_argument("--max-ticks", type=int, default=None, help="Stop after N ticks; useful for tests/demos")
 
     task = sub.add_parser("task", help="Manage local task queue")
     task_sub = task.add_subparsers(dest="task_command", required=True)
@@ -197,6 +201,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "supervisor":
             if args.supervisor_command == "tick":
                 print_json(supervisor_tick(args.home))
+            elif args.supervisor_command == "start":
+                paths = get_paths(args.home)
+                record_supervisor_start(paths.logs, args.interval_seconds, args.max_ticks)
+                print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks))
             return 0
 
         if args.command == "task":

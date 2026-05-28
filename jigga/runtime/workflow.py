@@ -161,4 +161,5 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
     }
     write_json(run_dir / "run.json", record)
     append_event(logs_dir, "workflow.run.completed", workflow=workflow_id, run_id=run_id)
+    append_event(logs_dir, "workflow.completed", workflow=workflow_id, run_id=run_id, title=workflow.name)
     return record

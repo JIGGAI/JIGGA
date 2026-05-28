@@ -34,7 +34,15 @@ def run_agent(home: Path, logs_dir: Path, tasks_dir: Path, agents_dir: Path, age
         write_json(run_dir / f"{task.id}.json", artifact)
         completed = set_task_state(tasks_dir, task.id, "completed")
         processed.append(completed.to_dict())
-        append_event(logs_dir, "task.completed", agent=agent_id, task_id=task.id, run_id=run_id)
+        append_event(logs_dir, "task.completed", agent=agent_id, task_id=task.id, title=task.title, run_id=run_id)
+        append_event(
+            logs_dir,
+            "agent.task_completed",
+            agent_id=agent_id,
+            task_id=task.id,
+            title=task.title,
+            run_id=run_id,
+        )
 
     run_record = {
         "id": run_id,
