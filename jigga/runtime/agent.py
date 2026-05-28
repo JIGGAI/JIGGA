@@ -6,10 +6,18 @@ from typing import Any
 from jigga.core.config import load_agents
 from jigga.core.io import ensure_dir, write_json
 from jigga.runtime.audit import append_event, new_id
+from jigga.runtime.model_router import build_task_model_request, call_model
 from jigga.runtime.tasks import set_task_state, tasks_for_agent
 
 
-def run_agent(home: Path, logs_dir: Path, tasks_dir: Path, agents_dir: Path, agent_id: str) -> dict[str, Any]:
+def run_agent(
+    home: Path,
+    logs_dir: Path,
+    tasks_dir: Path,
+    agents_dir: Path,
+    agent_id: str,
+    dry_run_model: bool = False,
+) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     agent = agents.get(agent_id)
     if agent is None:
@@ -25,14 +33,18 @@ def run_agent(home: Path, logs_dir: Path, tasks_dir: Path, agents_dir: Path, age
     for task in pending:
         set_task_state(tasks_dir, task.id, "claimed")
         set_task_state(tasks_dir, task.id, "running")
+        request = build_task_model_request(agent, task.to_dict(), dry_run=dry_run_model)
+        model_result = call_model(home, logs_dir, request)
         artifact = {
             "task_id": task.id,
             "agent_id": agent_id,
             "title": task.title,
-            "result": "MVP runner acknowledged task. Model/tool execution is not implemented yet.",
+            "model": model_result.to_dict(),
+            "result": model_result.content,
         }
         write_json(run_dir / f"{task.id}.json", artifact)
-        completed = set_task_state(tasks_dir, task.id, "completed")
+        next_state = "completed" if model_result.status == "ok" else "failed"
+        completed = set_task_state(tasks_dir, task.id, next_state)
         processed.append(completed.to_dict())
         append_event(logs_dir, "task.completed", agent=agent_id, task_id=task.id, title=task.title, run_id=run_id)
         append_event(

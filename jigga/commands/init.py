@@ -34,6 +34,15 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                 "home": str(paths.home),
                 "supervisor": {"interval_seconds": 60, "max_wakes_per_agent_per_hour": 12},
                 "defaults": {"memory_scope": "task_only", "permission_mode": "ask"},
+                "models": {
+                    "defaults": {"provider": "dry_run"},
+                    "providers": {
+                        "dry_run": {"kind": "dry_run", "default_model": "dry-run"},
+                    },
+                    "profiles": {
+                        "default": {"primary": "dry_run", "fallback": []},
+                    },
+                },
             },
         )
 

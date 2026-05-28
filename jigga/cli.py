@@ -13,6 +13,7 @@ from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
+from jigga.runtime.model_router import build_task_model_request, call_model
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
 from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
 from jigga.runtime.scheduler import serialize_events, due_events
@@ -74,9 +75,17 @@ def build_parser() -> argparse.ArgumentParser:
     team_run = team_sub.add_parser("run")
     team_run.add_argument("team_id")
 
+    model = sub.add_parser("model", help="Inspect and test model execution")
+    model_sub = model.add_subparsers(dest="model_command", required=True)
+    model_test = model_sub.add_parser("test", help="Run a model call for a configured agent")
+    model_test.add_argument("agent_id")
+    model_test.add_argument("--prompt", required=True)
+    model_test.add_argument("--dry-run", action="store_true", help="Do not call external providers")
+
     run = sub.add_parser("run", help="Run an agent manually")
     run.add_argument("kind", choices=["agent"])
     run.add_argument("agent_id")
+    run.add_argument("--dry-run-model", action="store_true", help="Force model calls to use the dry-run provider")
 
     supervisor = sub.add_parser("supervisor", help="Supervisor daemon commands")
     supervisor_sub = supervisor.add_subparsers(dest="supervisor_command", required=True)
@@ -193,9 +202,21 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, args.team_id))
             return 0
 
+        if args.command == "model":
+            paths = get_paths(args.home)
+            if args.model_command == "test":
+                agents = load_agents(paths.agents)
+                agent = agents.get(args.agent_id)
+                if agent is None:
+                    raise ValueError(f"Agent not found: {args.agent_id}")
+                task = {"id": "model_test", "title": "Model test", "description": args.prompt}
+                request = build_task_model_request(agent, task, dry_run=args.dry_run)
+                print_json(call_model(paths.home, paths.logs, request).to_dict())
+            return 0
+
         if args.command == "run":
             paths = get_paths(args.home)
-            print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id))
+            print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id, dry_run_model=args.dry_run_model))
             return 0
 
         if args.command == "supervisor":
