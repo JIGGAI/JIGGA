@@ -1,23 +1,7 @@
-# Runtime state
-.jigga/
-state.json
-logs/
-
-# Python
+.venv/
 __pycache__/
 *.py[cod]
-.venv/
-venv/
-
-# Node
-node_modules/
-dist/
-build/
-
-# OS
+.pytest_cache/
+.ruff_cache/
+.env
 .DS_Store
-
-# JIGGA local private instructions
-JIGGA.local.md
-**/JIGGA.local.md
-.jigga/memory/indexes/
