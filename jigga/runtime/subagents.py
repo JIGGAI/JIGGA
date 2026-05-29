@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import subprocess
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
@@ -11,10 +9,16 @@ from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import AgentConfig, now_iso
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.policy import evaluate_filesystem, evaluate_network, evaluate_shell
+from jigga.runtime.sandbox import SandboxSpec, build_restricted_env, run_sandboxed
 
-SubagentBackend = Literal["dry_run", "codex_cli"]
+SubagentBackend = Literal["dry_run", "codex_cli", "claude_code"]
 SubagentMode = Literal["plan", "execute", "review", "research"]
 SessionStatus = Literal["planned", "running", "completed", "failed", "cancelled"]
+
+# External-process subagent backends that should remain gated behind a global
+# `delegation_policy.<backend>_enabled: true` flag, in addition to the agent's
+# allowed_backends list. dry_run is always available.
+_GATED_BACKENDS = ("codex_cli", "claude_code")
 
 
 @dataclass
@@ -196,12 +200,18 @@ def _validate_subagent_resource_policy(agent: AgentConfig, request: SpawnSubagen
             raise ValueError(decision.reason or "Subagent shell access is not allowed")
 
 
-def _restricted_env(request: SpawnSubagentInput) -> dict[str, str]:
-    allowed = {"PATH", "HOME", "LANG", "LC_ALL", "TERM"}
+def _secrets_required(request: SpawnSubagentInput) -> list[str]:
     secrets = request.permissions.get("secrets") if isinstance(request.permissions, dict) else None
     if isinstance(secrets, dict):
-        allowed.update(str(item) for item in secrets.get("required", []) or [])
-    return {key: value for key, value in os.environ.items() if key in allowed}
+        return [str(item) for item in (secrets.get("required") or [])]
+    return []
+
+
+def _restricted_env(request: SpawnSubagentInput) -> dict[str, str]:
+    """Thin compatibility wrapper that delegates to runtime.sandbox. Kept so
+    existing tests (and any callers that already import this symbol) keep
+    working while the implementation lives in one place."""
+    return build_restricted_env(_secrets_required(request))
 
 
 def _truncate_summary(text: str, limit: int = 4000) -> tuple[str, bool]:
@@ -229,8 +239,12 @@ def validate_delegation_policy(home: Path, sessions_dir: Path, agent: AgentConfi
     allowed = set(agent_policy.get("allowed_backends") or global_policy.get("allowed_backends") or ["dry_run"])
     if request.backend not in allowed:
         raise ValueError(f"Subagent backend {request.backend!r} is not allowed")
-    if request.backend == "codex_cli" and not bool(global_policy.get("codex_cli_enabled", False)):
-        raise ValueError("codex_cli backend requires delegation_policy.codex_cli_enabled: true")
+    if request.backend in _GATED_BACKENDS:
+        flag = f"{request.backend}_enabled"
+        if not bool(global_policy.get(flag, False)):
+            raise ValueError(
+                f"{request.backend} backend requires delegation_policy.{flag}: true"
+            )
 
     running_for_parent = [item for item in list_sessions(sessions_dir) if item.parent_agent_id == agent.id and item.status == "running"]
     max_parent = int(agent_policy.get("max_parallel_subagents", global_policy.get("max_subagents_per_parent", 4)))
@@ -271,8 +285,8 @@ def _dry_run_adapter(session: SubagentSession, request: SpawnSubagentInput) -> d
     }
 
 
-def _codex_cli_adapter(session: SubagentSession, request: SpawnSubagentInput) -> dict[str, Any]:
-    prompt = "\n".join(
+def _build_subagent_prompt(request: SpawnSubagentInput) -> str:
+    return "\n".join(
         [
             f"Goal: {request.work_order.goal}",
             f"Mode: {request.mode}",
@@ -280,30 +294,54 @@ def _codex_cli_adapter(session: SubagentSession, request: SpawnSubagentInput) ->
             "Return a concise summary, commands run, changed files, test results, and risks.",
         ]
     )
-    timeout = max(1, int(request.limits.get("max_runtime_minutes", 20))) * 60
-    completed = subprocess.run(
-        ["codex", "exec", prompt],
-        cwd=_expanded_cwd(request),
-        env=_restricted_env(request),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
+
+
+def _run_external_cli_adapter(
+    session: SubagentSession,
+    request: SpawnSubagentInput,
+    command: str,
+    args_prefix: list[str],
+    label: str,
+) -> dict[str, Any]:
+    """Shared shape for any external-CLI subagent backend (codex_cli, claude_code).
+
+    The argv pattern is `<command> <flag> <prompt>` and the result shape is the
+    same for both: stdout becomes the truncated summary, returncode drives
+    pass/fail, stderr is captured in the session log alongside stdout.
+    """
+    prompt = _build_subagent_prompt(request)
+    spec = SandboxSpec(
+        command=command,
+        args=[*args_prefix, prompt],
+        cwd=Path(_expanded_cwd(request)),
+        secrets_required=_secrets_required(request),
+        timeout_seconds=float(max(1, int(request.limits.get("max_runtime_minutes", 20))) * 60),
     )
+    completed = run_sandboxed(spec)
     log_text = (completed.stdout or "") + ("\nSTDERR:\n" + completed.stderr if completed.stderr else "")
     if session.logs_path:
         Path(session.logs_path).write_text(log_text, encoding="utf-8")
     status = "passed" if completed.returncode == 0 else "failed"
-    summary, truncated = _truncate_summary((completed.stdout or completed.stderr or "codex_cli completed").strip())
+    summary, truncated = _truncate_summary((completed.stdout or completed.stderr or f"{label} completed").strip())
     return {
         "summary": summary,
         "truncated": truncated,
         "changed_files": [],
-        "commands_run": ["codex exec <work_order>"],
+        "commands_run": [f"{command} {' '.join(args_prefix)} <work_order>"],
         "test_results": {"status": status, "details": f"exit_code={completed.returncode}"},
-        "risks": [] if completed.returncode == 0 else ["codex_cli exited non-zero"],
+        "risks": [] if completed.returncode == 0 else [f"{label} exited non-zero"],
         "artifacts": [],
     }
+
+
+def _codex_cli_adapter(session: SubagentSession, request: SpawnSubagentInput) -> dict[str, Any]:
+    return _run_external_cli_adapter(session, request, command="codex", args_prefix=["exec"], label="codex_cli")
+
+
+def _claude_code_adapter(session: SubagentSession, request: SpawnSubagentInput) -> dict[str, Any]:
+    return _run_external_cli_adapter(
+        session, request, command="claude", args_prefix=["--print"], label="claude_code"
+    )
 
 
 def spawn_subagent(home: Path, logs_dir: Path, sessions_dir: Path, agent: AgentConfig, payload: dict[str, Any]) -> SubagentSession:
@@ -323,6 +361,8 @@ def spawn_subagent(home: Path, logs_dir: Path, sessions_dir: Path, agent: AgentC
             result = _dry_run_adapter(session, request)
         elif request.backend == "codex_cli":
             result = _codex_cli_adapter(session, request)
+        elif request.backend == "claude_code":
+            result = _claude_code_adapter(session, request)
         else:
             raise ValueError(f"Unsupported subagent backend: {request.backend}")
         session.status = "completed"

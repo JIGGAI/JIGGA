@@ -1,0 +1,225 @@
+# JIGGA Roadmap to Production
+
+Snapshot of where we are, what's specced-but-unbuilt, what's missing for production that the docs don't cover, and a sequenced milestone plan from current state to first production-quality release.
+
+Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 passing tests, ~4,300 LOC implementation).
+
+---
+
+## Where we are
+
+**Built and stable (the runtime spine):**
+
+| Area | State |
+|---|---|
+| Supervisor daemon + tick loop + clean SIGTERM shutdown | ✅ |
+| Loop prevention (cron dedup + per-agent wake throttle) | ✅ |
+| Local file-first state at `~/.jigga/` with atomic writes | ✅ |
+| Task queue (create/list/state transitions) | ✅ |
+| Agent runner with `permission_mode` (plan_only/ask/accept_edits/autonomous/locked_down) | ✅ |
+| Permission evaluators: filesystem, shell, network, scalar resources, memory-scope | ✅ |
+| Scoped memory (`includes:`/`excludes:` + retrieval pipeline shape) | ✅ |
+| Workflow runner + Terraform-style `plan` / `apply` | ✅ |
+| Workflow inference (multi-step session shapes + single-action repetition) | ✅ |
+| Model router with dry-run default + OpenAI-compatible provider + fallbacks | ✅ |
+| Capability registry with type discriminator (`native`/`skill_pack`/`mcp_server`) | ✅ |
+| Capability handlers: 6 bundled dry-run + 2 real (skill_pack via model_router, mcp_server via JSON-RPC stdio) | ✅ |
+| First-use approval for user packs + manifest hash drift detection | ✅ |
+| Capability security scanner (broad-fs, sensitive paths, suspicious handlers, remote-script install) | ✅ |
+| Subagent delegation (`dry_run` + gated `codex_cli` + gated `claude_code`) with sandbox primitive | ✅ |
+| Audit log (JSONL, lifecycle events for every major boundary) | ✅ |
+
+**Footprint:** ~4,300 LOC Python + 950 LOC tests, stdlib + PyYAML only. 122 passing tests, ~2.5s suite.
+
+---
+
+## What's left in the planning docs
+
+Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what shipped; the "Missing" column is what the spec wants next.
+
+### Connectors (the gap between demos and real value)
+
+| Domain | Has | Missing |
+|---|---|---|
+| Email/Calendar | dry-run stubs in `dispatcher.py` handlers | Real Google/iCloud/IMAP/SMTP adapters as capabilities; OAuth flow; drafts-before-send; meeting-prep watcher |
+| Notifications | dry-run stub | Real adapter: desktop (`notify-send`/`osascript`/`Windows toast`), urgency routing, quiet hours, digest |
+| Filesystem capabilities | `core/io` reads/writes; no capability handlers | `read_file`/`write_file`/`apply_patch`/`search_files` as native capabilities the dispatcher can route to |
+| Browser automation | not started | Headless + `isolated`/`user_readonly`/`user_interactive` profiles, domain allowlist, screenshot/extract |
+| Safe shell runner | `jigga/tools/safe_process.py` exists in MVP shape | Actually wired into capability dispatch; pty support; background execution sessions |
+
+### Channels (how users actually talk to JIGGA)
+
+| Domain | Has | Missing |
+|---|---|---|
+| CLI channel | direct CLI calls work | Channel-normalized event flow (so CLI/Slack/email take the same path) |
+| Local webhook | not started | HTTP endpoint that supervisor watches; auth |
+| Slack / Discord | not started | OAuth + DM/mention routing + outbound reply |
+| Email-as-inbox | not started | Watcher pulls actionable email and creates tasks |
+| Mobile push | not started | Push action → event payload |
+
+### Observability
+
+| Domain | Has | Missing |
+|---|---|---|
+| Audit JSONL | ✅ events at every boundary | CLI tail/inspect (`jigga logs tail`, `jigga trace <id>`, `jigga audit --agent X --since 24h`) |
+| Secret redaction | none | Middleware that scrubs API keys / tokens / cookies before write |
+| Trace IDs | each run has its own id | Cross-run correlation (e.g. parent supervisor tick → agent run → spawned subagent) |
+| Cost tracking | not started | Per-model-call cost; per-agent/per-workflow rollup; budget caps |
+| Log rotation | none | Daily rollover, retention policy |
+
+### Memory at scale
+
+| Domain | Has | Missing |
+|---|---|---|
+| Raw / structured / summary layers | folder shape exists | Real write pipelines beyond the workflow-end raw dump |
+| Indexes | folder exists, empty | Keyword index (sqlite FTS5 or whoosh-style); optional vector index behind feature flag |
+| Retrieval | scope-based file inclusion | Actual `search_memory(query, scope)` capability |
+| Compaction | not started | Summarize completed tasks, archive old raw logs, mark stale facts |
+| Memory write proposals | writes happen synchronously | Proposal queue with approval for sensitive types |
+
+### Sessions
+
+| Has | Missing |
+|---|---|
+| Subagent sessions persisted at `~/.jigga/sessions/<id>/session.json` | The spec's broader Session Manager covering agent / team / workflow / channel / tool runs with a unified API |
+| `jigga sessions list/inspect/cancel` | Session summarization, history filters |
+
+### Permissions / Safety
+
+| Has | Missing |
+|---|---|
+| Per-resource evaluators + permission_mode axis | Approval queue (currently a denied action just stays denied; no human-in-the-loop "approve this one action" path) |
+| Capability first-use approval | Project-local capability dir + capability install plan/apply flow |
+| Manifest scanner (static) | Runtime monitoring — capabilities that *behave* unexpectedly vs declared |
+| sandbox.run_sandboxed seam | Actual OS-level isolation backend (firejail / bwrap / container) |
+
+---
+
+## What production needs that the docs don't yet cover
+
+The planning docs are strong on the "what JIGGA does" axis but quiet on a handful of operational concerns that you'll hit immediately the moment you run JIGGA past your own laptop:
+
+1. **Packaging and install.** Today: `pip install -e .` from the checkout. Missing: pip-publishable package, optional standalone binary, autostart for the supervisor (systemd unit / launchd plist / Windows Service template), uninstall + state-cleanup path.
+2. **Secrets.** Today: env-var pull-through via `SandboxSpec.secrets_required`. Missing: a real secrets broker so capabilities request `GITHUB_TOKEN` and get it from a vault/keychain rather than the user's shell env. Mac Keychain / Linux Secret Service / Windows Credential Manager / 1Password CLI integration.
+3. **Network isolation per capability.** Today: env scrub on subprocesses. Missing: real egress controls (capability declares allowed domains; subprocess can only reach those — needs DNS/iptables or a proxy). This is the gap between "MCP server can't see my OPENAI_API_KEY" and "MCP server can't exfiltrate data to attacker.com."
+4. **Backup, restore, sync.** Today: everything in `~/.jigga/`, no backup story. Missing: encrypted backup target (S3/B2/local), restore command, optional encrypted cloud sync for the subset of state safe to sync (workflows, agents, summaries — not raw transcripts or secrets).
+5. **Update model.** Today: `git pull` for jigga itself; capability packs are user-managed files. Missing: `jigga update` for the runtime; `jigga capabilities update <name>` triggering scan + re-approval; rollback.
+6. **Telemetry (opt-in).** Today: nothing. For a real product: opt-in error reporting + usage telemetry so you can detect breakage in the wild without violating local-first. Default off; explicit opt-in; documented payload schema.
+7. **Cost / budget enforcement.** Today: `max_wakes_per_agent_per_hour` is a rate limit, not a cost limit. Missing: per-agent monthly spend cap, per-workflow run cap, soft warning at 80% / hard stop at 100%.
+8. **Crash recovery.** Today: the supervisor loop is single-process. If it crashes mid-tick (after task state transitions but before workflow.run.completed), the task is in a half-state. Missing: idempotent tick semantics + a recovery sweep that detects and resolves stale `claimed`/`running` tasks on startup.
+9. **Multi-tenant / multi-machine.** Today: single user, single machine. Missing: if/when a household or team wants shared JIGGA, the state model needs an `owner` field, per-user permission scoping, and a sync story.
+
+---
+
+## Sequenced milestone plan
+
+Each milestone is sized "weeks not months" — assuming the same scope discipline the runtime has shown so far. Roughly: A through E gets you to a "real product you'd let someone else install"; F is the broader v1.0 launch.
+
+### Milestone A — Real connectors (current biggest gap to demo value)
+*Goal: the bundled workflows do something users can feel.*
+
+- Real **Notification adapter** (desktop first — `notify-send` on Linux, `osascript` on macOS, native toast on Windows). Wire it behind the existing `notifications` capability.
+- Real **Calendar connector** for at least one provider (Google Calendar via OAuth; iCal feed URL as a stopgap). New `mcp_server`-typed capability is probably the cleanest path so it lives outside the core runtime.
+- Real **Email connector** — IMAP read + SMTP draft; send always requires approval. Same packaging choice as calendar.
+- Project-local capability discovery (`<project>/.jigga/capabilities/`) so workflows can ship their own connectors without polluting `~/.jigga/`.
+- Filesystem capabilities (`read_file`, `write_file`, `apply_patch`, `list_directory`, `search_files`) as native handlers — used by the email/calendar/content workflows internally.
+
+**Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification.
+
+### Milestone B — Channels (how invocations reach the runtime)
+*Goal: JIGGA responds to events that didn't come from a CLI.*
+
+- Channel-normalized event flow: every external invocation goes through the same `JiggaEvent` shape.
+- **Local webhook adapter** — minimal HTTP server the supervisor watches; auth via shared secret.
+- **CLI channel** formalized through the normalizer (refactor, not new behavior).
+- **One real third-party channel** — Slack DM/mention is the natural pick. OAuth, mention/DM routing, outbound reply via the notification router.
+- Approval queue UI through the active channel — so when an action is `needs_approval`, the user sees it on their preferred channel and can approve from there.
+
+**Exit:** "Hey JIGGA, summarize my day" from Slack returns the morning briefing; an approval-required step routes back to Slack with an inline approve button.
+
+### Milestone C — Observability & ops (in parallel with A/B)
+*Goal: when something goes wrong in production, you can tell what happened.*
+
+- `jigga logs tail` / `jigga logs inspect <event_id>` / `jigga trace <id>` / `jigga audit --agent X --since 24h`.
+- Secret redaction middleware on every audit write.
+- Trace ID propagation: supervisor tick → agent run → spawned subagent / capability invocation all share a parent trace.
+- Daily log rotation with retention policy in `config.yaml`.
+- Per-model-call cost recording (input/output tokens × provider rate) → per-agent/per-workflow rollups.
+- Per-agent budget caps + soft-warn audit event at 80% / `policy.denied` at 100%.
+
+**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call.
+
+### Milestone D — Memory at scale
+*Goal: long-running agents don't drown.*
+
+- Keyword index (sqlite FTS5) over raw memory; `search_memory(query, scope)` capability.
+- Optional vector index behind a feature flag — embed via model router or local model.
+- Compaction pipeline: summarize completed tasks weekly, archive raw logs older than N days, mark stale facts.
+- Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.
+
+**Exit:** memory size is bounded and retrieval gets faster as it grows.
+
+### Milestone E — Real isolation
+*Goal: a misbehaving capability can't ruin your day.*
+
+- OS-level sandbox backend behind `runtime.sandbox.run_sandboxed`. Linux: `bwrap` or `firejail`. macOS: `sandbox-exec`. Windows: `WinSandbox` / `JobObject`. Behind a config flag; off by default until per-platform UX is right.
+- Secrets broker: macOS Keychain / Linux Secret Service / Windows Credential Manager + a YAML mapping of secret names → broker keys. Capabilities request by name; broker resolves; subprocess gets the value without it ever touching the user's shell env.
+- Per-capability network egress allowlist (the missing half of the env-scrub story). DNS-level or proxy-based; chosen per platform.
+- Browser automation capability (the highest-blast-radius missing piece) — only built after this milestone because it must run inside the OS sandbox.
+
+**Exit:** even a capability marked `risk_level: high` can be approved knowing the worst case is bounded.
+
+### Milestone F — Distribution & UX
+*Goal: someone other than the person who built it can install and run it.*
+
+- Pip-publishable package (`pip install jigga`).
+- Supervisor autostart templates (systemd / launchd / Windows Service) + a `jigga install-service` helper.
+- Headless-first GUI/dashboard — Electron or web-app pointing at a local API. Read-only at first: state, audit log, sessions, capability registry. Approve actions in v1.1.
+- Capability marketplace UX: `jigga capabilities search <query>`, `jigga capabilities install <name>`, `jigga capabilities update`. Backed by a static registry index (git-based, no server needed for v1).
+- Encrypted backup with `jigga backup create / restore`. Cloud sync as an optional layer (S3-compatible, age-encrypted).
+- Opt-in telemetry: documented payload, off by default, `jigga telemetry on/off` toggle.
+- Crash recovery sweep on supervisor startup: any task in `claimed`/`running` for more than the configured runtime gets marked `failed` with an audit event.
+- `jigga update` (runtime self-update) + migration scripts for state-shape changes.
+
+**Exit:** v1.0 release-ready. A user with no JIGGA context can `brew install jigga` (or equivalent), run `jigga init`, and have something working in five minutes.
+
+### Milestone G — Post-v1 expansions (don't block launch)
+
+- Multi-user / multi-machine state sync.
+- Team permission management.
+- Voice channel (Whisper or platform API).
+- Real-time streaming for long-running capability invocations.
+- Capability marketplace with social proof / reviews / signed publishers.
+
+---
+
+## Decision points before starting
+
+These choices will compound through the milestones; worth deciding before A.
+
+1. **Where do non-trivial connectors live — in-tree or as external capability packs?** Argument for in-tree: discoverability, integrated tests, one install. Argument for external: faster iteration, smaller core, real exercise of the user-pack approval/scan flow. My lean: external, packaged in their own repos but published under the JIGGAI org. The `morning_day_summary` example doc explains how to install the calendar/email packs the first time.
+2. **Cross-platform now or Linux-only first?** macOS + Linux for v1 is realistic; Windows can lag a release if the secrets broker / sandbox / autostart take longer there.
+3. **GUI or pure CLI for v1.0?** Headless-first is the spec's instinct, but a read-only dashboard significantly broadens who can adopt. My lean: pure CLI for the alpha/private beta; ship a minimal dashboard at v1.0.
+4. **Telemetry default.** Even opt-in telemetry is a brand-shaping decision. My lean: ship v1.0 without telemetry; add opt-in in v1.1 once there's a clear question telemetry would answer.
+5. **Model-provider posture.** Today: dry_run default, OpenAI-compatible fallback. For v1.0 it's worth deciding whether you ship with first-class Anthropic + OpenAI clients or stay generic. The model router seam already supports both; the question is which the install-default points at.
+
+---
+
+## Recommended next concrete PR
+
+If you want the smallest unit of forward motion that compounds:
+
+**Notification adapter (Milestone A first slice).** ~300 LOC, ~10 tests. Replaces the dry-run `notifications.send` handler with a real cross-platform sender. Zero new architectural decisions. Lets the morning briefing demo actually feel like a personal AI worker.
+
+After that, the natural next two PRs are (i) project-local capability discovery + filesystem capabilities (still Milestone A), and (ii) the audit-log CLI surface (Milestone C, small) — which together unlock the connectors workstream and give you operational visibility for everything that follows.
+
+---
+
+## Risk register
+
+A few sharp edges worth flagging now so they're not surprises:
+
+- **MCP servers can hang.** Our single-shot batched exchange handles well-behaved servers, but a streaming server or one that waits for stdin past the messages we send will hit the timeout rather than respond cleanly. Either move to a proper async MCP client when the first real one (GitHub MCP, etc.) lands, or document the constraint loudly.
+- **`evaluate_capability_permissions` is becoming a hot path.** Every plan + every step goes through it. Currently it walks lists each time; if a workflow has many steps and the capability declares many paths, this gets quadratic. Worth profiling before Milestone D adds search-memory traffic on top.
+- **The `permission_mode: ask` semantics rely on per-step `approval: required`.** If a workflow author forgets to mark a write step as `approval: required`, `ask` mode silently lets it through. Worth a planning-time lint that flags steps which look risky (write/send/publish action names) but lack approval.
+- **Sandbox `secrets_required` trusts the manifest.** A user-local capability declaring `secrets_required: [OPENAI_API_KEY]` will get it pass-through. First-use approval is the gate; reviewers must understand that approving a pack with `secrets_required` is approving the secret access.

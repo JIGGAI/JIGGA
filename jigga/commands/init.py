@@ -40,6 +40,7 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                     "enabled": True,
                     "allowed_backends": ["dry_run"],
                     "codex_cli_enabled": False,
+                    "claude_code_enabled": False,
                     "max_global_subagents": 8,
                     "max_subagents_per_parent": 4,
                     "max_depth": 1,
