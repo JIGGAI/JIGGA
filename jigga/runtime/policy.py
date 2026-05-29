@@ -139,6 +139,69 @@ def evaluate_filesystem(agent: AgentConfig, path: str | Path, operation: str = "
     return PolicyDecision("deny", f"Filesystem {operation} has no allow list for this agent.", f"filesystem.{operation}")
 
 
+def evaluate_resource_permission(agent: AgentConfig, resource: str, required: str) -> PolicyDecision:
+    """Generic evaluator for flat scalar permissions like calendar/email/notifications/memory.
+
+    Agents declare grants like `calendar: read` or `notifications: send`;
+    capabilities declare needs like `permissions: {calendar: "read"}`.
+
+    Match rules:
+      - missing/None → deny
+      - string equal to required → allow
+      - string "*" or "all" → allow (broad grant)
+      - dict with `mode` field → respect allow/ask/deny
+      - dict with `allow` list containing `required` → allow
+      - dict with `allow` list not containing `required` → deny
+    """
+    permissions = agent.permissions or {}
+    granted = permissions.get(resource)
+    permission_tag = f"{resource}.{required}"
+    if granted is None:
+        return PolicyDecision(
+            "deny",
+            f"Agent {agent.id} does not grant {resource} permission.",
+            permission_tag,
+        )
+    if isinstance(granted, str):
+        if granted == required or granted in {"*", "all"}:
+            return PolicyDecision("allow")
+        return PolicyDecision(
+            "deny",
+            f"Agent {agent.id} grants {resource}={granted!r}, capability needs {required!r}.",
+            permission_tag,
+        )
+    if isinstance(granted, dict):
+        if "mode" in granted:
+            mode = str(granted.get("mode", "deny"))
+            if mode in {"allow", "*"}:
+                return PolicyDecision("allow")
+            if mode == "ask":
+                return PolicyDecision(
+                    "ask",
+                    f"Agent {agent.id} {resource} requires approval for {required}.",
+                    permission_tag,
+                )
+            return PolicyDecision(
+                "deny",
+                f"Agent {agent.id} {resource}.mode={mode}.",
+                permission_tag,
+            )
+        if "allow" in granted:
+            allowed = list(granted.get("allow") or [])
+            if required in allowed or "*" in allowed or "all" in allowed:
+                return PolicyDecision("allow")
+            return PolicyDecision(
+                "deny",
+                f"Agent {agent.id} {resource}.allow={allowed!r} does not include {required!r}.",
+                permission_tag,
+            )
+    return PolicyDecision(
+        "deny",
+        f"Agent {agent.id} has unsupported {resource} permission shape: {type(granted).__name__}.",
+        permission_tag,
+    )
+
+
 def evaluate_shell(agent: AgentConfig, command: str) -> PolicyDecision:
     shell = agent.permissions.get("shell") if isinstance(agent.permissions, dict) else {}
     mode = _mode(shell, default="deny")

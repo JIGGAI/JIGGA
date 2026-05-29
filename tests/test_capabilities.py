@@ -213,6 +213,68 @@ def test_medium_risk_capability_can_run_under_autonomous_mode(tmp_path: Path) ->
     assert first["status"] == "allow"
 
 
+def test_capability_calendar_permission_requires_agent_grant(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities" / "writer-cap"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "writer-cap",
+            "version": "1.0.0",
+            "summary": "Needs calendar but agent only grants email.",
+            "actions": ["calendar.list_events"],
+            "permissions": {"calendar": "read"},
+            "risk_level": "low",
+        },
+    )
+    paths = init_runtime(tmp_path, examples=True)
+    # content_strategist does NOT grant calendar — only daily_briefing_agent does
+    write_yaml(
+        paths.workflows / "needs_calendar.yaml",
+        {
+            "id": "needs_calendar",
+            "name": "Needs Calendar",
+            "steps": [{"id": "list", "agent": "content_strategist", "action": "calendar.list_events"}],
+        },
+    )
+    plan = plan_workflow(
+        load_workflows(paths.workflows)["needs_calendar"],
+        load_agents(paths.agents),
+        registry=CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities"),
+    )
+    assert plan["can_run"] is False
+    assert plan["steps"][0]["policy"]["permission"] == "calendar.read"
+
+
+def test_capability_memory_access_requires_memory_scope(tmp_path: Path) -> None:
+    # Build an agent with no memory_scope and a capability that declares memory.
+    paths = init_runtime(tmp_path, examples=True)
+    write_yaml(
+        paths.agents / "scopeless.yaml",
+        {
+            "id": "scopeless",
+            "name": "Scopeless",
+            "role": "test",
+            "permissions": {"calendar": "read"},
+        },
+    )
+    write_yaml(
+        paths.workflows / "needs_memory.yaml",
+        {
+            "id": "needs_memory",
+            "name": "Needs Memory",
+            "steps": [{"id": "summarize", "agent": "scopeless", "action": "summarize_day"}],
+        },
+    )
+    plan = plan_workflow(
+        load_workflows(paths.workflows)["needs_memory"],
+        load_agents(paths.agents),
+        registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+    )
+    assert plan["can_run"] is False
+    assert plan["steps"][0]["policy"]["permission"] == "memory.scope"
+
+
 def test_capability_filesystem_permissions_are_checked_against_agent_policy(tmp_path: Path) -> None:
     cap_dir = tmp_path / "capabilities" / "writer"
     cap_dir.mkdir(parents=True)

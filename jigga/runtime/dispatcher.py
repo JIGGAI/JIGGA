@@ -8,7 +8,13 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
-from jigga.runtime.policy import PolicyDecision, evaluate_filesystem
+from jigga.runtime.policy import PolicyDecision, evaluate_filesystem, evaluate_network, evaluate_resource_permission
+
+# Capabilities declare flat scalar permissions like `{calendar: "read"}` or
+# `{notifications: "send"}`. These are dispatched to evaluate_resource_permission.
+# Filesystem and network use their own structured evaluators. Memory is handled
+# separately via memory_scope. Delegation is enforced inside spawn_subagent.
+SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications")
 from jigga.runtime.subagents import spawn_subagent
 
 
@@ -37,13 +43,52 @@ def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
 def evaluate_capability_permissions(capability: CapabilityManifest, agent: AgentConfig | None) -> PolicyDecision:
     if agent is None:
         return PolicyDecision("deny", "No agent configured for capability permission check.", "agent.available")
-    filesystem = capability.permissions.get("filesystem") if isinstance(capability.permissions, dict) else None
+    permissions = capability.permissions if isinstance(capability.permissions, dict) else {}
+
+    # Filesystem — structured allow/deny lists per operation.
+    filesystem = permissions.get("filesystem")
     if isinstance(filesystem, dict):
         for operation in ("read", "write"):
             for path in list(filesystem.get(operation, []) or []):
                 decision = evaluate_filesystem(agent, path, operation=operation)
                 if decision.status != "allow":
                     return decision
+
+    # Network — mode-based; if the capability declares any network usage we
+    # require the agent's network mode to permit it. Supports either
+    # `{network: "allow"}` (flat scalar grant) or `{network: {mode: "allow"}}`
+    # / `{network: {target: "..."}}` shapes.
+    network = permissions.get("network")
+    if network is not None:
+        target = network.get("target") if isinstance(network, dict) else None
+        decision = evaluate_network(agent, str(target) if target else None)
+        if decision.status != "allow":
+            return decision
+
+    # Memory — governed by the memory_scope mechanism, not a flat permission
+    # value. Capabilities declaring memory access require the agent to have a
+    # memory_scope assigned; the scope itself controls what's visible.
+    if permissions.get("memory") is not None and not agent.memory_scope:
+        return PolicyDecision(
+            "deny",
+            f"Capability {capability.name} needs memory access but agent {agent.id} has no memory_scope.",
+            "memory.scope",
+        )
+
+    # Flat scalar resources: calendar/email/notifications.
+    for resource in SCALAR_CAPABILITY_RESOURCES:
+        required = permissions.get(resource)
+        if required is None:
+            continue
+        # If the capability declares a structured shape, take the operation
+        # from the relevant key; otherwise the value itself is the operation.
+        operation = required if isinstance(required, str) else str(required.get("operation") or "")
+        if not operation:
+            continue
+        decision = evaluate_resource_permission(agent, resource, operation)
+        if decision.status != "allow":
+            return decision
+
     return PolicyDecision("allow")
 
 
