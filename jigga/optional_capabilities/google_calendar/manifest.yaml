@@ -1,0 +1,16 @@
+name: google-calendar
+version: 0.1.0
+summary: Real Google Calendar integration via OAuth (events.list + events.get).
+type: native
+actions:
+  - google_calendar.list_events
+  - google_calendar.get_event
+permissions:
+  network:
+    mode: allow
+    target: https://www.googleapis.com
+  secrets:
+    required:
+      - GOOGLE_OAUTH_CLIENT_ID  # documentation; the real client config is in ~/.jigga/secrets/google_calendar_client.json
+risk_level: medium
+handler: runtime.google_calendar

@@ -1,0 +1,35 @@
+# Real Google Calendar briefing workflow.
+#
+# Requires: `jigga capabilities install google-calendar` (one-time setup that
+# walks you through Google Cloud Console + OAuth login).
+#
+# Lists the next 10 events on your primary calendar and pops a desktop
+# notification with the count + first event's title. Replace your real
+# `morning_day_summary` with something based on this once you've installed.
+
+id: google_calendar_briefing
+name: Google Calendar morning briefing
+purpose: Read today's events from Google Calendar and notify with a summary.
+status: approved
+trigger:
+  manual: true
+steps:
+  - id: events
+    agent: daily_briefing_agent
+    action: google_calendar.list_events
+    input:
+      max_results: 10
+
+  - id: notify
+    agent: daily_briefing_agent
+    action: notifications.send
+    input:
+      title: "Today's calendar"
+      # The notification body coercer extracts the `summary` field from upstream
+      # dict outputs; for the events list, we fall back to a JSON dump that the
+      # daily_briefing_agent can reformat in a follow-up step.
+      content: events
+      urgency: normal
+
+outputs:
+  - notify
