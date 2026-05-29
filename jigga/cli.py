@@ -9,7 +9,7 @@ from typing import Any
 
 from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
-from jigga.core.paths import get_paths
+from jigga.core.paths import get_paths, project_capabilities_dir, resolve_project_root
 from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
@@ -35,6 +35,15 @@ def print_json(value: Any) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jigga", description="Local-first operating system for personal AI workers.")
     parser.add_argument("--home", type=Path, default=None, help="JIGGA home directory")
+    parser.add_argument(
+        "--project",
+        type=Path,
+        default=None,
+        help=(
+            "Project root containing .jigga/ with project-local capabilities. "
+            "Auto-detected by walking up from cwd if omitted; overridden by JIGGA_PROJECT env var."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="Create a local runtime directory")
@@ -185,7 +194,13 @@ def main(argv: list[str] | None = None) -> int:
                     workflow,
                     load_agents(paths.agents),
                     default_mode=default_permission_mode(paths.home),
-                    registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+                    registry=CapabilityRegistry.load(
+                        user_capabilities=paths.capabilities,
+                        project_capabilities=project_capabilities_dir(
+                            resolve_project_root(args.project)
+                        ),
+                        approvals_dir=paths.policies,
+                    ),
                 )
                 if args.json_output:
                     print_json(plan)
@@ -198,7 +213,19 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"- {step['id']}: {step['action']} [{step['policy']['status']}{reason}]")
                     print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
             elif args.workflow_command == "run":
-                print_json(run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, args.workflow_id))
+                print_json(
+                    run_workflow(
+                        paths.home,
+                        paths.logs,
+                        paths.workflows,
+                        paths.agents,
+                        paths.memory,
+                        args.workflow_id,
+                        project_capabilities=project_capabilities_dir(
+                            resolve_project_root(args.project)
+                        ),
+                    )
+                )
             elif args.workflow_command == "suggest":
                 print_json(suggest_workflows(paths.logs, min_count=args.min_count))
             elif args.workflow_command == "apply":
@@ -233,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
             paths = get_paths(args.home)
             registry = CapabilityRegistry.load(
                 user_capabilities=paths.capabilities,
+                project_capabilities=project_capabilities_dir(
+                    resolve_project_root(args.project)
+                ),
                 approvals_dir=paths.policies,
             )
             if args.capabilities_command == "list":

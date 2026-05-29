@@ -99,11 +99,20 @@ def plan_workflow(
 
 
 
-def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Path, memory_dir: Path, workflow_id: str) -> dict[str, Any]:
+def run_workflow(
+    home: Path,
+    logs_dir: Path,
+    workflows_dir: Path,
+    agents_dir: Path,
+    memory_dir: Path,
+    workflow_id: str,
+    project_capabilities: Path | None = None,
+) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
     registry = CapabilityRegistry.load(
         user_capabilities=home / "capabilities",
+        project_capabilities=project_capabilities,
         approvals_dir=home / "policies",
     )
     workflow = workflows.get(workflow_id)
