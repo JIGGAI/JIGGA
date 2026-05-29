@@ -9,9 +9,27 @@ Rather than a long-lived supervisor daemon, a channel is realised as a capabilit
 - `telegram.poll_messages` — **inbound**. `getUpdates` (long-poll), allowlist filter, normalize, advance offset.
 - `telegram.send_message` — **outbound**. `sendMessage`.
 
-This fits JIGGA's existing model with **zero supervisor changes**: a cron-triggered workflow polls on a cadence (poll → process → reply), exactly like the morning-briefing workflow polls calendar/email. "Always listening" = a scheduled poll workflow. Push-based channels (webhooks) can add a gateway later; polling needs no public endpoint.
-
 All HTTP is in-process `urllib` — native-action category (no subprocess, not sandboxed), same as the Google Calendar connector.
+
+## Staying live: the channel listener (not cron)
+
+Inbound is driven by a **long-poll listener** (`jigga/runtime/channel_listener.py`), not a cron cadence — polling every few seconds would be wasteful and laggy. The listener calls `getUpdates` with a server-side `timeout` (~30s): the HTTP connection blocks until a message arrives or the timeout elapses, so it's near-instant on delivery and near-zero cost when idle.
+
+Run it as its own process alongside the supervisor:
+
+```bash
+jigga channels listen                 # long-poll loop until Ctrl-C / SIGTERM
+jigga channels listen --max-cycles 1  # one cycle (tests/demos)
+jigga channels status                 # list enabled channels + config
+```
+
+Each cycle, per enabled channel: long-poll → create one task per message (assignee = the channel's `default_agent`, description carries the text + `chat_id` + a reply hint, metadata carries `channel`/`chat_id`/`sender`/`message_id`/`text`) → emit `channel.message.received` → **run the assigned agent** (PR C's tool-use loop) so it can reply via `<channel>.send_message`. Pass `--no-process` to only enqueue and let the supervisor run agents.
+
+`channel_listen` resolves enabled channels from `config.channels.<name>.enabled`; `CHANNEL_POLLERS` maps a channel name to its poll function. Slack / iMessage register there and inherit the listener for free.
+
+**Auto-reply requires a tool-configured agent.** The woken agent only replies if its `tools` include `<channel>.send_message`, its permissions grant it, and (since send is risk-gated) it runs in `autonomous` mode or the call is approved — and the model actually chooses to call it (a real model; the dry-run provider won't). Out of the box `daily_briefing_agent` will summarize, not reply, until configured for it.
+
+**Known limitation (follow-up):** channels are polled sequentially, so N channels means worst-case N × `long_poll_seconds` latency. Fine for one channel; multi-channel wants a thread per channel.
 
 ## Normalized channel-message shape
 

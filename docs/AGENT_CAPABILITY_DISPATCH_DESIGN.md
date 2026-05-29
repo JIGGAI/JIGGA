@@ -136,13 +136,13 @@ agent_loop:
   max_iterations: 8
 ```
 
-## Related track (not part of this arc): channel listeners
+## Related track (shipped): channel listeners
 
-Channel inbound should NOT be cron-driven (polling every 5s is wasteful and
-laggy). The right model is a **long-poll listener** managed by the supervisor
-daemon: one blocking `getUpdates`-style call per channel that waits
-server-side up to ~50s for a message. The `poll_messages`/`send_message`
-capability actions stay valid primitives; the listener reuses the poll logic
-with a real timeout. This is the efficiency/latency layer; the capability-
-dispatch keystone above is what lets the agent actually *reply*. Both are
-needed for a full receive → think → reply loop; they can land independently.
+Channel inbound is NOT cron-driven (polling every 5s is wasteful and laggy).
+The implemented model is a **long-poll listener** (`runtime/channel_listener.py`,
+`jigga channels listen`): one blocking `getUpdates`-style call per channel that
+waits server-side up to ~30s for a message, turns messages into tasks, and runs
+the assigned agent (this keystone's loop) so it can reply. This is the
+efficiency/latency layer; the capability-dispatch keystone above is what lets
+the agent actually *reply*. Together they form the full receive → think → reply
+loop. See `docs/CHANNELS_TELEGRAM_RUNTIME_NOTES.md`.
