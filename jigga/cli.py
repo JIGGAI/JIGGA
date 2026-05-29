@@ -19,6 +19,8 @@ from jigga.core.paths import get_paths, project_capabilities_dir, resolve_projec
 from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
+from jigga.runtime.audit_query import format_event, query_events, tail_events
+from jigga.runtime.audit_query import trace as trace_events
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.channel_listener import channel_listen, enabled_channels
 from jigga.runtime.gog import (
@@ -187,6 +189,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-process", action="store_true",
         help="Only enqueue messages as tasks; don't run agents (let the supervisor handle them)",
     )
+
+    logs = sub.add_parser("logs", help="Tail the audit log")
+    logs_sub = logs.add_subparsers(dest="logs_command", required=True)
+    logs_tail = logs_sub.add_parser("tail", help="Show the most recent audit events")
+    logs_tail.add_argument("-n", "--count", type=int, default=20)
+    logs_tail.add_argument("--json", action="store_true", dest="json_output")
+
+    audit = sub.add_parser("audit", help="Query the audit log with filters")
+    audit.add_argument("--agent", help="Filter to an agent id")
+    audit.add_argument("--type", dest="type_filter", help="Filter by event type (exact or family prefix)")
+    audit.add_argument("--since", help="Only events newer than e.g. 30m / 24h / 7d or an ISO timestamp")
+    audit.add_argument("--status", help="Filter by status (ok / error / ask / ...)")
+    audit.add_argument("-n", "--count", type=int, default=None, help="Keep only the most recent N matches")
+    audit.add_argument("--json", action="store_true", dest="json_output")
+
+    trace = sub.add_parser("trace", help="Show events correlated to an id (run/task/session/event id)")
+    trace.add_argument("identifier")
+    trace.add_argument("--json", action="store_true", dest="json_output")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -526,6 +546,44 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
                 return 0
+            return 0
+
+        if args.command == "logs":
+            paths = get_paths(args.home)
+            if args.logs_command == "tail":
+                events = tail_events(paths.logs, args.count)
+                if args.json_output:
+                    print_json(events)
+                else:
+                    for event in events:
+                        print(format_event(event))
+            return 0
+
+        if args.command == "audit":
+            paths = get_paths(args.home)
+            events = query_events(
+                paths.logs,
+                agent=args.agent,
+                type_filter=args.type_filter,
+                since=args.since,
+                status=args.status,
+                limit=args.count,
+            )
+            if args.json_output:
+                print_json(events)
+            else:
+                for event in events:
+                    print(format_event(event))
+            return 0
+
+        if args.command == "trace":
+            paths = get_paths(args.home)
+            events = trace_events(paths.logs, args.identifier)
+            if args.json_output:
+                print_json(events)
+            else:
+                for event in events:
+                    print(format_event(event))
             return 0
 
         if args.command == "sessions":
