@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from jigga.core.io import copy_if_missing, ensure_dir, write_json, write_yaml
@@ -27,6 +28,18 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
         paths.sessions,
     ]:
         ensure_dir(directory)
+
+    # Secrets directory holds OAuth client configs and tokens. Owner-only
+    # readable so other users on the same machine can't enumerate which
+    # services JIGGA is authenticated to.
+    ensure_dir(paths.secrets)
+    try:
+        os.chmod(paths.secrets, 0o700)
+    except (OSError, NotImplementedError):
+        # Windows and some filesystems don't support POSIX modes — fall back
+        # to whatever default the OS gives. Secrets files written individually
+        # still attempt 0600 in their write helpers.
+        pass
 
     if not paths.config.exists():
         write_yaml(

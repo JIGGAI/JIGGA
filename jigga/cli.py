@@ -8,12 +8,27 @@ from pathlib import Path
 from typing import Any
 
 from jigga.commands.init import init_runtime
+from jigga.commands.install import (
+    install_capability,
+    list_available_capabilities,
+    maybe_prompt_after_init,
+    uninstall_capability,
+)
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths, project_capabilities_dir, resolve_project_root
 from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.capability_scanner import scan_capability
+from jigga.runtime.google_calendar import (
+    client_config_path,
+    delete_tokens,
+    get_valid_tokens,
+    load_client_config,
+    load_tokens,
+    run_oauth_flow,
+    tokens_path,
+)
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.model_router import build_task_model_request, call_model
@@ -48,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Create a local runtime directory")
     init.add_argument("--examples", action="store_true", help="Copy bundled example agents and teams")
+    init.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="Skip the post-init optional-capability install prompt (also auto-skipped when stdin is not a TTY)",
+    )
 
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
@@ -91,6 +111,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_approve.add_argument("path", type=Path)
     capability_approve.add_argument("--approve", action="store_true", dest="confirm")
+    capability_install = capabilities_sub.add_parser(
+        "install",
+        help="Install a first-party optional capability (interactive menu when no name)",
+    )
+    capability_install.add_argument(
+        "name", nargs="?", help="Capability to install (e.g. google-calendar)"
+    )
+    capability_uninstall = capabilities_sub.add_parser(
+        "uninstall", help="Remove a previously-installed optional capability"
+    )
+    capability_uninstall.add_argument("name")
+    capabilities_sub.add_parser(
+        "list-available", help="List first-party optional capabilities available to install"
+    )
 
     auth = sub.add_parser("auth", help="Authenticate external subagent CLI backends (codex, claude)")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
@@ -99,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
         "login", help="Run the upstream `<cli> login` flow for an external backend"
     )
     auth_login.add_argument("backend", help="Backend to authenticate (codex_cli, claude_code)")
+
+    calendar = sub.add_parser(
+        "calendar", help="Google Calendar status / login / logout (requires capability install first)"
+    )
+    calendar_sub = calendar.add_subparsers(dest="calendar_command", required=True)
+    calendar_sub.add_parser("status", help="Show connection state for Google Calendar")
+    calendar_sub.add_parser("login", help="Re-run OAuth login (refresh expired/revoked tokens)")
+    calendar_sub.add_parser("logout", help="Delete stored Google Calendar tokens")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -162,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Initialized JIGGA home: {paths.home}")
             if args.examples:
                 print("Copied example agents and teams.")
+            interactive = (not args.no_prompt) and sys.stdin.isatty() and sys.stdout.isatty()
+            maybe_prompt_after_init(paths, interactive=interactive)
             return 0
 
         if args.command == "state":
@@ -306,6 +350,12 @@ def main(argv: list[str] | None = None) -> int:
                         "scan": report.to_dict(),
                     }
                 )
+            elif args.capabilities_command == "install":
+                return install_capability(paths, name=args.name)
+            elif args.capabilities_command == "uninstall":
+                return uninstall_capability(paths, name=args.name)
+            elif args.capabilities_command == "list-available":
+                return list_available_capabilities()
             return 0
 
         if args.command == "auth":
@@ -314,6 +364,39 @@ def main(argv: list[str] | None = None) -> int:
             elif args.auth_command == "login":
                 exit_code = run_external_login(args.backend)
                 return exit_code
+            return 0
+
+        if args.command == "calendar":
+            paths = get_paths(args.home)
+            if args.calendar_command == "status":
+                client = load_client_config(paths.secrets)
+                tokens = load_tokens(paths.secrets)
+                payload = {
+                    "client_config_present": client is not None,
+                    "client_config_path": str(client_config_path(paths.secrets)),
+                    "tokens_present": tokens is not None,
+                    "tokens_path": str(tokens_path(paths.secrets)),
+                    "token_expired": tokens.is_expired() if tokens else None,
+                    "scope": tokens.scope if tokens else None,
+                    "expires_at": tokens.expires_at if tokens else None,
+                }
+                print_json(payload)
+                return 0
+            if args.calendar_command == "login":
+                if load_client_config(paths.secrets) is None:
+                    print(
+                        "No Google OAuth client config found. Run "
+                        "`jigga capabilities install google-calendar` first.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                run_oauth_flow(paths.secrets)
+                print("Login successful. Tokens stored.")
+                return 0
+            if args.calendar_command == "logout":
+                removed = delete_tokens(paths.secrets)
+                print("Tokens removed." if removed else "No tokens to remove.")
+                return 0
             return 0
 
         if args.command == "sessions":

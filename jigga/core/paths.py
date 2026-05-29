@@ -21,6 +21,7 @@ class JiggaPaths:
     approvals: Path
     runs: Path
     sessions: Path
+    secrets: Path
 
 
 def resolve_home(home: str | Path | None = None) -> Path:
@@ -45,6 +46,7 @@ def get_paths(home: str | Path | None = None) -> JiggaPaths:
         approvals=root / "approvals",
         runs=root / "runs",
         sessions=root / "sessions",
+        secrets=root / "secrets",
     )
 
 
