@@ -11,7 +11,7 @@ from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
-from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest
+from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.model_router import build_task_model_request, call_model
@@ -70,10 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities = sub.add_parser("capabilities", help="Inspect capability registry")
     capabilities_sub = capabilities.add_subparsers(dest="capabilities_command", required=True)
     capabilities_sub.add_parser("list", help="List registered capabilities")
+    capabilities_sub.add_parser("pending", help="List user-local capabilities awaiting approval")
     capability_inspect = capabilities_sub.add_parser("inspect", help="Inspect a registered capability")
     capability_inspect.add_argument("name")
     capability_validate = capabilities_sub.add_parser("validate", help="Validate a capability manifest")
     capability_validate.add_argument("path", type=Path)
+    capability_approve = capabilities_sub.add_parser(
+        "approve", help="Record a first-use approval for a user-local capability manifest"
+    )
+    capability_approve.add_argument("path", type=Path)
+    capability_approve.add_argument("--approve", action="store_true", dest="confirm")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -215,9 +221,14 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "capabilities":
             paths = get_paths(args.home)
-            registry = CapabilityRegistry.load(user_capabilities=paths.capabilities)
+            registry = CapabilityRegistry.load(
+                user_capabilities=paths.capabilities,
+                approvals_dir=paths.policies,
+            )
             if args.capabilities_command == "list":
                 print_json(registry.to_index())
+            elif args.capabilities_command == "pending":
+                print_json([cap.to_dict() for cap in registry.list_pending()])
             elif args.capabilities_command == "inspect":
                 capability = registry.get(args.name)
                 if capability is None:
@@ -226,6 +237,19 @@ def main(argv: list[str] | None = None) -> int:
             elif args.capabilities_command == "validate":
                 capability = load_capability_manifest(args.path)
                 print_json({"status": "valid", "capability": capability.to_dict()})
+            elif args.capabilities_command == "approve":
+                capability = load_capability_manifest(args.path)
+                if not args.confirm:
+                    print_json(
+                        {
+                            "status": "needs_approval",
+                            "capability": capability.to_dict(),
+                            "hint": "Re-run with --approve to record the approval.",
+                        }
+                    )
+                    return 0
+                entry = record_approval(paths.policies, capability)
+                print_json({"status": "approved", "capability": capability.name, "approval": entry})
             return 0
 
         if args.command == "sessions":

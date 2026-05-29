@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jigga.core.io import list_config_files, read_yaml
+from jigga.core.io import ensure_dir, list_config_files, read_json, read_yaml, write_json
+
+APPROVALS_FILE = "capability_approvals.json"
 
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 
@@ -173,9 +176,55 @@ def scan_capability_dir(path: Path) -> list[CapabilityManifest]:
     return manifests
 
 
+def approvals_path(approvals_dir: Path) -> Path:
+    return approvals_dir / APPROVALS_FILE
+
+
+def load_approval_index(approvals_dir: Path) -> dict[str, dict[str, Any]]:
+    """Read the recorded capability approvals as `{name: {manifest_hash, approved_at, ...}}`.
+
+    Bundled capabilities are not subject to approval; this index covers only
+    user-local packs. Returns an empty dict if no approvals file exists yet.
+    """
+    path = approvals_path(approvals_dir)
+    if not path.exists():
+        return {}
+    raw = read_json(path)
+    return dict(raw.get("approvals") or {})
+
+
+def record_approval(approvals_dir: Path, capability: CapabilityManifest) -> dict[str, Any]:
+    """Record an approval for a user-local capability pack.
+
+    Keyed by capability name; the recorded manifest_hash is what gets compared
+    on subsequent loads. Hash mismatch (manifest changed since approval) means
+    the capability falls back to pending until re-approved.
+    """
+    if capability.bundled:
+        raise ValueError("Bundled capabilities do not require approval")
+    if capability.manifest_hash is None:
+        raise ValueError("Cannot record approval for capability without a manifest_hash")
+    ensure_dir(approvals_dir)
+    path = approvals_path(approvals_dir)
+    current = read_json(path) if path.exists() else {"version": 1, "approvals": {}}
+    entry = {
+        "manifest_hash": capability.manifest_hash,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "source": capability.source,
+    }
+    current.setdefault("approvals", {})[capability.name] = entry
+    write_json(path, current)
+    return entry
+
+
 class CapabilityRegistry:
-    def __init__(self, capabilities: list[CapabilityManifest]):
+    def __init__(
+        self,
+        capabilities: list[CapabilityManifest],
+        pending: list[CapabilityManifest] | None = None,
+    ):
         self.capabilities = capabilities
+        self.pending = pending or []
         self._by_name = {capability.name: capability for capability in capabilities}
         self._by_action: dict[str, CapabilityManifest] = {}
         for capability in capabilities:
@@ -184,14 +233,33 @@ class CapabilityRegistry:
                 self._by_action.setdefault(action, capability)
 
     @classmethod
-    def load(cls, user_capabilities: Path | None = None, project_capabilities: Path | None = None) -> "CapabilityRegistry":
-        capabilities: list[CapabilityManifest] = []
+    def load(
+        cls,
+        user_capabilities: Path | None = None,
+        project_capabilities: Path | None = None,
+        approvals_dir: Path | None = None,
+    ) -> "CapabilityRegistry":
+        """Load capability manifests.
+
+        Precedence: project > user > bundled. When `approvals_dir` is given,
+        user-local manifests must have a recorded approval whose manifest_hash
+        matches the file on disk; unapproved or hash-mismatch entries land in
+        `pending` and are not dispatched. Bundled capabilities are never gated
+        by approval. Callers that don't pass `approvals_dir` keep the old
+        behaviour (no gating) — this is the safe MVP default for tests and
+        ad-hoc loads.
+        """
+        approved = load_approval_index(approvals_dir) if approvals_dir is not None else None
+        active: list[CapabilityManifest] = []
+        pending: list[CapabilityManifest] = []
         if project_capabilities is not None:
-            capabilities.extend(scan_capability_dir(project_capabilities))
+            for capability in scan_capability_dir(project_capabilities):
+                _route_user_capability(capability, approved, active, pending)
         if user_capabilities is not None:
-            capabilities.extend(scan_capability_dir(user_capabilities))
-        capabilities.extend(bundled_capabilities())
-        return cls(capabilities)
+            for capability in scan_capability_dir(user_capabilities):
+                _route_user_capability(capability, approved, active, pending)
+        active.extend(bundled_capabilities())
+        return cls(active, pending)
 
     def list(self) -> list[CapabilityManifest]:
         return list(self.capabilities)
@@ -202,11 +270,31 @@ class CapabilityRegistry:
     def resolve_action(self, action: str) -> CapabilityManifest | None:
         return self._by_action.get(action)
 
+    def list_pending(self) -> list[CapabilityManifest]:
+        return list(self.pending)
+
     def to_index(self) -> dict[str, Any]:
         return {
             "capabilities": [capability.to_dict() for capability in self.capabilities],
+            "pending": [capability.to_dict() for capability in self.pending],
             "actions": {
                 action: capability.name
                 for action, capability in sorted(self._by_action.items())
             },
         }
+
+
+def _route_user_capability(
+    capability: CapabilityManifest,
+    approved: dict[str, dict[str, Any]] | None,
+    active: list[CapabilityManifest],
+    pending: list[CapabilityManifest],
+) -> None:
+    if approved is None:
+        active.append(capability)
+        return
+    recorded = approved.get(capability.name)
+    if recorded is not None and recorded.get("manifest_hash") == capability.manifest_hash:
+        active.append(capability)
+    else:
+        pending.append(capability)

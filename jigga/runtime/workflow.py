@@ -102,7 +102,10 @@ def plan_workflow(
 def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Path, memory_dir: Path, workflow_id: str) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
-    registry = CapabilityRegistry.load(user_capabilities=home / "capabilities")
+    registry = CapabilityRegistry.load(
+        user_capabilities=home / "capabilities",
+        approvals_dir=home / "policies",
+    )
     workflow = workflows.get(workflow_id)
     if workflow is None:
         raise ValueError(f"Workflow not found: {workflow_id}")

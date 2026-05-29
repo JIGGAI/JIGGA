@@ -6,7 +6,7 @@ from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_workflows
 from jigga.core.io import write_yaml
-from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest
+from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.workflow import plan_workflow, run_workflow
 
 
@@ -107,6 +107,85 @@ def test_capabilities_cli_smoke(tmp_path: Path, capsys) -> None:
     assert '"name": "calendar"' in capsys.readouterr().out
 
 
+def test_user_capability_is_pending_until_first_use_approval(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    cap_dir = paths.capabilities / "needs-approval"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "needs-approval",
+            "version": "1.0.0",
+            "summary": "User pack that should be gated.",
+            "actions": ["custom.demo"],
+            "risk_level": "low",
+        },
+    )
+    gated = CapabilityRegistry.load(
+        user_capabilities=paths.capabilities, approvals_dir=paths.policies
+    )
+    assert gated.get("needs-approval") is None  # not active
+    assert any(cap.name == "needs-approval" for cap in gated.list_pending())
+
+    record_approval(paths.policies, load_capability_manifest(cap_dir / "manifest.yaml"))
+    after = CapabilityRegistry.load(
+        user_capabilities=paths.capabilities, approvals_dir=paths.policies
+    )
+    assert after.get("needs-approval") is not None
+    assert after.list_pending() == []
+
+
+def test_approval_invalidated_by_manifest_hash_change(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    cap_dir = paths.capabilities / "drift"
+    cap_dir.mkdir(parents=True)
+    manifest_path = cap_dir / "manifest.yaml"
+    write_yaml(
+        manifest_path,
+        {"name": "drift", "version": "1.0.0", "summary": "v1", "actions": ["drift.run"]},
+    )
+    record_approval(paths.policies, load_capability_manifest(manifest_path))
+    # Manifest changes (e.g. version bump) → hash mismatch → falls back to pending.
+    write_yaml(
+        manifest_path,
+        {"name": "drift", "version": "2.0.0", "summary": "v2", "actions": ["drift.run"]},
+    )
+    registry = CapabilityRegistry.load(
+        user_capabilities=paths.capabilities, approvals_dir=paths.policies
+    )
+    assert registry.get("drift") is None
+    assert any(cap.name == "drift" for cap in registry.list_pending())
+
+
+def test_capabilities_approve_cli_records_approval(tmp_path: Path, capsys) -> None:
+    import json
+
+    paths = init_runtime(tmp_path, examples=True)
+    cap_dir = paths.capabilities / "cli-demo"
+    cap_dir.mkdir(parents=True)
+    manifest_path = cap_dir / "manifest.yaml"
+    write_yaml(
+        manifest_path,
+        {"name": "cli-demo", "version": "1.0.0", "summary": "x", "actions": ["cli.x"]},
+    )
+    assert main(["--home", str(tmp_path), "capabilities", "approve", str(manifest_path)]) == 0
+    pending_output = json.loads(capsys.readouterr().out)
+    assert pending_output["status"] == "needs_approval"
+
+    assert (
+        main(
+            ["--home", str(tmp_path), "capabilities", "approve", str(manifest_path), "--approve"]
+        )
+        == 0
+    )
+    approved_output = json.loads(capsys.readouterr().out)
+    assert approved_output["status"] == "approved"
+    assert approved_output["capability"] == "cli-demo"
+
+    assert main(["--home", str(tmp_path), "capabilities", "pending"]) == 0
+    assert capsys.readouterr().out.strip() == "[]"
+
+
 def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> None:
     # A user-local capability declares its handler as `module.path:function`.
     # The dispatcher imports it lazily and calls it. This is the extensibility
@@ -133,6 +212,9 @@ def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> N
             "steps": [{"id": "run_custom", "agent": "daily_briefing_agent", "action": "custom.run"}],
         },
     )
+    # User-local capability needs first-use approval before run_workflow's
+    # registry will dispatch through it.
+    record_approval(paths.policies, load_capability_manifest(cap_dir / "manifest.yaml"))
     result = run_workflow(
         paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "custom"
     )
