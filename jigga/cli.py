@@ -26,6 +26,13 @@ from jigga.runtime.gog import (
     keyring_password_path,
     run_gog_interactive,
 )
+from jigga.runtime.telegram import (
+    allowed_chat_ids as telegram_allowed_chat_ids,
+    bot_token_path as telegram_bot_token_path,
+    load_bot_token as telegram_load_bot_token,
+    load_offset as telegram_load_offset,
+    poll_messages as telegram_poll_messages,
+)
 from jigga.runtime.google_calendar import (
     client_config_path,
     delete_tokens,
@@ -160,6 +167,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated services to authorize (default: gmail,calendar,drive)",
     )
     gog_sub.add_parser("logout", help="Remove stored gog keyring password (does not revoke Google access)")
+
+    telegram = sub.add_parser(
+        "telegram", help="Telegram channel status / discover / logout (requires capability install first)"
+    )
+    telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
+    telegram_sub.add_parser("status", help="Show Telegram bot token + allowlist + offset state")
+    telegram_sub.add_parser("discover", help="Poll once bypassing the allowlist to find your chat ID")
+    telegram_sub.add_parser("logout", help="Delete the stored Telegram bot token")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -444,6 +459,33 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 else:
                     print("No stored gog keyring password to remove.")
+                return 0
+            return 0
+
+        if args.command == "telegram":
+            paths = get_paths(args.home)
+            if args.telegram_command == "status":
+                token = telegram_load_bot_token(paths.secrets)
+                print_json(
+                    {
+                        "token_present": token is not None,
+                        "token_path": str(telegram_bot_token_path(paths.secrets)),
+                        "allowed_chat_ids": sorted(telegram_allowed_chat_ids(paths.home)),
+                        "offset": telegram_load_offset(paths.home),
+                    }
+                )
+                return 0
+            if args.telegram_command == "discover":
+                result = telegram_poll_messages(paths.home, discover=True)
+                print_json(result)
+                return 0
+            if args.telegram_command == "logout":
+                token_path = telegram_bot_token_path(paths.secrets)
+                if token_path.exists():
+                    token_path.unlink()
+                    print("Removed stored Telegram bot token.")
+                else:
+                    print("No stored Telegram bot token to remove.")
                 return 0
             return 0
 
