@@ -1,0 +1,36 @@
+# Filesystem capability demo workflow.
+#
+# Writes a status file under the agent's allow-listed memory summaries
+# directory, then reads it back. The agent's filesystem allow list is what
+# scopes access — the bundled `filesystem` capability itself declares no
+# static paths.
+#
+# Run with:
+#   jigga --home $JIGGA_HOME workflow run filesystem_roundtrip
+
+id: filesystem_roundtrip
+name: Filesystem round trip
+purpose: Demonstrates filesystem.write_file + filesystem.read_file end-to-end.
+status: approved
+trigger:
+  manual: true
+steps:
+  - id: write
+    agent: daily_briefing_agent
+    action: filesystem.write_file
+    input:
+      path: "~/.jigga/memory/summaries/status.md"
+      content: |
+        # JIGGA status
+        ready to ship
+      overwrite: true
+      create_parents: true
+
+  - id: read
+    agent: daily_briefing_agent
+    action: filesystem.read_file
+    input:
+      path: "~/.jigga/memory/summaries/status.md"
+
+outputs:
+  - read

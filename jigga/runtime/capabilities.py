@@ -178,6 +178,25 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.spawn_subagent",
     },
     {
+        "name": "filesystem",
+        "version": "0.1.0",
+        "summary": "Native filesystem read/write/list/search actions, gated per-path by the executing agent's policy at runtime.",
+        "actions": [
+            "filesystem.read_file",
+            "filesystem.write_file",
+            "filesystem.list_directory",
+            "filesystem.search_files",
+        ],
+        # Empty path lists mean: capability uses filesystem at runtime, the
+        # actual paths come from each workflow step's input. The handler calls
+        # evaluate_filesystem(agent, resolved_path, op) per-action; this is
+        # what makes the bundle safe to ship at risk_level: low — the per-path
+        # gating is the security boundary, not the declaration.
+        "permissions": {"filesystem": {"read": [], "write": []}},
+        "risk_level": "low",
+        "handler": "runtime.filesystem",
+    },
+    {
         "name": "content-drafting",
         "version": "0.1.0",
         "summary": "Dry-run content strategy and drafting actions for demo workflows.",
