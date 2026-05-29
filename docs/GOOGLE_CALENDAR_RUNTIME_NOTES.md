@@ -72,9 +72,14 @@ jigga calendar logout  # delete tokens (keeps client config)
 jigga capabilities uninstall google-calendar  # full removal
 ```
 
+## Design decision: bring-your-own-OAuth-client (locked in 2026-05-29)
+
+JIGGA does **not** ship a shared OAuth app, and won't. Each user creates their own Google Cloud project + OAuth client, and their calendar data flows through credentials they own and can revoke. This is consistent with the local-first philosophy: JIGGA-the-org never has anything to revoke, no shared client to secure, no centralized trust required. The ~3-minute Google Cloud Console setup is acceptable friction for that posture.
+
+If a future contributor proposes a shared JIGGA OAuth app: that's a design change, not a convenience optimization — surface it explicitly rather than landing it as a "quick win."
+
 ## Follow-up work
 
-- **Shared JIGGA OAuth app.** Today each user creates their own Google Cloud project; with a registered JIGGA OAuth app we can ship a single embedded client_id and skip the Console steps. Requires you (RJ) to register the app.
 - **Write scope.** `events.insert` / `events.delete` for actually moving the calendar, gated by `permission_mode: ask` so every write requires user approval. Probably its own PR.
 - **Multiple calendars / multi-account.** Currently hardcoded to `primary`. Easy to extend `events.list` input to take a `calendar_id`, harder to handle multi-account auth (need per-account token files).
 - **Outlook Calendar capability.** Once the optional-install pattern proves out, the same shape extends to Microsoft Graph for Outlook users.
