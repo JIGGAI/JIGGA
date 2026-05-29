@@ -167,21 +167,23 @@ def test_subagent_declared_filesystem_permissions_must_fit_parent_policy(tmp_pat
         raise AssertionError("Expected filesystem permission failure")
 
 
-def test_subagent_declared_deny_must_not_overlap_parent_allow(tmp_path: Path) -> None:
+def test_subagent_can_narrow_scope_with_deny_rules(tmp_path: Path) -> None:
+    # A subagent voluntarily denying a subpath of the parent's allow is the
+    # canonical "stricter than parent" pattern from the spec. Earlier policy
+    # erroneously rejected this. The session should be accepted.
     paths = init_runtime(tmp_path, examples=True)
     agent = load_agents(paths.agents)["content_strategist"]
-    try:
-        spawn_subagent(
-            paths.home,
-            paths.logs,
-            paths.sessions,
-            agent,
-            _spawn_payload(cwd="~/Projects/content", permissions={"filesystem": {"deny": ["~/Projects/content/secrets"]}}),
-        )
-    except ValueError as exc:
-        assert "overlaps" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("Expected overlapping deny failure")
+    session = spawn_subagent(
+        paths.home,
+        paths.logs,
+        paths.sessions,
+        agent,
+        _spawn_payload(
+            cwd="~/Projects/content",
+            permissions={"filesystem": {"deny": ["~/Projects/content/secrets"]}},
+        ),
+    )
+    assert session.status == "completed"
 
 
 def test_restricted_env_excludes_unrequested_secrets(monkeypatch) -> None:

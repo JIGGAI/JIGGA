@@ -8,7 +8,7 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.capabilities import CapabilityRegistry
-from jigga.runtime.dispatcher import evaluate_capability_permissions, execute_step
+from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.policy import evaluate_workflow_step, resolve_permission_mode
 
@@ -102,7 +102,10 @@ def plan_workflow(
 def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Path, memory_dir: Path, workflow_id: str) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
-    registry = CapabilityRegistry.load(user_capabilities=home / "capabilities")
+    registry = CapabilityRegistry.load(
+        user_capabilities=home / "capabilities",
+        approvals_dir=home / "policies",
+    )
     workflow = workflows.get(workflow_id)
     if workflow is None:
         raise ValueError(f"Workflow not found: {workflow_id}")
@@ -126,11 +129,17 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
             continue
         agent = agents.get(step.agent or "")
         scope = agent.memory_scope if agent and agent.memory_scope else "task_only"
-        context = build_context_package(memory_dir, scope)
-        runtime_context = dict(context)
-        runtime_context.update({"home": str(home), "logs_dir": str(logs_dir), "sessions_dir": str(home / "sessions"), "agent": agent})
+        memory_context = build_context_package(memory_dir, scope)
+        runtime = RuntimeContext(
+            agent=agent,
+            home=home,
+            logs_dir=logs_dir,
+            sessions_dir=home / "sessions",
+        )
         append_event(logs_dir, "workflow.step.started", workflow=workflow_id, run_id=run_id, step=step.id, agent=step.agent)
-        output, artifact = execute_step(step, run_dir, outputs, runtime_context, registry, logs_dir, workflow_id, run_id)
+        output, artifact = execute_step(
+            step, run_dir, outputs, memory_context, runtime, registry, logs_dir, workflow_id, run_id
+        )
         outputs[step.id] = output
         if step.output:
             outputs[step.output] = output

@@ -1,0 +1,14 @@
+name: mcp-echo
+version: 0.1.0
+summary: Demo mcp_server that echoes tool-call arguments via JSON-RPC over stdio.
+type: mcp_server
+actions:
+  - demo.echo
+  - demo.upper
+command: python
+args:
+  - server.py
+permissions:
+  network:
+    mode: deny
+risk_level: medium

@@ -1,0 +1,8 @@
+name: skill-outline
+version: 0.1.0
+summary: Demo skill_pack that drafts a 3-point brief outline from a topic.
+type: skill_pack
+actions:
+  - skill.draft_outline
+instructions: instructions.md
+risk_level: low
