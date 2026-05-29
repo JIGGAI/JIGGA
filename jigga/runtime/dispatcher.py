@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -10,14 +12,32 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
-from jigga.runtime.policy import PolicyDecision, evaluate_filesystem, evaluate_network, evaluate_resource_permission
+from jigga.runtime.mcp_client import call_mcp_tool
+from jigga.runtime.model_router import (
+    ModelCallItem,
+    ModelCallRequest,
+    call_model,
+    resolve_agent_model,
+    resolve_agent_model_profile,
+)
+from jigga.runtime.policy import (
+    PolicyDecision,
+    evaluate_filesystem,
+    evaluate_network,
+    evaluate_resource_permission,
+)
+from jigga.runtime.subagents import spawn_subagent
 
 # Capabilities declare flat scalar permissions like `{calendar: "read"}` or
 # `{notifications: "send"}`. These are dispatched to evaluate_resource_permission.
 # Filesystem and network use their own structured evaluators. Memory is handled
 # separately via memory_scope. Delegation is enforced inside spawn_subagent.
 SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications")
-from jigga.runtime.subagents import spawn_subagent
+
+# Environment allowlist passed to MCP server subprocesses. Mirrors the
+# subagent restricted-env policy: only well-known shell env vars plus any
+# secret explicitly requested via the manifest's permissions.secrets.required.
+_MCP_BASE_ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TERM"})
 
 
 @dataclass(frozen=True)
@@ -42,6 +62,20 @@ def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
     return value
 
 
+def _requests_resource_access(declared: Any) -> bool:
+    """Return True when a capability's resource declaration *requests* access.
+
+    Self-restricting declarations like `{network: {mode: deny}}` don't ask the
+    agent for network and shouldn't force the agent's policy to permit it.
+    """
+    if isinstance(declared, str):
+        return declared.lower() not in {"deny", "disabled", "none", "off"}
+    if isinstance(declared, dict):
+        mode = str(declared.get("mode", "")).lower()
+        return mode not in {"deny", "disabled", "none", "off"}
+    return True
+
+
 def evaluate_capability_permissions(capability: CapabilityManifest, agent: AgentConfig | None) -> PolicyDecision:
     if agent is None:
         return PolicyDecision("deny", "No agent configured for capability permission check.", "agent.available")
@@ -56,12 +90,12 @@ def evaluate_capability_permissions(capability: CapabilityManifest, agent: Agent
                 if decision.status != "allow":
                     return decision
 
-    # Network — mode-based; if the capability declares any network usage we
-    # require the agent's network mode to permit it. Supports either
-    # `{network: "allow"}` (flat scalar grant) or `{network: {mode: "allow"}}`
-    # / `{network: {target: "..."}}` shapes.
+    # Network — only gated when the capability *requests* network access.
+    # A capability declaring `{network: {mode: deny}}` is self-restricting
+    # (saying "I won't touch the network") — that's information, not a
+    # request, and shouldn't force the agent's network mode to be open.
     network = permissions.get("network")
-    if network is not None:
+    if network is not None and _requests_resource_access(network):
         target = network.get("target") if isinstance(network, dict) else None
         decision = evaluate_network(agent, str(target) if target else None)
         if decision.status != "allow":
@@ -176,6 +210,148 @@ def _generic_handler(
     }
 
 
+def _skill_pack_handler(
+    step: WorkflowStep,
+    capability: CapabilityManifest,
+    resolved_input: Any,
+    memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Dispatch a skill_pack capability.
+
+    Loads the capability's `instructions` file from the pack directory, puts it
+    in the system role of a model call, and feeds the resolved step input as
+    the user role. The memory_context rides along so a scoped agent can ground
+    the response in its memory.
+    """
+    if not capability.source or capability.source == "builtin":
+        raise ValueError(
+            f"skill_pack capability {capability.name!r} requires a file-backed source "
+            "(bundled skill packs are not supported)."
+        )
+    pack_dir = Path(capability.source).parent
+    instructions_path = pack_dir / capability.instructions
+    if not instructions_path.exists():
+        raise ValueError(
+            f"skill_pack {capability.name!r} missing instructions at {instructions_path}"
+        )
+    instructions = instructions_path.read_text(encoding="utf-8")
+
+    if runtime.agent is None:
+        raise ValueError("skill_pack invocation requires an executing agent")
+
+    rendered_input = (
+        json.dumps(resolved_input, indent=2)
+        if not isinstance(resolved_input, str)
+        else resolved_input
+    )
+    task = {"id": f"skill_{step.id}", "title": step.action, "description": rendered_input}
+    items = [
+        ModelCallItem(
+            id="skill_instructions",
+            role="system",
+            content=f"You are the {capability.name!r} skill.\n\n{instructions}",
+        ),
+        ModelCallItem(
+            id=f"step:{step.id}",
+            role="user",
+            content=f"Action: {step.action}\nInput:\n{rendered_input}",
+        ),
+    ]
+    request = ModelCallRequest(
+        agent_id=runtime.agent.id,
+        role=runtime.agent.role,
+        task=task,
+        items=items,
+        model=resolve_agent_model(runtime.agent),
+        model_profile=resolve_agent_model_profile(runtime.agent),
+        dry_run=False,
+    )
+    result = call_model(runtime.home, runtime.logs_dir, request)
+    return {
+        "source": "capability.skill_pack",
+        "skill": capability.name,
+        "action": step.action,
+        "model_provider": result.provider,
+        "model": result.model,
+        "content": result.content,
+        "memory_context": memory_context,
+    }
+
+
+def _mcp_restricted_env(capability: CapabilityManifest) -> dict[str, str]:
+    """Build the env passed to an MCP server subprocess.
+
+    Mirrors the subagent restricted-env policy: only well-known shell vars by
+    default, plus any secret explicitly requested via
+    `permissions.secrets.required`. Prevents the MCP server from accidentally
+    inheriting unrelated API keys exported in the caller's shell.
+    """
+    allowed = set(_MCP_BASE_ENV_ALLOWLIST)
+    secrets = (
+        capability.permissions.get("secrets")
+        if isinstance(capability.permissions, dict)
+        else None
+    )
+    if isinstance(secrets, dict):
+        allowed.update(str(item) for item in secrets.get("required", []) or [])
+    return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def _mcp_server_handler(
+    step: WorkflowStep,
+    capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Dispatch an mcp_server capability.
+
+    Spawns the declared command + args as a subprocess and exchanges JSON-RPC
+    over stdio per the MCP spec. The subprocess runs in the pack directory so
+    relative args (e.g. `server.py`) resolve correctly; env is restricted to
+    PATH/HOME/etc. plus any secrets the manifest explicitly requested.
+    """
+    if not capability.command:
+        raise ValueError(
+            f"mcp_server capability {capability.name!r} has no command declared"
+        )
+    if runtime.agent is None:
+        raise ValueError("mcp_server invocation requires an executing agent")
+
+    if capability.source and capability.source != "builtin":
+        cwd: Path = Path(capability.source).parent
+    else:
+        cwd = runtime.home
+
+    env = _mcp_restricted_env(capability)
+    arguments = (
+        resolved_input
+        if isinstance(resolved_input, dict)
+        else {"input": resolved_input}
+    )
+    timeout = float(
+        capability.requires.get("timeout_seconds", 30)
+        if isinstance(capability.requires, dict)
+        else 30
+    )
+    result = call_mcp_tool(
+        command=capability.command,
+        args=capability.args,
+        env=env,
+        cwd=cwd,
+        tool_name=step.action,
+        arguments=arguments,
+        timeout_seconds=timeout,
+    )
+    return {
+        "source": "capability.mcp_server",
+        "capability": capability.name,
+        "action": step.action,
+        "result": result,
+    }
+
+
 Handler = Callable[
     [WorkflowStep, CapabilityManifest, Any, dict[str, Any], RuntimeContext],
     Any,
@@ -187,6 +363,8 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,
+    "skill_pack.default": _skill_pack_handler,
+    "mcp_server.subprocess": _mcp_server_handler,
 }
 
 

@@ -95,8 +95,52 @@ Existing files updated:
 - `tests/test_subagents.py` — deny-narrowing test renamed and inverted.
 - `tests/test_capabilities.py` — synthetic medium-risk capability for the gating test; new tests for context leak, broader permissions, dotted-handler resolution, first-use approval, hash-drift invalidation, CLI approve flow.
 
+## Capability type discriminator + first MCP/skill packs (added after initial PR open)
+
+### ✅ Type discriminator on `CapabilityManifest`
+
+**Files:** `jigga/runtime/capabilities.py:9-20,38-130`, `tests/test_capability_types.py:30-72`.
+
+Added the `type` field the doc plan (`docs/tools/MCP_AND_CAPABILITY_REGISTRY.md`) called for. Valid values: `native` (default — Python handler, current behavior), `skill_pack` (instruction-driven, dispatches via model_router), `mcp_server` (JSON-RPC over stdio to an external server).
+
+- Per-type required field validation: `mcp_server` needs `command`; `skill_pack` defaults `instructions` to `instructions.md`.
+- `handler` auto-assigned by type when not explicit (`dry_run.generic` / `skill_pack.default` / `mcp_server.subprocess`). Native packs can still override with a dotted import path.
+- New manifest fields: `command`, `args` (mcp_server), `transport` (default `stdio`), `instructions` (skill_pack).
+- Backwards-compat: manifests without `type` default to `native` — existing tests and user packs unchanged.
+
+### ✅ `skill_pack` handler (real, end-to-end)
+
+**Files:** `jigga/runtime/dispatcher.py:189-260`, `examples/capabilities/skill-demo/`, `tests/test_capability_types.py:96-150`.
+
+Loads `instructions.md` from the pack directory, builds a `ModelCallRequest` with the instructions as system role + resolved step input as user role, dispatches through `model_router.call_model`. Memory context rides along on the return so scoped agents can ground responses.
+
+Demo pack at `examples/capabilities/skill-demo/` ships a 3-point-outline drafter. End-to-end test exercises the model dispatch path against the dry_run provider; missing-instructions case raises a clear `ValueError`.
+
+### ✅ `mcp_server` handler (real, end-to-end)
+
+**Files:** `jigga/runtime/mcp_client.py` (new), `jigga/runtime/dispatcher.py:263-330`, `examples/capabilities/mcp-demo/` (manifest + `server.py`), `tests/test_capability_types.py:155-200`.
+
+Minimal JSON-RPC stdio MCP client (`mcp_client.call_mcp_tool`) sends `initialize` → `notifications/initialized` → `tools/call` in a single batched exchange, reads newline-delimited JSON responses, returns the `tools/call` result. The handler runs the subprocess in the pack directory (so relative args resolve) with a restricted env allowlist (`PATH/HOME/LANG/LC_ALL/TERM` plus any secret explicitly requested via `permissions.secrets.required`).
+
+Demo pack at `examples/capabilities/mcp-demo/` ships a working MCP server (`server.py`, ~85 LOC) that implements `demo.echo` and `demo.upper`. End-to-end test spawns the demo server via `sys.executable`, runs a workflow, asserts the echoed text appears in the result.
+
+### ✅ Polarity fix: self-restricting resource declarations
+
+**Files:** `jigga/runtime/dispatcher.py:39-58`, `tests/test_capability_types.py:215-235`.
+
+Discovered while running the MCP test: my earlier permission evaluator gated on the agent's network mode whenever a capability *declared* `network`, even when the capability was declaring `{network: {mode: deny}}` (self-restricting — "I won't touch the network"). Same polarity bug class as the subagent deny-narrowing one. New `_requests_resource_access(declared)` helper returns False for `deny`/`disabled`/`none`/`off` declarations; the network check only fires when the capability is actually *requesting* access.
+
+### ✅ content-drafting paths aligned to the agent (#18)
+
+**File:** `jigga/runtime/capabilities.py:185-205`.
+
+`content-drafting` now declares `~/Projects/content/**` for read and `~/Projects/content/drafts/**` for write, matching `content_strategist`'s allow list. `social_content_syndication`'s `extract_core_message` step moves from `needs_approval` back to `allow`. Other blocked steps in that workflow remain blocked because the example doesn't ship `linkedin_writer`/`x_writer`/`editor` agents — separate concern, not in scope for this fix.
+
 ## Notes for next maintainer
 
 1. The dispatcher's `evaluate_capability_permissions` is becoming the natural entry point for permission integration. When a new resource type lands (browser, calendar write, etc.), add an evaluator in `policy.py` and call it from the capability boundary.
 2. The scanner is intentionally conservative — it surfaces findings but doesn't auto-reject. As real adapters ship, consider a `--fail-on-high` flag for the validate command in CI contexts.
 3. First-use approval is hash-pinned. If you ever support "update this pack and re-approve in one step," do it via a `--update` flag on the approve command rather than auto-promoting; the auto-promote path is exactly what attackers want.
+4. The MCP client is a single-shot batched exchange (write-all-then-read-all). It's enough for one tool call against well-behaved servers; for streaming MCP servers or multi-call sessions you'll need to move to a proper async client. The current shape is fine for the first real wrappers (GitHub MCP, etc.).
+5. `skill_pack` handler always sets `dry_run=False` on the model request — actual dry-run behavior comes from the configured provider (`config.yaml` defaults to `dry_run`). If a user wants a "preview" mode for skills, expose `dry_run` on the workflow step input rather than the manifest.
+6. Bundled capabilities (`calendar`, `email`, etc.) don't declare `type` explicitly — they inherit the `native` default. If you ever ship a bundled skill_pack or mcp_server, declare the type explicitly in `BUILTIN_CAPABILITY_DATA`.

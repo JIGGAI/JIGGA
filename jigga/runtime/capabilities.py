@@ -11,6 +11,15 @@ from jigga.core.io import ensure_dir, list_config_files, read_json, read_yaml, w
 APPROVALS_FILE = "capability_approvals.json"
 
 VALID_RISK_LEVELS = {"low", "medium", "high"}
+VALID_CAPABILITY_TYPES = {"native", "skill_pack", "mcp_server"}
+
+# Auto-assigned handler key for each capability type when the manifest does
+# not declare one explicitly. Built-in dispatch table registers each of these.
+DEFAULT_HANDLERS_BY_TYPE = {
+    "native": "dry_run.generic",
+    "skill_pack": "skill_pack.default",
+    "mcp_server": "mcp_server.subprocess",
+}
 
 
 @dataclass(frozen=True)
@@ -19,11 +28,19 @@ class CapabilityManifest:
     version: str
     summary: str
     actions: list[str]
+    type: str = "native"
     triggers: list[str] = field(default_factory=list)
     requires: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
     risk_level: str = "low"
     handler: str = "dry_run.generic"
+    # mcp_server-specific fields. Ignored for other types.
+    command: str | None = None
+    args: list[str] = field(default_factory=list)
+    transport: str = "stdio"
+    # skill_pack-specific field: filename inside the pack dir holding the
+    # instructions/system-prompt the model is given on dispatch.
+    instructions: str = "instructions.md"
     source: str | None = None
     manifest_hash: str | None = None
     bundled: bool = False
@@ -45,16 +62,47 @@ class CapabilityManifest:
         risk = str(data.get("risk_level", "low"))
         if risk not in VALID_RISK_LEVELS:
             raise ValueError(f"Invalid capability risk_level: {risk!r}")
+        kind = str(data.get("type", "native"))
+        if kind not in VALID_CAPABILITY_TYPES:
+            raise ValueError(
+                f"Invalid capability type: {kind!r}. "
+                f"Allowed: {', '.join(sorted(VALID_CAPABILITY_TYPES))}."
+            )
+
+        # Per-type required-field validation. Keep loose where the doc is loose
+        # — skill_pack's `instructions` defaults to `instructions.md` and the
+        # handler reports a clear error if the file is missing at dispatch.
+        command = data.get("command")
+        if kind == "mcp_server":
+            if not command or not isinstance(command, str):
+                raise ValueError("mcp_server capability requires a non-empty 'command' string")
+
+        args = data.get("args") or []
+        if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+            raise ValueError("Capability 'args' must be a list of strings")
+
+        # Handler defaults are type-aware. If the manifest declares a handler
+        # explicitly, that wins (so native packs can still ship custom code via
+        # dotted import paths). Otherwise the type picks a sensible default.
+        handler = data.get("handler")
+        if not handler:
+            handler = DEFAULT_HANDLERS_BY_TYPE[kind]
+
         return cls(
             name=str(data["name"]),
             version=str(data["version"]),
             summary=str(data["summary"]),
             actions=list(actions),
+            type=kind,
             triggers=list(data.get("triggers") or []),
             requires=dict(data.get("requires") or {}),
             permissions=dict(data.get("permissions") or {}),
             risk_level=risk,
-            handler=str(data.get("handler", "dry_run.generic")),
+            handler=str(handler),
+            command=str(command) if command else None,
+            args=[str(item) for item in args],
+            transport=str(data.get("transport", "stdio")),
+            instructions=str(data.get("instructions", "instructions.md")),
             source=source,
             manifest_hash=manifest_hash,
             bundled=bundled,
@@ -66,11 +114,16 @@ class CapabilityManifest:
             "version": self.version,
             "summary": self.summary,
             "actions": self.actions,
+            "type": self.type,
             "triggers": self.triggers,
             "requires": self.requires,
             "permissions": self.permissions,
             "risk_level": self.risk_level,
             "handler": self.handler,
+            "command": self.command,
+            "args": self.args,
+            "transport": self.transport,
+            "instructions": self.instructions,
             "source": self.source,
             "manifest_hash": self.manifest_hash,
             "bundled": self.bundled,
@@ -136,7 +189,16 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
             "review_tone_and_claims",
             "prepare_distribution_package",
         ],
-        "permissions": {"filesystem": {"read": ["./content/**"], "write": ["./drafts/**"]}},
+        # Paths are absolute so they match the content_strategist agent's
+        # filesystem allow list (`~/Projects/content`, `~/Projects/content/drafts`)
+        # without forcing every user to override either side. Capability paths
+        # are evaluated against the executing agent's filesystem policy.
+        "permissions": {
+            "filesystem": {
+                "read": ["~/Projects/content/**"],
+                "write": ["~/Projects/content/drafts/**"],
+            }
+        },
         "risk_level": "low",
         "handler": "dry_run.generic",
     },
