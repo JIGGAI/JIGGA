@@ -12,6 +12,7 @@ from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
+from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.model_router import build_task_model_request, call_model
@@ -236,20 +237,36 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(capability.to_dict())
             elif args.capabilities_command == "validate":
                 capability = load_capability_manifest(args.path)
-                print_json({"status": "valid", "capability": capability.to_dict()})
+                report = scan_capability(capability, pack_dir=args.path.parent)
+                print_json(
+                    {
+                        "status": "valid",
+                        "capability": capability.to_dict(),
+                        "scan": report.to_dict(),
+                    }
+                )
             elif args.capabilities_command == "approve":
                 capability = load_capability_manifest(args.path)
+                report = scan_capability(capability, pack_dir=args.path.parent)
                 if not args.confirm:
                     print_json(
                         {
                             "status": "needs_approval",
                             "capability": capability.to_dict(),
-                            "hint": "Re-run with --approve to record the approval.",
+                            "scan": report.to_dict(),
+                            "hint": "Re-run with --approve to record the approval. Review the scan findings first.",
                         }
                     )
                     return 0
                 entry = record_approval(paths.policies, capability)
-                print_json({"status": "approved", "capability": capability.name, "approval": entry})
+                print_json(
+                    {
+                        "status": "approved",
+                        "capability": capability.name,
+                        "approval": entry,
+                        "scan": report.to_dict(),
+                    }
+                )
             return 0
 
         if args.command == "sessions":
