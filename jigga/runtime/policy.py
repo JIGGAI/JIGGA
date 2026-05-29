@@ -9,6 +9,12 @@ from jigga.core.models import AgentConfig, WorkflowStep
 
 PolicyStatus = Literal["allow", "deny", "ask"]
 
+# Modes that should prevent any execution that calls a model, runs a tool, or
+# mutates state. `plan_only` and `locked_down` agents are read-only in practice.
+NON_EXECUTING_MODES = frozenset({"plan_only", "locked_down"})
+# Modes that require approval before each consequential action.
+APPROVAL_MODES = frozenset({"ask"})
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -43,23 +49,70 @@ def _mode(config: dict[str, Any] | None, default: str = "deny") -> str:
 
 
 def _matches_any(value: str, patterns: list[str]) -> bool:
-    normalized = str(Path(value).expanduser())
-    for pattern in patterns:
-        expanded = str(Path(pattern).expanduser())
-        if fnmatch.fnmatch(normalized, expanded):
-            return True
-        if not any(token in expanded for token in "*?[") and (normalized == expanded or normalized.startswith(expanded.rstrip("/") + "/")):
-            return True
-    return False
+    raw = str(Path(value).expanduser())
+    raw_parts = Path(raw).parts
+    return any(_path_matches(raw, raw_parts, pattern) for pattern in patterns)
 
 
-def evaluate_workflow_step(step: WorkflowStep, agent: AgentConfig | None = None) -> PolicyDecision:
+def _path_matches(raw: str, raw_parts: tuple[str, ...], pattern: str) -> bool:
+    has_glob = any(token in pattern for token in "*?[")
+    # Bare basename pattern (no glob, no separator) — match any path segment.
+    # This is how rules like `.env` or `id_rsa` should behave: they deny the
+    # file wherever it appears in the tree, not only at the workspace root.
+    if not has_glob and "/" not in pattern:
+        return pattern in raw_parts
+
+    expanded = str(Path(pattern).expanduser())
+
+    # `<prefix>/**` — match recursively below `<prefix>` wherever it appears.
+    # For relative prefixes this is gitignore-style "any depth"; for absolute
+    # prefixes (starting with / or ~) the prefix anchors at the root.
+    if expanded.endswith("/**"):
+        head_parts = Path(expanded[:-3]).parts
+        if not head_parts:
+            return True
+        for i in range(len(raw_parts) - len(head_parts) + 1):
+            if raw_parts[i : i + len(head_parts)] == head_parts and i + len(head_parts) < len(raw_parts):
+                return True
+        return False
+
+    # Other glob patterns — fnmatch against the full expanded path.
+    if has_glob:
+        return fnmatch.fnmatch(raw, expanded)
+
+    # Plain path — exact match or directory prefix.
+    normalized = expanded.rstrip("/")
+    return raw == normalized or raw.startswith(normalized + "/")
+
+
+def resolve_permission_mode(agent: AgentConfig | None, default_mode: str) -> str:
+    if agent is None or agent.permission_mode is None:
+        return default_mode
+    return agent.permission_mode
+
+
+def evaluate_workflow_step(
+    step: WorkflowStep,
+    agent: AgentConfig | None = None,
+    default_mode: str = "ask",
+) -> PolicyDecision:
     if step.approval == "required":
         return PolicyDecision("ask", f"Step {step.id} requires approval.", "workflow.step.approval")
     if agent is None:
         if step.optional:
             return PolicyDecision("allow", f"Optional agent {step.agent} is not configured.")
         return PolicyDecision("deny", f"Agent {step.agent} is not configured.", "agent.available")
+    mode = resolve_permission_mode(agent, default_mode)
+    # plan_only and locked_down agents cannot execute any workflow step.
+    # `ask` and `accept_edits` modes rely on the per-step `approval: required`
+    # flag and on per-action evaluators (filesystem/shell/network) instead of
+    # gating every step uniformly.
+    if mode in NON_EXECUTING_MODES:
+        return PolicyDecision(
+            "deny",
+            f"Agent {agent.id} permission_mode={mode}; step cannot execute.",
+            f"permission_mode.{mode}",
+        )
     return PolicyDecision("allow")
 
 
