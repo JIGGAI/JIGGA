@@ -12,6 +12,11 @@ from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.mcp_client import call_mcp_tool
+from jigga.runtime.notifications import (
+    NotificationRequest,
+    delivery_mode,
+    send_notification,
+)
 from jigga.runtime.model_router import (
     ModelCallItem,
     ModelCallRequest,
@@ -150,7 +155,7 @@ def _email_handler(
     return [{"from": "client@example.com", "subject": "Launch follow-up", "source": "capability.dry_run", "input": resolved_input}]
 
 
-def _notifications_handler(
+def _notifications_dry_run_handler(
     _step: WorkflowStep,
     _capability: CapabilityManifest,
     resolved_input: Any,
@@ -158,6 +163,78 @@ def _notifications_handler(
     _runtime: RuntimeContext,
 ) -> Any:
     return {"dry_run": True, "delivered": False, "source": "capability.dry_run", "input": resolved_input}
+
+
+def _coerce_notification_body(value: Any) -> str:
+    """Render whatever a workflow upstream produced into a single string suitable
+    for `display notification` / `notify-send`. Prefer a `summary` key when the
+    upstream output is a dict (matches the shape `summarize_day` produces),
+    fall back to JSON for other dicts, stringify scalars."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if isinstance(value.get("summary"), str):
+            return value["summary"]
+        if isinstance(value.get("content"), str):
+            return value["content"]
+        return json.dumps(value, indent=2)
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value)
+    return str(value)
+
+
+def _notifications_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Real notification delivery via `runtime.notifications`.
+
+    Accepts either a structured `{title, body|content, urgency}` input from
+    the workflow step, or a bare scalar that becomes the body. Looks up the
+    runtime's delivery_mode (real / dry_run) and routes accordingly. Every
+    invocation emits a `notification.delivered` or `notification.failed`
+    audit event so the user can tell whether the desktop saw it.
+    """
+    if isinstance(resolved_input, dict):
+        title = str(resolved_input.get("title") or "JIGGA")
+        body = _coerce_notification_body(
+            resolved_input.get("body") if resolved_input.get("body") is not None else resolved_input.get("content")
+        )
+        urgency = str(resolved_input.get("urgency") or "normal").lower()
+    else:
+        title = "JIGGA"
+        body = _coerce_notification_body(resolved_input)
+        urgency = "normal"
+
+    mode = delivery_mode(runtime.home)
+    is_dry_run = mode == "dry_run"
+    request = NotificationRequest(title=title, body=body, urgency=urgency)
+    result = send_notification(request, dry_run=is_dry_run)
+    append_event(
+        runtime.logs_dir,
+        "notification.delivered" if result.delivered else "notification.failed",
+        status="ok" if result.delivered else "error",
+        backend=result.backend,
+        dry_run=is_dry_run,
+        urgency=urgency,
+        title=title,
+        error=result.error,
+    )
+    return {
+        "source": "capability.notifications",
+        "delivered": result.delivered,
+        "backend": result.backend,
+        "title": title,
+        "body": body,
+        "urgency": urgency,
+        "dry_run": is_dry_run,
+        "error": result.error,
+    }
 
 
 def _summarization_handler(
@@ -349,7 +426,8 @@ Handler = Callable[
 HANDLERS: dict[str, Handler] = {
     "dry_run.calendar": _calendar_handler,
     "dry_run.email": _email_handler,
-    "dry_run.notifications": _notifications_handler,
+    "dry_run.notifications": _notifications_dry_run_handler,
+    "runtime.notifications": _notifications_handler,
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,
