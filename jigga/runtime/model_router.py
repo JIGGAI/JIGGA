@@ -4,7 +4,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,14 +33,47 @@ class ModelProfileConfig:
 
 
 @dataclass(frozen=True)
+class ModelToolCall:
+    """A model's request to invoke one tool (== a JIGGA capability action).
+
+    `name` is the capability action name (e.g. `telegram.send_message`);
+    `arguments` is the parsed input dict the model wants to pass. `id`
+    correlates the call with its result message on the next turn.
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "name": self.name, "arguments": self.arguments}
+
+
+@dataclass(frozen=True)
 class ModelCallItem:
     role: str
     content: str
     id: str | None = None
     provider_item_id: str | None = None
+    # For role="tool" result messages: which tool call this answers.
+    tool_call_id: str | None = None
+    # For role="assistant" tool-call turns: the calls the model made.
+    tool_calls: list[ModelToolCall] | None = None
 
-    def to_provider_message(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+    def to_provider_message(self) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_call_id is not None:
+            message["tool_call_id"] = self.tool_call_id
+        if self.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                }
+                for call in self.tool_calls
+            ]
+        return message
 
 
 @dataclass(frozen=True)
@@ -52,6 +85,14 @@ class ModelCallRequest:
     model: str | None = None
     model_profile: str | None = None
     dry_run: bool = False
+    # Tool schemas (OpenAI function-tool format) the model may call. None =
+    # plain completion, no tools offered.
+    tools: list[dict[str, Any]] | None = None
+    # Test/scripting hook: when the dry_run provider handles this request and
+    # this is set, it returns these as the model's tool calls instead of text.
+    # Lets the agent loop (PR C) be exercised deterministically without a real
+    # LLM. Ignored by real providers.
+    dry_run_tool_calls: list[ModelToolCall] | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +104,9 @@ class ModelCallResult:
     dry_run: bool
     error: str | None = None
     fallback_used: bool = False
+    # Non-empty → this is a tool-call turn; `content` may be empty. Empty →
+    # `content` is the model's final answer.
+    tool_calls: list[ModelToolCall] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -160,6 +204,17 @@ def build_task_model_request(agent: AgentConfig, task: dict[str, Any], dry_run: 
 
 
 def _dry_run_result(request: ModelCallRequest, provider_id: str = "dry_run", model: str = "dry-run") -> ModelCallResult:
+    if request.dry_run_tool_calls:
+        # Scripted tool-call turn — used by tests and by the agent loop to run
+        # deterministically without a real model.
+        return ModelCallResult(
+            status="ok",
+            provider=provider_id,
+            model=model,
+            content="",
+            dry_run=True,
+            tool_calls=list(request.dry_run_tool_calls),
+        )
     title = request.task.get("title", "untitled task")
     return ModelCallResult(
         status="ok",
@@ -177,10 +232,12 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
     if not api_key:
         raise ValueError(f"Environment variable {provider.api_key_env} is not set")
     base_url = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [item.to_provider_message() for item in request.items],
     }
+    if request.tools:
+        payload["tools"] = request.tools
     body = json.dumps(payload).encode("utf-8")
     http_request = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -197,10 +254,43 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Model request failed: HTTP {exc.code}: {detail}") from exc
-    content = data.get("choices", [{}])[0].get("message", {}).get("content")
-    if not content:
-        raise RuntimeError("Model response did not include choices[0].message.content")
-    return ModelCallResult(status="ok", provider=provider.id, model=model, content=content, dry_run=False)
+    message = data.get("choices", [{}])[0].get("message", {})
+    tool_calls = _parse_tool_calls(message.get("tool_calls"))
+    content = message.get("content")
+    if not content and not tool_calls:
+        raise RuntimeError("Model response included neither content nor tool_calls")
+    return ModelCallResult(
+        status="ok",
+        provider=provider.id,
+        model=model,
+        content=content or "",
+        dry_run=False,
+        tool_calls=tool_calls,
+    )
+
+
+def _parse_tool_calls(raw: Any) -> list[ModelToolCall]:
+    """Parse OpenAI `message.tool_calls` into ModelToolCall. Tolerates missing
+    or malformed argument JSON (falls back to an empty/raw dict) so a single
+    bad call doesn't crash the turn."""
+    if not isinstance(raw, list):
+        return []
+    calls: list[ModelToolCall] = []
+    for item in raw:
+        function = (item or {}).get("function") or {}
+        name = function.get("name")
+        if not name:
+            continue
+        raw_args = function.get("arguments")
+        if isinstance(raw_args, dict):
+            arguments = raw_args
+        else:
+            try:
+                arguments = json.loads(raw_args) if raw_args else {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {"_raw": raw_args}
+        calls.append(ModelToolCall(id=str(item.get("id") or name), name=str(name), arguments=arguments))
+    return calls
 
 
 def _provider_order(profile: ModelProfileConfig) -> list[str]:
@@ -232,7 +322,8 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
                 result = _call_openai_compatible(provider, request, model)
             else:
                 raise ValueError(f"Unsupported provider kind: {provider.kind}")
-            result = ModelCallResult(**{**result.to_dict(), "fallback_used": index > 0})
+            # Use replace (not to_dict round-trip) so typed tool_calls survive.
+            result = replace(result, fallback_used=index > 0)
             append_event(
                 logs_dir,
                 "model.call",
