@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from jigga.cli import main
+from jigga.commands.init import init_runtime
+from jigga.core.config import load_agents, load_workflows
+from jigga.core.io import write_yaml
+from jigga.runtime.capabilities import CapabilityRegistry
+from jigga.runtime.subagents import SpawnSubagentInput, list_sessions, spawn_subagent
+from jigga.runtime.workflow import plan_workflow, run_workflow
+
+
+def _enable_content_delegation(paths) -> None:
+    # Example content_strategist ships delegation enabled; this helper documents intent.
+    assert load_agents(paths.agents)["content_strategist"].delegation["enabled"] is True
+
+
+def _spawn_payload(**overrides):
+    payload = {
+        "backend": "dry_run",
+        "mode": "plan",
+        "parent_agent_id": "content_strategist",
+        "task_id": "task_demo",
+        "work_order": {"goal": "Inspect the content plan", "instructions": "Return risks."},
+        "cwd": ".",
+        "memory_scope": "task_context_only",
+        "limits": {"max_runtime_minutes": 1},
+        "output_required": ["summary", "risks"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_spawn_input_validates_work_order_goal() -> None:
+    try:
+        SpawnSubagentInput.from_dict({"parent_agent_id": "a", "work_order": {}})
+    except ValueError as exc:
+        assert "goal" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected goal validation failure")
+
+
+def test_delegation_disabled_blocks(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["daily_briefing_agent"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(parent_agent_id=agent.id))
+    except ValueError as exc:
+        assert "not allowed to delegate" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected delegation policy failure")
+
+
+def test_dry_run_spawn_persists_completed_session(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_content_delegation(paths)
+    agent = load_agents(paths.agents)["content_strategist"]
+    session = spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload())
+    assert session.status == "completed"
+    assert session.backend == "dry_run"
+    assert "Dry-run subagent planned" in session.result["summary"]
+    assert Path(session.logs_path).exists()
+    assert list_sessions(paths.sessions)[0].id == session.id
+
+
+def test_backend_allowlist_blocks_codex_by_default(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(backend="codex_cli"))
+    except ValueError as exc:
+        assert "not allowed" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected backend allowlist failure")
+
+
+def test_depth_limit_is_enforced(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(depth=2))
+    except ValueError as exc:
+        assert "max_depth" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected max_depth failure")
+
+
+def test_spawn_subagent_capability_is_registered() -> None:
+    registry = CapabilityRegistry.load()
+    capability = registry.resolve_action("spawn_subagent")
+    assert capability is not None
+    assert capability.handler == "runtime.spawn_subagent"
+    assert capability.risk_level == "medium"
+
+
+def test_workflow_dispatch_spawns_subagent(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    write_yaml(
+        paths.workflows / "delegate.yaml",
+        {
+            "id": "delegate",
+            "name": "Delegate",
+            "steps": [
+                {
+                    "id": "spawn",
+                    "agent": "content_strategist",
+                    "action": "spawn_subagent",
+                    "input": _spawn_payload(),
+                    "output": "subagent.json",
+                }
+            ],
+        },
+    )
+    workflow = load_workflows(paths.workflows)["delegate"]
+    plan = plan_workflow(
+        workflow,
+        load_agents(paths.agents),
+        default_mode="autonomous",
+        registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+    )
+    assert plan["can_run"] is True
+    agent_yaml = paths.agents / "content_strategist.yaml"
+    agent_yaml.write_text(agent_yaml.read_text(encoding="utf-8") + "\npermission_mode: autonomous\n", encoding="utf-8")
+    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "delegate")
+    assert result["status"] == "completed"
+    assert result["outputs"]["spawn"]["status"] == "completed"
+    assert list_sessions(paths.sessions)
+
+
+def test_sessions_cli_smoke(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    session = spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload())
+    assert main(["--home", str(tmp_path), "sessions", "list"]) == 0
+    assert session.id in capsys.readouterr().out
+    assert main(["--home", str(tmp_path), "sessions", "inspect", session.id[:14]]) == 0
+    assert '"status": "completed"' in capsys.readouterr().out

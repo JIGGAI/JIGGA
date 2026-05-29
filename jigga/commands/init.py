@@ -24,6 +24,7 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
         paths.policies,
         paths.approvals,
         paths.runs,
+        paths.sessions,
     ]:
         ensure_dir(directory)
 
@@ -35,6 +36,15 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                 "home": str(paths.home),
                 "supervisor": {"interval_seconds": 60, "max_wakes_per_agent_per_hour": 12},
                 "defaults": {"memory_scope": "task_only", "permission_mode": "ask"},
+                "delegation_policy": {
+                    "enabled": True,
+                    "allowed_backends": ["dry_run"],
+                    "codex_cli_enabled": False,
+                    "max_global_subagents": 8,
+                    "max_subagents_per_parent": 4,
+                    "max_depth": 1,
+                    "default_runtime_minutes": 20,
+                },
                 "models": {
                     "defaults": {"provider": "dry_run"},
                     "providers": {
