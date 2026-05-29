@@ -144,16 +144,31 @@ def test_duplicate_user_action_resolution_is_first_wins(tmp_path: Path) -> None:
 
 
 def test_medium_risk_capability_requires_approval_under_ask_mode(tmp_path: Path) -> None:
+    # A user-local capability marked `medium` overrides the bundled `calendar`
+    # action so we can exercise the risk-level approval gate without depending
+    # on whatever the bundled capabilities' risk levels happen to be.
+    cap_dir = tmp_path / "capabilities" / "medium-calendar"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "medium-calendar",
+            "version": "1.0.0",
+            "summary": "Medium-risk shadow of the calendar capability.",
+            "actions": ["calendar.list_events"],
+            "risk_level": "medium",
+        },
+    )
     paths = init_runtime(tmp_path, examples=True)
-    workflow = load_workflows(paths.workflows)["social_content_syndication"]
+    workflow = load_workflows(paths.workflows)["morning_day_summary"]
     plan = plan_workflow(
         workflow,
         load_agents(paths.agents),
         default_mode="ask",
-        registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+        registry=CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities"),
     )
     first = plan["steps"][0]["policy"]
-    assert first["capability"] == "content-drafting"
+    assert first["capability"] == "medium-calendar"
     assert first["status"] == "needs_approval"
     assert first["permission"] == "capability.risk_level"
 

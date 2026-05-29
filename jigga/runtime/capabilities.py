@@ -134,7 +134,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
             "prepare_distribution_package",
         ],
         "permissions": {"filesystem": {"read": ["./content/**"], "write": ["./drafts/**"]}},
-        "risk_level": "medium",
+        "risk_level": "low",
         "handler": "dry_run.generic",
     },
 ]

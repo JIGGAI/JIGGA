@@ -169,14 +169,19 @@ def _validate_subagent_resource_policy(agent: AgentConfig, request: SpawnSubagen
         raise ValueError(cwd_decision.reason or "Subagent cwd is not allowed")
 
     filesystem = _subagent_filesystem_permissions(request)
+    # The subagent's requested read/write paths must each be within the
+    # parent's filesystem policy. This is the "stricter than parent" rule:
+    # a subagent cannot expand its parent's filesystem reach.
     for operation in ("read", "write"):
         for path in list(filesystem.get(operation, []) or []):
             decision = evaluate_filesystem(agent, path, operation=operation)
             if decision.status != "allow":
                 raise ValueError(decision.reason or f"Subagent filesystem {operation} is not allowed")
-    for path in list(filesystem.get("deny", []) or []):
-        if evaluate_filesystem(agent, path, operation="read").status == "allow":
-            raise ValueError(f"Subagent deny rule {path} overlaps with parent agent allow policy")
+    # The subagent's `deny` rules are *voluntary scope narrowing*. The spec
+    # explicitly endorses this ("Subagents should run with stricter permissions
+    # than parent agents"), so deny entries that cover parent-allowed paths are
+    # the useful case, not a violation. We accept them as-is and record them on
+    # the session for the adapter to honour.
 
     network = request.permissions.get("network") if isinstance(request.permissions, dict) else None
     if isinstance(network, dict) and str(network.get("mode", "deny")) not in {"deny", "disabled", "none"}:
