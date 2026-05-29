@@ -1,12 +1,12 @@
 """Shared subprocess sandbox primitives.
 
-JIGGA spawns subprocesses from two places today (`codex_cli` subagent backend
-and `mcp_server` capability handler) and is likely to grow more (claude_code
-adapter, browser tools, real notification senders). Each spawner historically
+JIGGA spawns subprocesses from a handful of places today (`codex_cli` and
+`claude_code` subagent backends, `mcp_server` capability handler) and will
+grow more (browser tools, real shell runner, etc.). Each spawner historically
 duplicated the env-allowlist + restricted-cwd + timeout pattern. This module
-centralizes that pattern so the next spawner inherits it for free, and so the
-single seam exists when OS-level isolation (firejail, bwrap, container, etc.)
-becomes a real requirement.
+centralizes it so the next spawner inherits it for free, and so the single
+seam exists when OS-level isolation (firejail, bwrap, container, etc.) becomes
+a real requirement.
 
 What this module is:
 - A `SandboxSpec` dataclass describing the bounded subprocess invocation.
@@ -22,6 +22,27 @@ What this module is NOT (yet):
 - It does not include audit emission. Each caller continues to emit its own
   domain-specific lifecycle events (`subagent.spawn.*`, `capability.invocation.*`)
   since the audit payload needs caller-specific context (session_id, run_id, etc.).
+
+Routing rule — what goes through this module and what doesn't:
+
+  External CLIs that act on the agent's behalf with their own credentials
+  (codex, claude, MCP servers, future shell runner, future headless browser)
+  → MUST use run_sandboxed.
+
+  Local UX tools that need the user's session env to function
+  (notify-send, osascript display notifications, future tray-icon helpers)
+  → MUST NOT use run_sandboxed.
+
+The reason: notification daemons and other local UX rely on `DISPLAY`,
+`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, etc. —
+exactly the env vars `build_restricted_env` strips. Sandboxing them buys no
+security (they don't act with the agent's authority on external systems) and
+breaks delivery.
+
+If you're about to spawn something and aren't sure which side it falls on,
+ask: "does this process act with the agent's authority on external systems,
+or just render output to the user's desktop?" Authority side: sandbox.
+Render side: don't.
 """
 
 from __future__ import annotations

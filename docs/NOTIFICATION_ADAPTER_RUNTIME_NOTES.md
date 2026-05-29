@@ -25,7 +25,15 @@ First real connector implementation, replacing the dry-run `notifications.send` 
 
 ## Why this handler does NOT go through `runtime.sandbox`
 
-Desktop notifications inherit the user's locale, X display (`DISPLAY`/`WAYLAND_DISPLAY`), notification daemon socket, and audio device — all of which live in env vars that `sandbox.build_restricted_env` would strip. These are local-UX tools, not bounded external CLIs, so the env scrub buys nothing and breaks delivery. Documented in `notifications.py` module docstring.
+Desktop notifications inherit the user's locale, X display (`DISPLAY` / `WAYLAND_DISPLAY`), notification daemon socket (`XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`), and audio device — all of which live in env vars that `sandbox.build_restricted_env` would strip. These are local-UX tools, not bounded external CLIs, so the env scrub buys nothing and breaks delivery.
+
+This is the first concrete instance of a general rule the runtime now follows:
+
+> **External CLIs that act with the agent's authority on external systems** (codex, claude, MCP servers, future shell runner, future headless browser) → MUST use `runtime.sandbox.run_sandboxed`.
+>
+> **Local UX tools that need the user's session env to function** (`notify-send`, `osascript`, future tray-icon helpers) → MUST NOT use `runtime.sandbox.run_sandboxed`.
+
+The rule lives in `jigga/runtime/sandbox.py`'s module docstring so anyone refactoring the subprocess paths sees it. The mental check when adding a new spawner: "does this process act with the agent's authority on external systems, or just render output to the user's desktop?" Authority side: sandbox. Render side: don't.
 
 ## Test mode
 

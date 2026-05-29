@@ -215,6 +215,33 @@ After that, the natural next two PRs are (i) project-local capability discovery 
 
 ---
 
+## Design conventions worth keeping
+
+These are rules the runtime has converged on. They aren't enforced by any test or linter today; they're conventions to apply when extending the system. Worth re-reading before a milestone that adds many new spawners, handlers, or capabilities.
+
+### Subprocess routing rule
+
+When adding a new subprocess invocation anywhere in the runtime, decide which side of this line it falls on:
+
+| Side | Examples | Rule |
+|---|---|---|
+| **Authority** — process acts on external systems with the agent's credentials | `codex_cli` / `claude_code` subagents, MCP servers, future shell runner, future headless browser | **MUST** use `runtime.sandbox.run_sandboxed`. Inherits env allowlist + cwd + timeout; one place to plug in OS-level isolation later. |
+| **Render** — process renders output to the user's local UX and needs the user's session env to function | `notify-send`, `osascript display notification`, future tray-icon helpers, future system audio output | **MUST NOT** use `runtime.sandbox.run_sandboxed`. Sandboxing strips `DISPLAY` / `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` which these tools need, and there's no security gain — they don't carry agent authority. |
+
+Mental check when introducing a new spawner: "does this process act with the agent's authority on external systems, or just render output to the user's desktop?" Authority side: sandbox. Render side: don't.
+
+The rule lives canonically in `jigga/runtime/sandbox.py`'s module docstring; this section mirrors it so reviewers see it during milestone planning, not only at refactor time.
+
+### Capability handler location rule
+
+Per-capability handlers belong in their own module under `jigga/runtime/` (e.g. `notifications.py`, `mcp_client.py`) and are registered into `dispatcher.HANDLERS` from there. The dispatcher itself should stay a routing layer — `_calendar_handler` / `_email_handler` / `_summarization_handler` are vestiges of the MVP shape and will move out as those connectors become real. Milestone A is where this naturally happens.
+
+### Audit-event naming rule
+
+Every action that crosses a trust boundary or external surface emits a JSONL audit event. Naming pattern: `<domain>.<verb>[.<modifier>]`. Existing examples — `subagent.spawn.planned/started/completed/failed`, `capability.invocation.started/completed`, `notification.delivered/failed`, `policy.evaluated`, `policy.denied`, `supervisor.cron_deduplicated`, `supervisor.wake_throttled`. New spawners and handlers should follow this shape so the future `jigga logs tail` / `jigga trace` CLI work uniformly.
+
+---
+
 ## Risk register
 
 A few sharp edges worth flagging now so they're not surprises:
