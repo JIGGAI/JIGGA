@@ -20,10 +20,15 @@ from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.capability_scanner import scan_capability
+from jigga.runtime.gog import (
+    DEFAULT_SERVICES,
+    gog_auth_status,
+    keyring_password_path,
+    run_gog_interactive,
+)
 from jigga.runtime.google_calendar import (
     client_config_path,
     delete_tokens,
-    get_valid_tokens,
     load_client_config,
     load_tokens,
     run_oauth_flow,
@@ -141,6 +146,20 @@ def build_parser() -> argparse.ArgumentParser:
     calendar_sub.add_parser("status", help="Show connection state for Google Calendar")
     calendar_sub.add_parser("login", help="Re-run OAuth login (refresh expired/revoked tokens)")
     calendar_sub.add_parser("logout", help="Delete stored Google Calendar tokens")
+
+    gog = sub.add_parser(
+        "gog", help="gog (Google Workspace) status / login / logout (requires capability install first)"
+    )
+    gog_sub = gog.add_subparsers(dest="gog_command", required=True)
+    gog_sub.add_parser("status", help="Show gogcli install + auth state")
+    gog_login = gog_sub.add_parser("login", help="Run/redo gog OAuth (gog auth add)")
+    gog_login.add_argument("email", help="Google account email to authenticate")
+    gog_login.add_argument(
+        "--services",
+        default=None,
+        help="Comma-separated services to authorize (default: gmail,calendar,drive)",
+    )
+    gog_sub.add_parser("logout", help="Remove stored gog keyring password (does not revoke Google access)")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -396,6 +415,35 @@ def main(argv: list[str] | None = None) -> int:
             if args.calendar_command == "logout":
                 removed = delete_tokens(paths.secrets)
                 print("Tokens removed." if removed else "No tokens to remove.")
+                return 0
+            return 0
+
+        if args.command == "gog":
+            paths = get_paths(args.home)
+            if args.gog_command == "status":
+                print_json(gog_auth_status(paths.secrets))
+                return 0
+            if args.gog_command == "login":
+                services = args.services or ",".join(DEFAULT_SERVICES)
+                exit_code = run_gog_interactive(
+                    paths.secrets, ["auth", "add", args.email, "--services", services]
+                )
+                if exit_code == 0:
+                    print("gog login complete.")
+                else:
+                    print(f"gog login failed (exit {exit_code}).", file=sys.stderr)
+                return exit_code
+            if args.gog_command == "logout":
+                pw_path = keyring_password_path(paths.secrets)
+                if pw_path.exists():
+                    pw_path.unlink()
+                    print(
+                        "Removed JIGGA's stored gog keyring password. "
+                        "This does NOT revoke Google access — run `gog auth remove` "
+                        "or revoke in your Google account to fully disconnect."
+                    )
+                else:
+                    print("No stored gog keyring password to remove.")
                 return 0
             return 0
 
