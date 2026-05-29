@@ -8,7 +8,7 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.capabilities import CapabilityRegistry
-from jigga.runtime.dispatcher import execute_step
+from jigga.runtime.dispatcher import evaluate_capability_permissions, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.policy import evaluate_workflow_step, resolve_permission_mode
 
@@ -36,6 +36,19 @@ def _step_policy(
         status = "blocked"
         reason = f"No capability registered for workflow action: {step.action}"
         permission = "capability.available"
+    elif status == "allow" and capability is not None and capability.risk_level in {"medium", "high"} and mode != "autonomous":
+        status = "needs_approval"
+        reason = f"Capability {capability.name} risk_level={capability.risk_level} requires approval."
+        permission = "capability.risk_level"
+    elif status == "allow" and capability is not None:
+        capability_decision = evaluate_capability_permissions(capability, agent)
+        if capability_decision.status == "allow":
+            reason = decision.reason
+            permission = decision.permission
+        else:
+            status = {"ask": "needs_approval", "deny": "blocked"}[capability_decision.status]
+            reason = capability_decision.reason
+            permission = capability_decision.permission
     else:
         reason = decision.reason
         permission = decision.permission

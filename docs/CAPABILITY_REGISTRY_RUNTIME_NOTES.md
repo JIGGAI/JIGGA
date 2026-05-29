@@ -30,12 +30,19 @@ Bundled capabilities currently cover the MVP demo actions:
 - `summarization`
 - `content-drafting`
 
-Handlers are still dry-run implementations, but action resolution, plan metadata, audit events, and failure behavior now go through the capability seam.
+Handlers are still dry-run implementations, but action resolution, plan metadata, audit events, and failure behavior now go through the capability seam. Bundled/user-local capability metadata includes `bundled`, `handler`, and `manifest_hash` fields so future UI and approval flows can distinguish built-in packs from user-installed packs and detect manifest changes.
+
+## Safety gates in this slice
+
+- Symlinked manifests are rejected.
+- User-local manifest SHA-256 hashes are recorded in registry output.
+- Medium/high risk capabilities require approval unless the effective agent permission mode is `autonomous`.
+- Declared filesystem permissions are checked against the executing agent's filesystem policy before workflow steps run.
 
 ## Follow-up work
 
 - Add project-local capability paths.
-- Add capability install/plan/apply flow.
+- Add capability install/plan/apply flow and persistent first-use approval records for user-local packs.
 - Move built-in capability manifests to package data files once the manifest shape stabilizes.
 - Replace dry-run handlers with real adapters behind the same dispatcher contract.
 - Build elastic delegation as a `spawn_subagent` capability/tool on top of this registry.

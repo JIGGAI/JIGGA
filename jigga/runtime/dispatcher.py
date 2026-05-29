@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from jigga.core.io import ensure_dir, write_json
-from jigga.core.models import WorkflowStep
+from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
+from jigga.runtime.policy import PolicyDecision, evaluate_filesystem
 
 
 def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
@@ -19,26 +20,60 @@ def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
     return value
 
 
-def _dry_run_output(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
+def evaluate_capability_permissions(capability: CapabilityManifest, agent: AgentConfig | None) -> PolicyDecision:
+    if agent is None:
+        return PolicyDecision("deny", "No agent configured for capability permission check.", "agent.available")
+    filesystem = capability.permissions.get("filesystem") if isinstance(capability.permissions, dict) else None
+    if isinstance(filesystem, dict):
+        for operation in ("read", "write"):
+            for path in list(filesystem.get(operation, []) or []):
+                decision = evaluate_filesystem(agent, path, operation=operation)
+                if decision.status != "allow":
+                    return decision
+    return PolicyDecision("allow")
+
+
+def _calendar_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
     if step.action == "calendar.list_events":
         return [
             {"time": "09:30", "title": "Planning block", "source": "capability.dry_run"},
             {"time": "14:00", "title": "Project review", "source": "capability.dry_run"},
         ]
     if step.action == "calendar.get_event":
-        return {"title": "Project review", "time": "14:00", "source": "capability.dry_run"}
-    if step.action == "email.search":
-        return [{"from": "client@example.com", "subject": "Launch follow-up", "source": "capability.dry_run"}]
-    if step.action in {"summarize_day", "summarize_relevant_context"}:
-        return {"summary": f"MVP summary for {step.id}", "input": resolved_input, "memory_context": context}
-    if step.action == "notifications.send":
-        return {"dry_run": True, "delivered": False, "input": resolved_input}
+        return {"title": "Project review", "time": "14:00", "source": "capability.dry_run", "input": resolved_input}
+    return _generic_handler(step, _capability, resolved_input, _context)
+
+
+def _email_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+    return [{"from": "client@example.com", "subject": "Launch follow-up", "source": "capability.dry_run", "input": resolved_input}]
+
+
+def _notifications_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+    return {"dry_run": True, "delivered": False, "source": "capability.dry_run", "input": resolved_input}
+
+
+def _summarization_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
+    return {"summary": f"MVP summary for {step.id}", "source": "capability.dry_run", "input": resolved_input, "memory_context": context}
+
+
+def _generic_handler(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
     return {
         "dry_run": True,
+        "source": "capability.dry_run",
         "capability": capability.name,
         "action": step.action,
         "input": resolved_input,
     }
+
+
+Handler = Callable[[WorkflowStep, CapabilityManifest, Any, dict[str, Any]], Any]
+HANDLERS: dict[str, Handler] = {
+    "dry_run.calendar": _calendar_handler,
+    "dry_run.email": _email_handler,
+    "dry_run.notifications": _notifications_handler,
+    "dry_run.summarization": _summarization_handler,
+    "dry_run.generic": _generic_handler,
+}
 
 
 def execute_step(
@@ -66,8 +101,12 @@ def execute_step(
         action=step.action,
         capability=capability.name,
         risk_level=capability.risk_level,
+        handler=capability.handler,
     )
-    output = _dry_run_output(step, capability, resolved_input, context)
+    handler = HANDLERS.get(capability.handler)
+    if handler is None:
+        raise ValueError(f"No handler registered for capability {capability.name}: {capability.handler}")
+    output = handler(step, capability, resolved_input, context)
 
     artifact = None
     if step.output:
@@ -85,6 +124,7 @@ def execute_step(
         step=step.id,
         action=step.action,
         capability=capability.name,
+        handler=capability.handler,
         artifact=str(artifact) if artifact else None,
     )
     return output, artifact

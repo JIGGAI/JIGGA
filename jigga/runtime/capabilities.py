@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,11 +20,19 @@ class CapabilityManifest:
     requires: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
     risk_level: str = "low"
+    handler: str = "dry_run.generic"
     source: str | None = None
+    manifest_hash: str | None = None
     bundled: bool = False
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], source: str | None = None, bundled: bool = False) -> "CapabilityManifest":
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        source: str | None = None,
+        bundled: bool = False,
+        manifest_hash: str | None = None,
+    ) -> "CapabilityManifest":
         missing = [key for key in ("name", "version", "summary", "actions") if not data.get(key)]
         if missing:
             raise ValueError(f"Capability manifest missing required fields: {', '.join(missing)}")
@@ -42,7 +51,9 @@ class CapabilityManifest:
             requires=dict(data.get("requires") or {}),
             permissions=dict(data.get("permissions") or {}),
             risk_level=risk,
+            handler=str(data.get("handler", "dry_run.generic")),
             source=source,
+            manifest_hash=manifest_hash,
             bundled=bundled,
         )
 
@@ -56,7 +67,9 @@ class CapabilityManifest:
             "requires": self.requires,
             "permissions": self.permissions,
             "risk_level": self.risk_level,
+            "handler": self.handler,
             "source": self.source,
+            "manifest_hash": self.manifest_hash,
             "bundled": self.bundled,
         }
 
@@ -69,6 +82,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "actions": ["calendar.list_events", "calendar.get_event"],
         "permissions": {"calendar": "read"},
         "risk_level": "low",
+        "handler": "dry_run.calendar",
     },
     {
         "name": "email",
@@ -77,6 +91,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "actions": ["email.search"],
         "permissions": {"email": "read"},
         "risk_level": "low",
+        "handler": "dry_run.email",
     },
     {
         "name": "notifications",
@@ -85,6 +100,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "actions": ["notifications.send"],
         "permissions": {"notifications": "send"},
         "risk_level": "low",
+        "handler": "dry_run.notifications",
     },
     {
         "name": "summarization",
@@ -93,6 +109,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "actions": ["summarize_day", "summarize_relevant_context"],
         "permissions": {"memory": "read"},
         "risk_level": "low",
+        "handler": "dry_run.summarization",
     },
     {
         "name": "content-drafting",
@@ -108,6 +125,7 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         ],
         "permissions": {"filesystem": {"read": ["./content/**"], "write": ["./drafts/**"]}},
         "risk_level": "medium",
+        "handler": "dry_run.generic",
     },
 ]
 
@@ -116,8 +134,23 @@ def bundled_capabilities() -> list[CapabilityManifest]:
     return [CapabilityManifest.from_dict(item, source="builtin", bundled=True) for item in BUILTIN_CAPABILITY_DATA]
 
 
+def _manifest_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _reject_symlinked_manifest(path: Path) -> None:
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError(f"Capability manifest cannot be a symlink or live under a symlinked directory: {path}")
+
+
 def load_capability_manifest(path: Path) -> CapabilityManifest:
-    return CapabilityManifest.from_dict(read_yaml(path), source=str(path), bundled=False)
+    _reject_symlinked_manifest(path)
+    return CapabilityManifest.from_dict(
+        read_yaml(path),
+        source=str(path),
+        bundled=False,
+        manifest_hash=_manifest_hash(path),
+    )
 
 
 def scan_capability_dir(path: Path) -> list[CapabilityManifest]:

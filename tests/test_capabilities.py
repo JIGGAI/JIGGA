@@ -91,3 +91,126 @@ def test_capabilities_cli_smoke(tmp_path: Path, capsys) -> None:
     assert "calendar.list_events" in capsys.readouterr().out
     assert main(["--home", str(tmp_path), "capabilities", "inspect", "calendar"]) == 0
     assert '"name": "calendar"' in capsys.readouterr().out
+
+
+def test_user_capability_manifest_hash_is_recorded(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities" / "custom-calendar"
+    cap_dir.mkdir(parents=True)
+    manifest = cap_dir / "manifest.yaml"
+    write_yaml(
+        manifest,
+        {
+            "name": "custom-calendar",
+            "version": "1.0.0",
+            "summary": "Custom calendar adapter.",
+            "actions": ["calendar.list_events"],
+        },
+    )
+    capability = load_capability_manifest(manifest)
+    assert capability.manifest_hash is not None
+    assert len(capability.manifest_hash) == 64
+
+
+def test_symlinked_capability_manifest_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target.yaml"
+    write_yaml(target, {"name": "x", "version": "1", "summary": "x", "actions": ["x.y"]})
+    link_dir = tmp_path / "capabilities" / "linked"
+    link_dir.mkdir(parents=True)
+    link = link_dir / "manifest.yaml"
+    link.symlink_to(target)
+    try:
+        load_capability_manifest(link)
+    except ValueError as exc:
+        assert "symlink" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected symlink rejection")
+
+
+def test_duplicate_user_action_resolution_is_first_wins(tmp_path: Path) -> None:
+    for name in ("aaa-first", "zzz-second"):
+        cap_dir = tmp_path / "capabilities" / name
+        cap_dir.mkdir(parents=True)
+        write_yaml(
+            cap_dir / "manifest.yaml",
+            {
+                "name": name,
+                "version": "1.0.0",
+                "summary": name,
+                "actions": ["demo.action"],
+            },
+        )
+    registry = CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities")
+    assert registry.resolve_action("demo.action").name == "aaa-first"
+
+
+def test_medium_risk_capability_requires_approval_under_ask_mode(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    workflow = load_workflows(paths.workflows)["social_content_syndication"]
+    plan = plan_workflow(
+        workflow,
+        load_agents(paths.agents),
+        default_mode="ask",
+        registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+    )
+    first = plan["steps"][0]["policy"]
+    assert first["capability"] == "content-drafting"
+    assert first["status"] == "needs_approval"
+    assert first["permission"] == "capability.risk_level"
+
+
+def test_medium_risk_capability_can_run_under_autonomous_mode(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities" / "medium-demo"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "medium-demo",
+            "version": "1.0.0",
+            "summary": "Medium risk with no resource permissions.",
+            "actions": ["calendar.list_events"],
+            "risk_level": "medium",
+        },
+    )
+    paths = init_runtime(tmp_path, examples=True)
+    workflow = load_workflows(paths.workflows)["morning_day_summary"]
+    plan = plan_workflow(
+        workflow,
+        load_agents(paths.agents),
+        default_mode="autonomous",
+        registry=CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities"),
+    )
+    first = plan["steps"][0]["policy"]
+    assert first["capability"] == "medium-demo"
+    assert first["status"] == "allow"
+
+
+def test_capability_filesystem_permissions_are_checked_against_agent_policy(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities" / "writer"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "writer",
+            "version": "1.0.0",
+            "summary": "Writes files.",
+            "actions": ["writer.write"],
+            "permissions": {"filesystem": {"write": ["/outside"]}},
+            "risk_level": "low",
+        },
+    )
+    paths = init_runtime(tmp_path, examples=True)
+    write_yaml(
+        paths.workflows / "writer.yaml",
+        {
+            "id": "writer",
+            "name": "Writer",
+            "steps": [{"id": "write", "agent": "daily_briefing_agent", "action": "writer.write"}],
+        },
+    )
+    plan = plan_workflow(
+        load_workflows(paths.workflows)["writer"],
+        load_agents(paths.agents),
+        registry=CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities"),
+    )
+    assert plan["can_run"] is False
+    assert plan["steps"][0]["policy"]["permission"] == "filesystem.write"
