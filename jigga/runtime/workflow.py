@@ -7,6 +7,8 @@ from jigga.core.config import default_permission_mode, load_agents, load_workflo
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.runtime.audit import append_event, new_id
+from jigga.runtime.capabilities import CapabilityRegistry
+from jigga.runtime.dispatcher import execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.policy import evaluate_workflow_step, resolve_permission_mode
 
@@ -21,6 +23,7 @@ def _step_policy(
     workflow: WorkflowConfig,
     agents: dict[str, AgentConfig],
     default_mode: str,
+    registry: CapabilityRegistry | None = None,
 ) -> dict[str, str | None]:
     agent = agents.get(step.agent or "")
     decision = evaluate_workflow_step(step, agent, default_mode=default_mode)
@@ -28,11 +31,21 @@ def _step_policy(
     if decision.status == "allow" and step.agent and step.agent not in agents and step.optional:
         status = "skipped"
     mode = resolve_permission_mode(agent, default_mode) if agent else None
+    capability = registry.resolve_action(step.action) if registry else None
+    if status == "allow" and registry is not None and capability is None:
+        status = "blocked"
+        reason = f"No capability registered for workflow action: {step.action}"
+        permission = "capability.available"
+    else:
+        reason = decision.reason
+        permission = decision.permission
     return {
         "status": status,
-        "reason": decision.reason,
-        "permission": decision.permission,
+        "reason": reason,
+        "permission": permission,
         "permission_mode": mode,
+        "capability": capability.name if capability else None,
+        "risk_level": capability.risk_level if capability else None,
     }
 
 
@@ -40,6 +53,7 @@ def plan_workflow(
     workflow: WorkflowConfig,
     agents: dict[str, AgentConfig],
     default_mode: str = "ask",
+    registry: CapabilityRegistry | None = None,
 ) -> dict[str, Any]:
     steps = []
     for step in workflow.steps:
@@ -51,7 +65,7 @@ def plan_workflow(
                 "output": step.output,
                 "optional": step.optional,
                 "approval": step.approval or "not_required",
-                "policy": _step_policy(step, workflow, agents, default_mode),
+                "policy": _step_policy(step, workflow, agents, default_mode, registry),
             }
         )
     return {
@@ -71,57 +85,16 @@ def plan_workflow(
     }
 
 
-def _resolve(value: Any, outputs: dict[str, Any]) -> Any:
-    if isinstance(value, str):
-        return outputs.get(value, value)
-    if isinstance(value, list):
-        return [_resolve(item, outputs) for item in value]
-    if isinstance(value, dict):
-        return {key: _resolve(item, outputs) for key, item in value.items()}
-    return value
-
-
-def _execute_step(step: WorkflowStep, run_dir: Path, outputs: dict[str, Any], context: dict[str, Any]) -> tuple[Any, Path | None]:
-    ensure_dir(run_dir)
-    resolved_input = _resolve(step.input, outputs)
-    if step.action == "calendar.list_events":
-        output = [
-            {"time": "09:30", "title": "Planning block", "source": "stub"},
-            {"time": "14:00", "title": "Project review", "source": "stub"},
-        ]
-        return output, None
-    if step.action == "email.search":
-        output = [{"from": "client@example.com", "subject": "Launch follow-up", "source": "stub"}]
-        return output, None
-    if step.action in {"summarize_day", "summarize_relevant_context"}:
-        output = {
-            "summary": f"MVP summary for {step.id}",
-            "input": resolved_input,
-            "memory_context": context,
-        }
-    elif step.action == "notifications.send":
-        output = {"dry_run": True, "delivered": False, "input": resolved_input}
-    else:
-        output = {"dry_run": True, "action": step.action, "input": resolved_input}
-
-    artifact = None
-    if step.output:
-        artifact = run_dir / step.output
-        if artifact.suffix in {".md", ".txt"}:
-            artifact.write_text(str(output), encoding="utf-8")
-        else:
-            write_json(artifact, output)
-    return output, artifact
-
 
 def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Path, memory_dir: Path, workflow_id: str) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
+    registry = CapabilityRegistry.load(user_capabilities=home / "capabilities")
     workflow = workflows.get(workflow_id)
     if workflow is None:
         raise ValueError(f"Workflow not found: {workflow_id}")
 
-    plan = plan_workflow(workflow, agents, default_mode=default_permission_mode(home))
+    plan = plan_workflow(workflow, agents, default_mode=default_permission_mode(home), registry=registry)
     if not plan["can_run"]:
         status = "needs_approval" if any(step["policy"]["status"] == "needs_approval" for step in plan["steps"]) else "blocked"
         append_event(logs_dir, "workflow.plan_blocked", status=status, workflow=workflow_id, plan=plan)
@@ -142,7 +115,7 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
         scope = agent.memory_scope if agent and agent.memory_scope else "task_only"
         context = build_context_package(memory_dir, scope)
         append_event(logs_dir, "workflow.step.started", workflow=workflow_id, run_id=run_id, step=step.id, agent=step.agent)
-        output, artifact = _execute_step(step, run_dir, outputs, context)
+        output, artifact = execute_step(step, run_dir, outputs, context, registry, logs_dir, workflow_id, run_id)
         outputs[step.id] = output
         if step.output:
             outputs[step.output] = output

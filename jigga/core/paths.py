@@ -14,6 +14,7 @@ class JiggaPaths:
     teams: Path
     workflows: Path
     tasks: Path
+    capabilities: Path
     memory: Path
     logs: Path
     policies: Path
@@ -36,6 +37,7 @@ def get_paths(home: str | Path | None = None) -> JiggaPaths:
         teams=root / "teams",
         workflows=root / "workflows",
         tasks=root / "tasks",
+        capabilities=root / "capabilities",
         memory=root / "memory",
         logs=root / "logs",
         policies=root / "policies",

@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from jigga.cli import main
+from jigga.commands.init import init_runtime
+from jigga.core.config import load_agents, load_workflows
+from jigga.core.io import write_yaml
+from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest
+from jigga.runtime.workflow import plan_workflow, run_workflow
+
+
+def test_registry_loads_bundled_capabilities() -> None:
+    registry = CapabilityRegistry.load()
+    calendar = registry.get("calendar")
+    assert calendar is not None
+    assert registry.resolve_action("calendar.list_events") == calendar
+    assert registry.resolve_action("notifications.send").name == "notifications"
+
+
+def test_user_capability_overrides_bundled_action(tmp_path: Path) -> None:
+    cap_dir = tmp_path / "capabilities" / "custom-calendar"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "custom-calendar",
+            "version": "1.0.0",
+            "summary": "Custom calendar adapter.",
+            "actions": ["calendar.list_events"],
+            "risk_level": "medium",
+        },
+    )
+    registry = CapabilityRegistry.load(user_capabilities=tmp_path / "capabilities")
+    assert registry.resolve_action("calendar.list_events").name == "custom-calendar"
+
+
+def test_capability_manifest_validation_requires_actions(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.yaml"
+    write_yaml(manifest, {"name": "broken", "version": "0.1.0", "summary": "No actions"})
+    try:
+        load_capability_manifest(manifest)
+    except ValueError as exc:
+        assert "actions" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected validation failure")
+
+
+def test_workflow_plan_surfaces_capability_metadata(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    workflow = load_workflows(paths.workflows)["morning_day_summary"]
+    plan = plan_workflow(
+        workflow,
+        load_agents(paths.agents),
+        registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
+    )
+    assert plan["can_run"] is True
+    first = plan["steps"][0]["policy"]
+    assert first["capability"] == "calendar"
+    assert first["risk_level"] == "low"
+
+
+def test_workflow_run_dispatches_through_capabilities(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    assert result["status"] == "completed"
+    assert result["outputs"]["read_calendar"][0]["source"] == "capability.dry_run"
+    logs = "\n".join(item.read_text(encoding="utf-8") for item in paths.logs.glob("*.jsonl"))
+    assert "capability.invocation.started" in logs
+    assert "capability.invocation.completed" in logs
+
+
+def test_unknown_workflow_action_blocks_cleanly(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    write_yaml(
+        paths.workflows / "unknown.yaml",
+        {
+            "id": "unknown",
+            "name": "Unknown",
+            "steps": [{"id": "do_it", "agent": "daily_briefing_agent", "action": "missing.action"}],
+        },
+    )
+    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "unknown")
+    assert result["status"] == "blocked"
+    assert result["plan"]["steps"][0]["policy"]["permission"] == "capability.available"
+
+
+def test_capabilities_cli_smoke(tmp_path: Path, capsys) -> None:
+    assert main(["--home", str(tmp_path), "init", "--examples"]) == 0
+    assert main(["--home", str(tmp_path), "capabilities", "list"]) == 0
+    assert "calendar.list_events" in capsys.readouterr().out
+    assert main(["--home", str(tmp_path), "capabilities", "inspect", "calendar"]) == 0
+    assert '"name": "calendar"' in capsys.readouterr().out

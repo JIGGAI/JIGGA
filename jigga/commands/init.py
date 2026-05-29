@@ -15,6 +15,7 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
         paths.teams,
         paths.workflows,
         paths.tasks,
+        paths.capabilities,
         paths.memory / "raw",
         paths.memory / "structured",
         paths.memory / "summaries",
