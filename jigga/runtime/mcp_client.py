@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 from typing import Any
+
+from jigga.runtime.sandbox import SandboxSpec, run_sandboxed
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -65,15 +66,15 @@ def _parse_responses(stdout: str) -> list[dict[str, Any]]:
 
 
 def call_mcp_tool(
-    command: str,
-    args: list[str],
-    env: dict[str, str],
-    cwd: str | Path,
+    spec: SandboxSpec,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
-    timeout_seconds: float = 30.0,
 ) -> dict[str, Any]:
     """Dispatch a single MCP tool call against a stdio server.
+
+    The subprocess invocation (env allowlist, cwd, timeout, argv) is described
+    by the SandboxSpec; this function owns only the MCP framing (JSON-RPC
+    messages over stdio and response parsing).
 
     Returns the `result` payload from the `tools/call` response. Raises
     `RuntimeError` on protocol errors, non-zero exit codes whose stdout
@@ -84,19 +85,10 @@ def call_mcp_tool(
     input_text = "\n".join(json.dumps(message) for message in messages) + "\n"
 
     try:
-        completed = subprocess.run(
-            [command, *args],
-            input=input_text,
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=str(cwd),
-            timeout=timeout_seconds,
-            check=False,
-        )
+        completed = run_sandboxed(spec, input=input_text)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
-            f"MCP server {command} timed out after {timeout_seconds}s"
+            f"MCP server {spec.command} timed out after {spec.timeout_seconds}s"
         ) from exc
 
     responses = _parse_responses(completed.stdout)
@@ -104,7 +96,7 @@ def call_mcp_tool(
     if tool_response is None:
         detail = completed.stderr.strip() or completed.stdout.strip() or "no output"
         raise RuntimeError(
-            f"MCP server {command} did not respond to tools/call "
+            f"MCP server {spec.command} did not respond to tools/call "
             f"(exit_code={completed.returncode}): {detail[:500]}"
         )
     if "error" in tool_response:

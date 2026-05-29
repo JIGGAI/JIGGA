@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +25,7 @@ from jigga.runtime.policy import (
     evaluate_network,
     evaluate_resource_permission,
 )
+from jigga.runtime.sandbox import SandboxSpec, build_restricted_env
 from jigga.runtime.subagents import spawn_subagent
 
 # Capabilities declare flat scalar permissions like `{calendar: "read"}` or
@@ -33,11 +33,6 @@ from jigga.runtime.subagents import spawn_subagent
 # Filesystem and network use their own structured evaluators. Memory is handled
 # separately via memory_scope. Delegation is enforced inside spawn_subagent.
 SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications")
-
-# Environment allowlist passed to MCP server subprocesses. Mirrors the
-# subagent restricted-env policy: only well-known shell env vars plus any
-# secret explicitly requested via the manifest's permissions.secrets.required.
-_MCP_BASE_ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TERM"})
 
 
 @dataclass(frozen=True)
@@ -279,23 +274,21 @@ def _skill_pack_handler(
     }
 
 
-def _mcp_restricted_env(capability: CapabilityManifest) -> dict[str, str]:
-    """Build the env passed to an MCP server subprocess.
-
-    Mirrors the subagent restricted-env policy: only well-known shell vars by
-    default, plus any secret explicitly requested via
-    `permissions.secrets.required`. Prevents the MCP server from accidentally
-    inheriting unrelated API keys exported in the caller's shell.
-    """
-    allowed = set(_MCP_BASE_ENV_ALLOWLIST)
+def _capability_secrets_required(capability: CapabilityManifest) -> list[str]:
     secrets = (
         capability.permissions.get("secrets")
         if isinstance(capability.permissions, dict)
         else None
     )
     if isinstance(secrets, dict):
-        allowed.update(str(item) for item in secrets.get("required", []) or [])
-    return {key: value for key, value in os.environ.items() if key in allowed}
+        return [str(item) for item in (secrets.get("required") or [])]
+    return []
+
+
+def _mcp_restricted_env(capability: CapabilityManifest) -> dict[str, str]:
+    """Thin wrapper that delegates to runtime.sandbox. Kept for backwards-compat
+    in case callers want the env dict without spawning a process."""
+    return build_restricted_env(_capability_secrets_required(capability))
 
 
 def _mcp_server_handler(
@@ -324,26 +317,23 @@ def _mcp_server_handler(
     else:
         cwd = runtime.home
 
-    env = _mcp_restricted_env(capability)
     arguments = (
         resolved_input
         if isinstance(resolved_input, dict)
         else {"input": resolved_input}
     )
-    timeout = float(
-        capability.requires.get("timeout_seconds", 30)
-        if isinstance(capability.requires, dict)
-        else 30
-    )
-    result = call_mcp_tool(
+    spec = SandboxSpec(
         command=capability.command,
-        args=capability.args,
-        env=env,
+        args=list(capability.args),
         cwd=cwd,
-        tool_name=step.action,
-        arguments=arguments,
-        timeout_seconds=timeout,
+        secrets_required=_capability_secrets_required(capability),
+        timeout_seconds=float(
+            capability.requires.get("timeout_seconds", 30)
+            if isinstance(capability.requires, dict)
+            else 30
+        ),
     )
+    result = call_mcp_tool(spec, tool_name=step.action, arguments=arguments)
     return {
         "source": "capability.mcp_server",
         "capability": capability.name,

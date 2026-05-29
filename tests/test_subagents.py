@@ -75,6 +75,38 @@ def test_backend_allowlist_blocks_codex_by_default(tmp_path: Path) -> None:
         raise AssertionError("Expected backend allowlist failure")
 
 
+def test_backend_allowlist_blocks_claude_code_by_default(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(backend="claude_code"))
+    except ValueError as exc:
+        assert "not allowed" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected backend allowlist failure")
+
+
+def test_claude_code_requires_global_flag_even_when_on_agent_allowlist(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    # Add claude_code to the agent's allowed_backends; the global flag should
+    # still be required.
+    agent_yaml = paths.agents / "content_strategist.yaml"
+    agent_yaml.write_text(
+        agent_yaml.read_text(encoding="utf-8").replace(
+            "allowed_backends:\n    - dry_run",
+            "allowed_backends:\n    - dry_run\n    - claude_code",
+        ),
+        encoding="utf-8",
+    )
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(backend="claude_code"))
+    except ValueError as exc:
+        assert "claude_code_enabled" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected global flag failure")
+
+
 def test_depth_limit_is_enforced(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     agent = load_agents(paths.agents)["content_strategist"]
