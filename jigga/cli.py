@@ -11,6 +11,7 @@ from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
+from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.model_router import build_task_model_request, call_model
@@ -64,6 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = sub.add_parser("validate", help="Validate runtime configs")
     validate.add_argument("--json", action="store_true", dest="json_output")
+
+    capabilities = sub.add_parser("capabilities", help="Inspect capability registry")
+    capabilities_sub = capabilities.add_subparsers(dest="capabilities_command", required=True)
+    capabilities_sub.add_parser("list", help="List registered capabilities")
+    capability_inspect = capabilities_sub.add_parser("inspect", help="Inspect a registered capability")
+    capability_inspect.add_argument("name")
+    capability_validate = capabilities_sub.add_parser("validate", help="Validate a capability manifest")
+    capability_validate.add_argument("path", type=Path)
 
     scheduler = sub.add_parser("scheduler", help="Inspect scheduler due events")
     scheduler_sub = scheduler.add_subparsers(dest="scheduler_command", required=True)
@@ -150,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
                     workflow,
                     load_agents(paths.agents),
                     default_mode=default_permission_mode(paths.home),
+                    registry=CapabilityRegistry.load(user_capabilities=paths.capabilities),
                 )
                 if args.json_output:
                     print_json(plan)
@@ -191,6 +201,21 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 for kind, values in result.items():
                     print(f"{kind}: {', '.join(values) if values else 'none'}")
+            return 0
+
+        if args.command == "capabilities":
+            paths = get_paths(args.home)
+            registry = CapabilityRegistry.load(user_capabilities=paths.capabilities)
+            if args.capabilities_command == "list":
+                print_json(registry.to_index())
+            elif args.capabilities_command == "inspect":
+                capability = registry.get(args.name)
+                if capability is None:
+                    raise ValueError(f"Capability not found: {args.name}")
+                print_json(capability.to_dict())
+            elif args.capabilities_command == "validate":
+                capability = load_capability_manifest(args.path)
+                print_json({"status": "valid", "capability": capability.to_dict()})
             return 0
 
         if args.command == "scheduler":
