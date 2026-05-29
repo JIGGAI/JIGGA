@@ -107,6 +107,52 @@ def test_capabilities_cli_smoke(tmp_path: Path, capsys) -> None:
     assert '"name": "calendar"' in capsys.readouterr().out
 
 
+def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> None:
+    # A user-local capability declares its handler as `module.path:function`.
+    # The dispatcher imports it lazily and calls it. This is the extensibility
+    # path: third-party packs no longer need to monkey-patch HANDLERS.
+    paths = init_runtime(tmp_path, examples=True)
+    cap_dir = paths.capabilities / "custom-pack"
+    cap_dir.mkdir(parents=True)
+    write_yaml(
+        cap_dir / "manifest.yaml",
+        {
+            "name": "custom-pack",
+            "version": "1.0.0",
+            "summary": "Imports its handler dynamically.",
+            "actions": ["custom.run"],
+            "handler": "tests.fixtures.capability_handlers:custom_handler",
+            "risk_level": "low",
+        },
+    )
+    write_yaml(
+        paths.workflows / "custom.yaml",
+        {
+            "id": "custom",
+            "name": "Custom",
+            "steps": [{"id": "run_custom", "agent": "daily_briefing_agent", "action": "custom.run"}],
+        },
+    )
+    result = run_workflow(
+        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "custom"
+    )
+    assert result["status"] == "completed"
+    assert result["outputs"]["run_custom"]["marker"] == "custom_handler_was_called"
+
+
+def test_dispatcher_rejects_invalid_handler_paths() -> None:
+    import pytest
+
+    from jigga.runtime.dispatcher import resolve_handler
+
+    with pytest.raises(ValueError, match="Cannot import"):
+        resolve_handler("nonexistent_module_xyz:run")
+    with pytest.raises(ValueError, match="must be either"):
+        resolve_handler("only_module_no_colon")
+    with pytest.raises(ValueError, match="resolved to non-callable"):
+        resolve_handler("tests.fixtures.capability_handlers:__doc__")
+
+
 def test_user_capability_manifest_hash_is_recorded(tmp_path: Path) -> None:
     cap_dir = tmp_path / "capabilities" / "custom-calendar"
     cap_dir.mkdir(parents=True)

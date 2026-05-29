@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -188,6 +190,45 @@ HANDLERS: dict[str, Handler] = {
 }
 
 
+@lru_cache(maxsize=64)
+def _import_handler(path: str) -> Handler:
+    """Resolve a `module.path:function` style handler reference.
+
+    User-local capability manifests can declare a dotted import path so they
+    don't have to register inside `HANDLERS`. Built-in handlers continue to use
+    the short string keys for backwards-compat and to avoid making the dispatch
+    surface dependent on package layout. Cached to avoid repeat import cost.
+
+    Trust boundary: the import target is fully under the user's control via
+    the manifest. First-use approval for user-local packs (see capability
+    approvals mechanism) is what gates trust. The runtime does not validate
+    that the imported callable is safe.
+    """
+    if ":" not in path:
+        raise ValueError(
+            f"Handler {path!r} must be either a built-in key in HANDLERS or a "
+            "'module.path:function' import reference."
+        )
+    module_name, _, function_name = path.partition(":")
+    if not module_name or not function_name:
+        raise ValueError(f"Invalid handler import reference: {path!r}")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(f"Cannot import handler module {module_name!r}: {exc}") from exc
+    handler = getattr(module, function_name, None)
+    if not callable(handler):
+        raise ValueError(f"Handler {path!r} resolved to non-callable: {type(handler).__name__}")
+    return handler
+
+
+def resolve_handler(name: str) -> Handler:
+    handler = HANDLERS.get(name)
+    if handler is not None:
+        return handler
+    return _import_handler(name)
+
+
 def execute_step(
     step: WorkflowStep,
     run_dir: Path,
@@ -216,9 +257,12 @@ def execute_step(
         risk_level=capability.risk_level,
         handler=capability.handler,
     )
-    handler = HANDLERS.get(capability.handler)
-    if handler is None:
-        raise ValueError(f"No handler registered for capability {capability.name}: {capability.handler}")
+    try:
+        handler = resolve_handler(capability.handler)
+    except ValueError as exc:
+        raise ValueError(
+            f"No handler registered for capability {capability.name}: {capability.handler} ({exc})"
+        ) from exc
     output = handler(step, capability, resolved_input, memory_context, runtime)
 
     artifact = None
