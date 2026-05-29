@@ -483,23 +483,31 @@ def resolve_handler(name: str) -> Handler:
     return _import_handler(name)
 
 
-def execute_step(
+def dispatch_action(
     step: WorkflowStep,
-    run_dir: Path,
-    outputs: dict[str, Any],
+    resolved_input: Any,
     memory_context: dict[str, Any],
     runtime: RuntimeContext,
     registry: CapabilityRegistry,
     logs_dir: Path,
-    workflow_id: str,
+    *,
     run_id: str,
-) -> tuple[Any, Path | None]:
-    ensure_dir(run_dir)
+    workflow_id: str | None = None,
+) -> Any:
+    """Resolve and invoke a single capability action — the one code path for
+    *all* capability invocation, whether it comes from a workflow step or (in a
+    later PR) an agent tool call.
+
+    Takes a `WorkflowStep` because handlers read `step.action`/`step.id`; a
+    non-workflow caller (agent loop) synthesizes a lightweight step. Emits the
+    `capability.invocation.started/completed` audit events so every invocation
+    is traced identically. Returns the handler's output; artifact writing stays
+    with the workflow caller (it's workflow-run-dir specific).
+    """
     capability = registry.resolve_action(step.action)
     if capability is None:
-        raise ValueError(f"No capability registered for workflow action: {step.action}")
+        raise ValueError(f"No capability registered for action: {step.action}")
 
-    resolved_input = resolve_value(step.input, outputs)
     append_event(
         logs_dir,
         "capability.invocation.started",
@@ -519,14 +527,6 @@ def execute_step(
         ) from exc
     output = handler(step, capability, resolved_input, memory_context, runtime)
 
-    artifact = None
-    if step.output:
-        artifact = run_dir / step.output
-        if artifact.suffix in {".md", ".txt"}:
-            artifact.write_text(str(output), encoding="utf-8")
-        else:
-            write_json(artifact, output)
-
     append_event(
         logs_dir,
         "capability.invocation.completed",
@@ -536,6 +536,42 @@ def execute_step(
         action=step.action,
         capability=capability.name,
         handler=capability.handler,
-        artifact=str(artifact) if artifact else None,
     )
+    return output
+
+
+def execute_step(
+    step: WorkflowStep,
+    run_dir: Path,
+    outputs: dict[str, Any],
+    memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+    registry: CapabilityRegistry,
+    logs_dir: Path,
+    workflow_id: str,
+    run_id: str,
+) -> tuple[Any, Path | None]:
+    ensure_dir(run_dir)
+    resolved_input = resolve_value(step.input, outputs)
+    output = dispatch_action(
+        step,
+        resolved_input,
+        memory_context,
+        runtime,
+        registry,
+        logs_dir,
+        run_id=run_id,
+        workflow_id=workflow_id,
+    )
+
+    artifact = None
+    if step.output:
+        artifact = run_dir / step.output
+        if artifact.suffix in {".md", ".txt"}:
+            artifact.write_text(str(output), encoding="utf-8")
+        else:
+            write_json(artifact, output)
+    # NB: the artifact path is also recorded by run_workflow's own
+    # `workflow.step.completed` event, so dropping it from the capability
+    # invocation trace loses no information.
     return output, artifact
