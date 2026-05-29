@@ -24,6 +24,8 @@ This note records the first controlled elastic-delegation implementation.
 
 - Delegation is denied unless the executing agent explicitly enables it.
 - Backends must be on the agent/global allowlist.
+- Subagent `cwd` and declared filesystem permissions must fit inside the parent agent filesystem policy.
+- `codex_cli` runs with a restricted environment allowlist; secrets are not inherited unless explicitly requested.
 - `codex_cli` requires `delegation_policy.codex_cli_enabled: true` in runtime config.
 - Depth and per-parent parallelism limits are enforced before session creation.
 - Sessions are audited with `subagent.spawn.planned`, `subagent.spawn.started`, `subagent.spawn.completed`, and `subagent.spawn.failed`.
@@ -32,6 +34,6 @@ This note records the first controlled elastic-delegation implementation.
 ## Follow-up work
 
 - Add real process lifecycle tracking for long-running asynchronous adapters.
-- Add stronger sandboxing/environment shaping for `codex_cli` before enabling it by default.
+- Add stronger OS/process sandboxing for `codex_cli` before enabling it by default.
 - Add parent-review gates before accepting subagent artifacts.
 - Add aggregation helpers for multiple subagent results.

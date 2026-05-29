@@ -7,7 +7,7 @@ from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_workflows
 from jigga.core.io import write_yaml
 from jigga.runtime.capabilities import CapabilityRegistry
-from jigga.runtime.subagents import SpawnSubagentInput, list_sessions, spawn_subagent
+from jigga.runtime.subagents import SpawnSubagentInput, SubagentSession, _restricted_env, _truncate_summary, list_sessions, read_session, spawn_subagent, write_session
 from jigga.runtime.workflow import plan_workflow, run_workflow
 
 
@@ -23,7 +23,7 @@ def _spawn_payload(**overrides):
         "parent_agent_id": "content_strategist",
         "task_id": "task_demo",
         "work_order": {"goal": "Inspect the content plan", "instructions": "Return risks."},
-        "cwd": ".",
+        "cwd": "~/Projects/content",
         "memory_scope": "task_context_only",
         "limits": {"max_runtime_minutes": 1},
         "output_required": ["summary", "risks"],
@@ -136,3 +136,105 @@ def test_sessions_cli_smoke(tmp_path: Path, capsys) -> None:
     assert session.id in capsys.readouterr().out
     assert main(["--home", str(tmp_path), "sessions", "inspect", session.id[:14]]) == 0
     assert '"status": "completed"' in capsys.readouterr().out
+
+
+
+def test_subagent_cwd_must_be_allowed_by_parent_policy(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(cwd="/outside"))
+    except ValueError as exc:
+        assert "outside allow list" in str(exc) or "no allow list" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected cwd policy failure")
+
+
+def test_subagent_declared_filesystem_permissions_must_fit_parent_policy(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(
+            paths.home,
+            paths.logs,
+            paths.sessions,
+            agent,
+            _spawn_payload(cwd="~/Projects/content", permissions={"filesystem": {"write": ["/outside"]}}),
+        )
+    except ValueError as exc:
+        assert "Filesystem write" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected filesystem permission failure")
+
+
+def test_subagent_declared_deny_must_not_overlap_parent_allow(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    agent = load_agents(paths.agents)["content_strategist"]
+    try:
+        spawn_subagent(
+            paths.home,
+            paths.logs,
+            paths.sessions,
+            agent,
+            _spawn_payload(cwd="~/Projects/content", permissions={"filesystem": {"deny": ["~/Projects/content/secrets"]}}),
+        )
+    except ValueError as exc:
+        assert "overlaps" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected overlapping deny failure")
+
+
+def test_restricted_env_excludes_unrequested_secrets(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("PATH", "/bin")
+    request = SpawnSubagentInput.from_dict(_spawn_payload(permissions={"secrets": {"required": []}}))
+    env = _restricted_env(request)
+    assert env["PATH"] == "/bin"
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_restricted_env_includes_explicitly_requested_secret(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    request = SpawnSubagentInput.from_dict(_spawn_payload(permissions={"secrets": {"required": ["OPENAI_API_KEY"]}}))
+    assert _restricted_env(request)["OPENAI_API_KEY"] == "secret"
+
+
+def test_read_session_prefers_exact_and_rejects_ambiguous_prefix(tmp_path: Path) -> None:
+    sessions = tmp_path / "sessions"
+    first = SubagentSession("subagent_abc111", "dry_run", "plan", "a", "t", "completed", "1", "1", ".", 0, {"goal": "a"})
+    second = SubagentSession("subagent_abc222", "dry_run", "plan", "a", "t", "completed", "2", "2", ".", 0, {"goal": "b"})
+    write_session(sessions, first)
+    write_session(sessions, second)
+    assert read_session(sessions, "subagent_abc111").id == "subagent_abc111"
+    try:
+        read_session(sessions, "subagent_abc")
+    except ValueError as exc:
+        assert "ambiguous" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected ambiguous prefix failure")
+
+
+def test_session_from_dict_ignores_unknown_keys() -> None:
+    session = SubagentSession.from_dict(
+        {
+            "id": "subagent_x",
+            "backend": "dry_run",
+            "mode": "plan",
+            "parent_agent_id": "a",
+            "task_id": "t",
+            "status": "completed",
+            "created_at": "1",
+            "updated_at": "1",
+            "cwd": ".",
+            "depth": 0,
+            "work_order": {"goal": "x"},
+            "future_field": "ignored",
+        }
+    )
+    assert session.id == "subagent_x"
+
+
+def test_truncate_summary_marks_truncation() -> None:
+    summary, truncated = _truncate_summary("x" * 4100)
+    assert truncated is True
+    assert summary.endswith("... [truncated]")

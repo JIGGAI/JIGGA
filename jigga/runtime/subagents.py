@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -9,6 +10,7 @@ from jigga.core.config import load_runtime_config
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import AgentConfig, now_iso
 from jigga.runtime.audit import append_event, new_id
+from jigga.runtime.policy import evaluate_filesystem, evaluate_network, evaluate_shell
 
 SubagentBackend = Literal["dry_run", "codex_cli"]
 SubagentMode = Literal["plan", "execute", "review", "research"]
@@ -101,7 +103,8 @@ class SubagentSession:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SubagentSession":
-        return cls(**data)
+        names = {item.name for item in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in names})
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -118,9 +121,14 @@ def write_session(sessions_dir: Path, session: SubagentSession) -> None:
 
 
 def read_session(sessions_dir: Path, session_id: str) -> SubagentSession:
-    matches = [path for path in sorted(sessions_dir.glob("subagent_*/session.json")) if path.parent.name == session_id or path.parent.name.startswith(session_id)]
+    exact = sessions_dir / session_id / "session.json"
+    if exact.exists():
+        return SubagentSession.from_dict(read_json(exact))
+    matches = [path for path in sorted(sessions_dir.glob("subagent_*/session.json")) if path.parent.name.startswith(session_id)]
     if not matches:
         raise ValueError(f"Subagent session not found: {session_id}")
+    if len(matches) > 1:
+        raise ValueError(f"Subagent session prefix is ambiguous: {session_id}")
     return SubagentSession.from_dict(read_json(matches[0]))
 
 
@@ -143,6 +151,59 @@ def cancel_session(sessions_dir: Path, session_id: str) -> SubagentSession:
 
 def _agent_delegation_config(agent: AgentConfig) -> dict[str, Any]:
     return dict(agent.delegation or agent.permissions.get("delegation") or agent.permissions.get("subagents") or {})
+
+
+def _expanded_cwd(request: SpawnSubagentInput) -> str:
+    return str(Path(request.cwd).expanduser())
+
+
+def _subagent_filesystem_permissions(request: SpawnSubagentInput) -> dict[str, Any]:
+    filesystem = request.permissions.get("filesystem") if isinstance(request.permissions, dict) else None
+    return dict(filesystem or {})
+
+
+def _validate_subagent_resource_policy(agent: AgentConfig, request: SpawnSubagentInput) -> None:
+    cwd = _expanded_cwd(request)
+    cwd_decision = evaluate_filesystem(agent, cwd, operation="execute")
+    if cwd_decision.status != "allow":
+        raise ValueError(cwd_decision.reason or "Subagent cwd is not allowed")
+
+    filesystem = _subagent_filesystem_permissions(request)
+    for operation in ("read", "write"):
+        for path in list(filesystem.get(operation, []) or []):
+            decision = evaluate_filesystem(agent, path, operation=operation)
+            if decision.status != "allow":
+                raise ValueError(decision.reason or f"Subagent filesystem {operation} is not allowed")
+    for path in list(filesystem.get("deny", []) or []):
+        if evaluate_filesystem(agent, path, operation="read").status == "allow":
+            raise ValueError(f"Subagent deny rule {path} overlaps with parent agent allow policy")
+
+    network = request.permissions.get("network") if isinstance(request.permissions, dict) else None
+    if isinstance(network, dict) and str(network.get("mode", "deny")) not in {"deny", "disabled", "none"}:
+        decision = evaluate_network(agent, str(network.get("target") or "subagent network"))
+        if decision.status != "allow":
+            raise ValueError(decision.reason or "Subagent network access is not allowed")
+
+    shell = request.permissions.get("shell") if isinstance(request.permissions, dict) else None
+    if isinstance(shell, dict) and str(shell.get("mode", "deny")) not in {"deny", "disabled", "none"}:
+        decision = evaluate_shell(agent, str(shell.get("command") or "subagent shell"))
+        if decision.status != "allow":
+            raise ValueError(decision.reason or "Subagent shell access is not allowed")
+
+
+def _restricted_env(request: SpawnSubagentInput) -> dict[str, str]:
+    allowed = {"PATH", "HOME", "LANG", "LC_ALL", "TERM"}
+    secrets = request.permissions.get("secrets") if isinstance(request.permissions, dict) else None
+    if isinstance(secrets, dict):
+        allowed.update(str(item) for item in secrets.get("required", []) or [])
+    return {key: value for key, value in os.environ.items() if key in allowed}
+
+
+def _truncate_summary(text: str, limit: int = 4000) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    marker = "... [truncated]"
+    return text[: max(0, limit - len(marker))] + marker, True
 
 
 def validate_delegation_policy(home: Path, sessions_dir: Path, agent: AgentConfig, request: SpawnSubagentInput) -> None:
@@ -170,6 +231,7 @@ def validate_delegation_policy(home: Path, sessions_dir: Path, agent: AgentConfi
     max_parent = int(agent_policy.get("max_parallel_subagents", global_policy.get("max_subagents_per_parent", 4)))
     if len(running_for_parent) >= max_parent:
         raise ValueError(f"Agent {agent.id} has reached max_parallel_subagents {max_parent}")
+    _validate_subagent_resource_policy(agent, request)
 
 
 def _build_session(sessions_dir: Path, request: SpawnSubagentInput) -> SubagentSession:
@@ -184,7 +246,7 @@ def _build_session(sessions_dir: Path, request: SpawnSubagentInput) -> SubagentS
         status="planned",
         created_at=now_iso(),
         updated_at=now_iso(),
-        cwd=str(Path(request.cwd).expanduser()),
+        cwd=_expanded_cwd(request),
         depth=request.depth,
         work_order=request.work_order.to_dict(),
         limits=request.limits,
@@ -216,7 +278,8 @@ def _codex_cli_adapter(session: SubagentSession, request: SpawnSubagentInput) ->
     timeout = max(1, int(request.limits.get("max_runtime_minutes", 20))) * 60
     completed = subprocess.run(
         ["codex", "exec", prompt],
-        cwd=request.cwd,
+        cwd=_expanded_cwd(request),
+        env=_restricted_env(request),
         check=False,
         capture_output=True,
         text=True,
@@ -226,8 +289,10 @@ def _codex_cli_adapter(session: SubagentSession, request: SpawnSubagentInput) ->
     if session.logs_path:
         Path(session.logs_path).write_text(log_text, encoding="utf-8")
     status = "passed" if completed.returncode == 0 else "failed"
+    summary, truncated = _truncate_summary((completed.stdout or completed.stderr or "codex_cli completed").strip())
     return {
-        "summary": (completed.stdout or completed.stderr or "codex_cli completed").strip()[:4000],
+        "summary": summary,
+        "truncated": truncated,
         "changed_files": [],
         "commands_run": ["codex exec <work_order>"],
         "test_results": {"status": status, "details": f"exit_code={completed.returncode}"},
