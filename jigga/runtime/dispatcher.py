@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
-from jigga.core.paths import resolve_home
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.policy import PolicyDecision, evaluate_filesystem
 from jigga.runtime.subagents import spawn_subagent
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    """Runtime plumbing passed to capability handlers, kept separate from
+    `memory_context` so memory-derived output never accidentally captures
+    paths or runtime references."""
+
+    agent: AgentConfig | None
+    home: Path
+    logs_dir: Path
+    sessions_dir: Path
 
 
 def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
@@ -35,7 +47,13 @@ def evaluate_capability_permissions(capability: CapabilityManifest, agent: Agent
     return PolicyDecision("allow")
 
 
-def _calendar_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+def _calendar_handler(
+    step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    _runtime: RuntimeContext,
+) -> Any:
     if step.action == "calendar.list_events":
         return [
             {"time": "09:30", "title": "Planning block", "source": "capability.dry_run"},
@@ -43,35 +61,65 @@ def _calendar_handler(step: WorkflowStep, _capability: CapabilityManifest, resol
         ]
     if step.action == "calendar.get_event":
         return {"title": "Project review", "time": "14:00", "source": "capability.dry_run", "input": resolved_input}
-    return _generic_handler(step, _capability, resolved_input, _context)
+    return _generic_handler(step, _capability, resolved_input, _memory_context, _runtime)
 
 
-def _email_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+def _email_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    _runtime: RuntimeContext,
+) -> Any:
     return [{"from": "client@example.com", "subject": "Launch follow-up", "source": "capability.dry_run", "input": resolved_input}]
 
 
-def _notifications_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+def _notifications_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    _runtime: RuntimeContext,
+) -> Any:
     return {"dry_run": True, "delivered": False, "source": "capability.dry_run", "input": resolved_input}
 
 
-def _summarization_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
-    memory_context = {key: value for key, value in context.items() if key not in {"agent", "home", "logs_dir", "sessions_dir"}}
-    return {"summary": f"MVP summary for {step.id}", "source": "capability.dry_run", "input": resolved_input, "memory_context": memory_context}
+def _summarization_handler(
+    step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    memory_context: dict[str, Any],
+    _runtime: RuntimeContext,
+) -> Any:
+    return {
+        "summary": f"MVP summary for {step.id}",
+        "source": "capability.dry_run",
+        "input": resolved_input,
+        "memory_context": memory_context,
+    }
 
 
-def _spawn_subagent_handler(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
-    agent = context.get("agent")
-    if not isinstance(agent, AgentConfig):
+def _spawn_subagent_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    if runtime.agent is None:
         raise ValueError("spawn_subagent requires an executing agent")
-    home = Path(context.get("home") or resolve_home(None))
-    logs_dir = Path(context.get("logs_dir") or home / "logs")
-    sessions_dir = Path(context.get("sessions_dir") or home / "sessions")
     payload = resolved_input if isinstance(resolved_input, dict) else {}
-    session = spawn_subagent(home, logs_dir, sessions_dir, agent, payload)
+    session = spawn_subagent(runtime.home, runtime.logs_dir, runtime.sessions_dir, runtime.agent, payload)
     return session.to_dict()
 
 
-def _generic_handler(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
+def _generic_handler(
+    step: WorkflowStep,
+    capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    _runtime: RuntimeContext,
+) -> Any:
     return {
         "dry_run": True,
         "source": "capability.dry_run",
@@ -81,7 +129,10 @@ def _generic_handler(step: WorkflowStep, capability: CapabilityManifest, resolve
     }
 
 
-Handler = Callable[[WorkflowStep, CapabilityManifest, Any, dict[str, Any]], Any]
+Handler = Callable[
+    [WorkflowStep, CapabilityManifest, Any, dict[str, Any], RuntimeContext],
+    Any,
+]
 HANDLERS: dict[str, Handler] = {
     "dry_run.calendar": _calendar_handler,
     "dry_run.email": _email_handler,
@@ -96,7 +147,8 @@ def execute_step(
     step: WorkflowStep,
     run_dir: Path,
     outputs: dict[str, Any],
-    context: dict[str, Any],
+    memory_context: dict[str, Any],
+    runtime: RuntimeContext,
     registry: CapabilityRegistry,
     logs_dir: Path,
     workflow_id: str,
@@ -122,7 +174,7 @@ def execute_step(
     handler = HANDLERS.get(capability.handler)
     if handler is None:
         raise ValueError(f"No handler registered for capability {capability.name}: {capability.handler}")
-    output = handler(step, capability, resolved_input, context)
+    output = handler(step, capability, resolved_input, memory_context, runtime)
 
     artifact = None
     if step.output:

@@ -60,6 +60,20 @@ def test_workflow_plan_surfaces_capability_metadata(tmp_path: Path) -> None:
     assert first["risk_level"] == "low"
 
 
+def test_memory_context_does_not_leak_runtime_plumbing(tmp_path: Path) -> None:
+    # The dispatcher used to pass a single dict carrying both memory context
+    # and runtime plumbing (home, logs_dir, sessions_dir, agent), so the
+    # summarization handler had to manually filter. With memory_context and
+    # runtime split, no runtime key should appear in the memory_context that
+    # handlers receive.
+    paths = init_runtime(tmp_path, examples=True)
+    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    assert result["status"] == "completed"
+    summary_step = result["outputs"]["summarize"]
+    leaked_keys = {"home", "logs_dir", "sessions_dir", "agent"}
+    assert leaked_keys.isdisjoint(summary_step["memory_context"].keys())
+
+
 def test_workflow_run_dispatches_through_capabilities(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
