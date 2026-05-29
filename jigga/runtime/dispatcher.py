@@ -5,9 +5,11 @@ from typing import Any, Callable
 
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
+from jigga.core.paths import resolve_home
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.policy import PolicyDecision, evaluate_filesystem
+from jigga.runtime.subagents import spawn_subagent
 
 
 def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
@@ -53,7 +55,20 @@ def _notifications_handler(step: WorkflowStep, _capability: CapabilityManifest, 
 
 
 def _summarization_handler(step: WorkflowStep, _capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
-    return {"summary": f"MVP summary for {step.id}", "source": "capability.dry_run", "input": resolved_input, "memory_context": context}
+    memory_context = {key: value for key, value in context.items() if key not in {"agent", "home", "logs_dir", "sessions_dir"}}
+    return {"summary": f"MVP summary for {step.id}", "source": "capability.dry_run", "input": resolved_input, "memory_context": memory_context}
+
+
+def _spawn_subagent_handler(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, context: dict[str, Any]) -> Any:
+    agent = context.get("agent")
+    if not isinstance(agent, AgentConfig):
+        raise ValueError("spawn_subagent requires an executing agent")
+    home = Path(context.get("home") or resolve_home(None))
+    logs_dir = Path(context.get("logs_dir") or home / "logs")
+    sessions_dir = Path(context.get("sessions_dir") or home / "sessions")
+    payload = resolved_input if isinstance(resolved_input, dict) else {}
+    session = spawn_subagent(home, logs_dir, sessions_dir, agent, payload)
+    return session.to_dict()
 
 
 def _generic_handler(step: WorkflowStep, capability: CapabilityManifest, resolved_input: Any, _context: dict[str, Any]) -> Any:
@@ -73,6 +88,7 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.notifications": _notifications_handler,
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
+    "runtime.spawn_subagent": _spawn_subagent_handler,
 }
 
 

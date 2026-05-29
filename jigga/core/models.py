@@ -41,6 +41,7 @@ class AgentConfig:
     wake: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
     workflows: list[str] = field(default_factory=list)
+    delegation: dict[str, Any] = field(default_factory=dict)
     source: str | None = None
 
     @classmethod

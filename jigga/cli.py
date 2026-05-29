@@ -18,6 +18,7 @@ from jigga.runtime.model_router import build_task_model_request, call_model
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
 from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
 from jigga.runtime.scheduler import serialize_events, due_events
+from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.team import run_team
@@ -73,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
     capability_inspect.add_argument("name")
     capability_validate = capabilities_sub.add_parser("validate", help="Validate a capability manifest")
     capability_validate.add_argument("path", type=Path)
+
+    sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
+    sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+    sessions_list = sessions_sub.add_parser("list")
+    sessions_list.add_argument("--json", action="store_true", dest="json_output")
+    sessions_inspect = sessions_sub.add_parser("inspect")
+    sessions_inspect.add_argument("session_id")
+    sessions_cancel = sessions_sub.add_parser("cancel")
+    sessions_cancel.add_argument("session_id")
 
     scheduler = sub.add_parser("scheduler", help="Inspect scheduler due events")
     scheduler_sub = scheduler.add_subparsers(dest="scheduler_command", required=True)
@@ -216,6 +226,21 @@ def main(argv: list[str] | None = None) -> int:
             elif args.capabilities_command == "validate":
                 capability = load_capability_manifest(args.path)
                 print_json({"status": "valid", "capability": capability.to_dict()})
+            return 0
+
+        if args.command == "sessions":
+            paths = get_paths(args.home)
+            if args.sessions_command == "list":
+                sessions = [session.to_dict() for session in list_sessions(paths.sessions)]
+                if args.json_output:
+                    print_json(sessions)
+                else:
+                    for session in sessions:
+                        print(f"{session['id']}\t{session['status']}\t{session['backend']}\t{session['parent_agent_id']}\t{session['work_order'].get('goal')}")
+            elif args.sessions_command == "inspect":
+                print_json(read_session(paths.sessions, args.session_id).to_dict())
+            elif args.sessions_command == "cancel":
+                print_json(cancel_session(paths.sessions, args.session_id).to_dict())
             return 0
 
         if args.command == "scheduler":

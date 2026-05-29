@@ -127,8 +127,10 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
         agent = agents.get(step.agent or "")
         scope = agent.memory_scope if agent and agent.memory_scope else "task_only"
         context = build_context_package(memory_dir, scope)
+        runtime_context = dict(context)
+        runtime_context.update({"home": str(home), "logs_dir": str(logs_dir), "sessions_dir": str(home / "sessions"), "agent": agent})
         append_event(logs_dir, "workflow.step.started", workflow=workflow_id, run_id=run_id, step=step.id, agent=step.agent)
-        output, artifact = execute_step(step, run_dir, outputs, context, registry, logs_dir, workflow_id, run_id)
+        output, artifact = execute_step(step, run_dir, outputs, runtime_context, registry, logs_dir, workflow_id, run_id)
         outputs[step.id] = output
         if step.output:
             outputs[step.output] = output

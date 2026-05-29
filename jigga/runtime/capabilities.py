@@ -111,6 +111,16 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "risk_level": "low",
         "handler": "dry_run.summarization",
     },
+
+    {
+        "name": "subagent-delegation",
+        "version": "0.1.0",
+        "summary": "Controlled subagent spawning through policy-checked runtime adapters.",
+        "actions": ["spawn_subagent"],
+        "permissions": {"delegation": "spawn_subagent"},
+        "risk_level": "medium",
+        "handler": "runtime.spawn_subagent",
+    },
     {
         "name": "content-drafting",
         "version": "0.1.0",

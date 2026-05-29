@@ -29,3 +29,10 @@ permissions:
     mode: deny
 workflows:
   - social_content_syndication
+
+delegation:
+  enabled: true
+  allowed_backends:
+    - dry_run
+  max_parallel_subagents: 2
+  max_depth: 1
