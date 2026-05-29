@@ -29,7 +29,6 @@ from jigga.optional_capabilities import (
     list_available,
 )
 from jigga.runtime.capabilities import (
-    APPROVALS_FILE,
     approvals_path,
     load_capability_manifest,
     record_approval,
@@ -84,8 +83,8 @@ def install_capability(
                 except OSError:
                     pass
                 print_fn(
-                    f"Setup did not complete; rolled back manifest copy. "
-                    f"No approval recorded."
+                    "Setup did not complete; rolled back manifest copy. "
+                    "No approval recorded."
                 )
             return exit_code
 

@@ -75,17 +75,32 @@ class SandboxSpec:
     cwd: Path = field(default_factory=Path.cwd)
     secrets_required: list[str] = field(default_factory=list)
     timeout_seconds: float = 30.0
+    # Explicit env key=value pairs injected into the subprocess, merged OVER
+    # the allowlisted env. Unlike `secrets_required` (which only passes through
+    # values already in os.environ), `extra_env` lets a caller supply a value
+    # the parent process holds but doesn't export — e.g. a keyring password
+    # JIGGA reads from its own secrets dir and hands to gogcli as
+    # GOG_KEYRING_PASSWORD. Keep these to non-sensitive switches + secrets the
+    # caller has already gated; they are written into the child's environment.
+    extra_env: dict[str, str] = field(default_factory=dict)
 
 
-def build_restricted_env(secrets_required: list[str] | None = None) -> dict[str, str]:
+def build_restricted_env(
+    secrets_required: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Return a filtered env dict containing only the base allowlist plus any
-    secret names the caller has explicitly requested. Unrequested env vars —
-    including unrelated API keys, tokens, and AWS creds that may be exported
-    in the caller's shell — are excluded."""
+    secret names the caller has explicitly requested, then merged with any
+    explicit `extra_env` key=value pairs (which take precedence). Unrequested
+    env vars — including unrelated API keys, tokens, and AWS creds that may be
+    exported in the caller's shell — are excluded."""
     allowed = set(BASE_ENV_ALLOWLIST)
     if secrets_required:
         allowed.update(str(name) for name in secrets_required)
-    return {key: value for key, value in os.environ.items() if key in allowed}
+    env = {key: value for key, value in os.environ.items() if key in allowed}
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+    return env
 
 
 def run_sandboxed(
@@ -104,7 +119,7 @@ def run_sandboxed(
         input=input,
         capture_output=True,
         text=True,
-        env=build_restricted_env(spec.secrets_required),
+        env=build_restricted_env(spec.secrets_required, spec.extra_env),
         cwd=str(spec.cwd),
         timeout=spec.timeout_seconds,
         check=False,

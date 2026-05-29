@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from jigga.optional_capabilities.gog import setup as gog_setup
 from jigga.optional_capabilities.google_calendar import (
     setup as google_calendar_setup,
 )
@@ -50,9 +51,15 @@ def _here() -> Path:
 
 
 REGISTRY: dict[str, OptionalCapability] = {
+    "gog": OptionalCapability(
+        name="gog",
+        summary="Google Workspace (Gmail, Calendar, Drive, Sheets) via the gogcli tool",
+        manifest_path=_here() / "gog" / "manifest.yaml",
+        setup_fn=gog_setup,
+    ),
     "google-calendar": OptionalCapability(
         name="google-calendar",
-        summary="Read events from your Google Calendar via OAuth",
+        summary="Read events from your Google Calendar via OAuth (native, no external tool)",
         manifest_path=_here() / "google_calendar" / "manifest.yaml",
         setup_fn=google_calendar_setup,
     ),

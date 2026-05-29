@@ -102,6 +102,36 @@ def test_run_sandboxed_captures_stdout_and_stderr(tmp_path: Path) -> None:
     assert "hi err" in completed.stderr
 
 
+def test_build_restricted_env_merges_extra_env_over_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/bin")
+    monkeypatch.delenv("GOG_KEYRING_PASSWORD", raising=False)
+    env = build_restricted_env(
+        secrets_required=[],
+        extra_env={"GOG_KEYRING_BACKEND": "file", "GOG_KEYRING_PASSWORD": "injected-pw"},
+    )
+    # extra_env values are injected even though they're not in os.environ
+    assert env["GOG_KEYRING_BACKEND"] == "file"
+    assert env["GOG_KEYRING_PASSWORD"] == "injected-pw"
+    assert env["PATH"] == "/bin"
+
+
+def test_extra_env_takes_precedence_over_allowlisted_value(monkeypatch) -> None:
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    env = build_restricted_env(extra_env={"LANG": "C"})
+    assert env["LANG"] == "C"
+
+
+def test_run_sandboxed_injects_extra_env(monkeypatch, tmp_path: Path) -> None:
+    spec = SandboxSpec(
+        command=sys.executable,
+        args=["-c", "import os; print(os.environ.get('GOG_KEYRING_PASSWORD', 'MISSING'))"],
+        cwd=tmp_path,
+        extra_env={"GOG_KEYRING_PASSWORD": "secret-from-jigga"},
+    )
+    completed = run_sandboxed(spec)
+    assert completed.stdout.strip() == "secret-from-jigga"
+
+
 def test_run_sandboxed_returns_nonzero_without_raising(tmp_path: Path) -> None:
     spec = SandboxSpec(
         command=sys.executable,
