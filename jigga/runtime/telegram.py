@@ -130,7 +130,13 @@ def allowed_chat_ids(home: Path) -> set[str]:
 # --- HTTP ------------------------------------------------------------------
 
 
-def _api_call(token: str, method: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _api_call(
+    token: str,
+    method: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     url = f"{API_BASE}/bot{token}/{method}"
     data = None
     headers = {}
@@ -139,7 +145,7 @@ def _api_call(token: str, method: str, payload: dict[str, Any] | None = None) ->
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
     try:
-        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -174,12 +180,23 @@ def _normalize(update: dict[str, Any]) -> dict[str, Any] | None:
 # --- inbound / outbound primitives -----------------------------------------
 
 
-def poll_messages(home: Path, *, discover: bool = False, limit: int = 50) -> dict[str, Any]:
+def poll_messages(
+    home: Path,
+    *,
+    discover: bool = False,
+    limit: int = 50,
+    long_poll_seconds: int = 0,
+) -> dict[str, Any]:
     """Fetch new inbound messages, filter by allowlist, advance the offset.
 
     Returns {"messages": [...], "status": "ok"} or a not_connected payload.
     `discover=True` bypasses the allowlist (setup-only, to find chat IDs) and
     does NOT advance the offset, so real polling later still sees the messages.
+
+    `long_poll_seconds > 0` enables Telegram long-polling: getUpdates holds the
+    connection server-side up to that many seconds waiting for a message
+    (efficient — no busy 5s cron). The capability-action path uses 0 (return
+    immediately); the channel listener uses a real value (~30).
     """
     secrets_dir = home / "secrets"
     token = load_bot_token(secrets_dir)
@@ -187,7 +204,14 @@ def poll_messages(home: Path, *, discover: bool = False, limit: int = 50) -> dic
         return _not_connected("telegram.poll_messages")
 
     offset = load_offset(home)
-    body = _api_call(token, "getUpdates", {"offset": offset, "timeout": 0, "limit": limit})
+    # urlopen must outlast the server-side hold, so pad the HTTP timeout.
+    http_timeout = DEFAULT_TIMEOUT_SECONDS if long_poll_seconds <= 0 else long_poll_seconds + 10
+    body = _api_call(
+        token,
+        "getUpdates",
+        {"offset": offset, "timeout": max(0, long_poll_seconds), "limit": limit},
+        timeout=http_timeout,
+    )
     updates = body.get("result") or []
 
     normalized = [m for m in (_normalize(u) for u in updates) if m is not None]

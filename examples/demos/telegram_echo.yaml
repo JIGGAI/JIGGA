@@ -13,9 +13,10 @@
 # Run with:
 #   jigga --home $JIGGA_HOME workflow run telegram_echo
 #
-# Schedule it (so JIGGA "listens") by giving it a cron trigger and running the
-# supervisor — polling on a cadence is how this channel stays live without a
-# public webhook.
+# For continuous "always listening", don't schedule this workflow — run the
+# channel listener instead (efficient long-poll, no public webhook):
+#   jigga --home $JIGGA_HOME channels listen
+# The listener ingests messages into tasks and wakes the assigned agent.
 
 id: telegram_echo
 name: Telegram echo

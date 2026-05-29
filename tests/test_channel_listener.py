@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import json
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+from jigga.commands.init import init_runtime
+from jigga.core.io import read_yaml, write_yaml
+from jigga.runtime.channel_listener import channel_listen, enabled_channels, ingest_once
+from jigga.runtime.tasks import list_tasks
+
+
+def _enable_telegram(paths, *, default_agent="daily_briefing_agent", allowed=("111",)) -> None:
+    config = read_yaml(paths.config)
+    config["channels"] = {
+        "telegram": {
+            "enabled": True,
+            "allowed_chat_ids": list(allowed),
+            "default_agent": default_agent,
+        }
+    }
+    write_yaml(paths.config, config)
+
+
+def _msg(text="hi", chat_id=111, sender="alice", message_id=10) -> dict:
+    return {
+        "channel": "telegram",
+        "chat_id": chat_id,
+        "sender": sender,
+        "sender_id": chat_id,
+        "text": text,
+        "message_id": message_id,
+    }
+
+
+def _events(paths):
+    path = paths.logs / "events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+# --- enabled_channels ------------------------------------------------------
+
+
+def test_enabled_channels_empty_by_default(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    assert enabled_channels(paths.home) == []
+
+
+def test_enabled_channels_lists_enabled_telegram(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _enable_telegram(paths)
+    channels = enabled_channels(paths.home)
+    assert [name for name, _ in channels] == ["telegram"]
+
+
+def test_enabled_channels_skips_disabled(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    config = read_yaml(paths.config)
+    config["channels"] = {"telegram": {"enabled": False, "default_agent": "x"}}
+    write_yaml(paths.config, config)
+    assert enabled_channels(paths.home) == []
+
+
+def test_enabled_channels_skips_unknown_channel(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    config = read_yaml(paths.config)
+    config["channels"] = {"smoke_signals": {"enabled": True, "default_agent": "x"}}
+    write_yaml(paths.config, config)
+    assert enabled_channels(paths.home) == []  # no registered poller
+
+
+# --- ingest_once -----------------------------------------------------------
+
+
+def test_ingest_creates_task_per_message_and_runs_agent(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    poll_result = {"status": "ok", "messages": [_msg(text="hello there", chat_id=111)]}
+    ran = []
+
+    def fake_run_agent(home, logs, tasks, agents, agent_id, **kw):
+        ran.append(agent_id)
+        return {"agent_id": agent_id}
+
+    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value=poll_result), patch(
+        "jigga.runtime.channel_listener.run_agent", fake_run_agent
+    ):
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+
+    assert len(summary["created"]) == 1
+    task = list_tasks(paths.tasks)[0]
+    assert task.assignee == "daily_briefing_agent"
+    assert task.metadata["chat_id"] == 111
+    assert task.metadata["channel"] == "telegram"
+    assert "hello there" in task.description
+    assert "chat_id=111" in task.description  # reply hint
+    assert ran == ["daily_briefing_agent"]
+    assert "channel.message.received" in [e["type"] for e in _events(paths)]
+
+
+def test_ingest_no_messages_is_noop(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
+        "jigga.runtime.channel_listener.run_agent"
+    ) as run_mock:
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+    assert summary["created"] == []
+    run_mock.assert_not_called()
+    assert list_tasks(paths.tasks) == []
+
+
+def test_ingest_skips_not_connected_channel(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    with patch(
+        "jigga.runtime.channel_listener.telegram.poll_messages",
+        return_value={"status": "telegram.not_connected", "messages": []},
+    ):
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+    assert summary["created"] == []
+    assert "channel.poll_skipped" in [e["type"] for e in _events(paths)]
+
+
+def test_ingest_no_process_skips_agents(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
+        "jigga.runtime.channel_listener.run_agent"
+    ) as run_mock:
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, process_agents=False)
+    assert len(summary["created"]) == 1
+    run_mock.assert_not_called()
+
+
+# --- channel_listen bounded loop -------------------------------------------
+
+
+def test_channel_listen_bounded(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
+        "jigga.runtime.channel_listener.run_agent", return_value={}
+    ):
+        result = channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=2)
+    assert result["status"] == "stopped"
+    assert result["cycles"] == 2
+    # 2 cycles × 1 message each
+    assert len(list_tasks(paths.tasks)) == 2
+
+
+def test_channel_listen_emits_lifecycle_events(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
+        "jigga.runtime.channel_listener.run_agent", return_value={}
+    ):
+        channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=1)
+    types = [e["type"] for e in _events(paths)]
+    assert "channel.listen.started" in types
+    assert "channel.listen.stopped" in types
+
+
+# --- graceful shutdown via subprocess --------------------------------------
+
+
+def test_channel_listen_handles_sigterm(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    # Drive via subprocess (signal handlers need the main thread). The listener
+    # runs unbounded with a fast empty poll; SIGTERM should stop it cleanly.
+    code = (
+        "import json, sys\n"
+        "from unittest.mock import patch\n"
+        "from jigga.core.paths import get_paths\n"
+        "from jigga.runtime import channel_listener\n"
+        f"paths = get_paths({str(tmp_path)!r})\n"
+        "with patch('jigga.runtime.channel_listener.telegram.poll_messages', return_value={'status':'ok','messages':[]}):\n"
+        "    r = channel_listener.channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=None)\n"
+        "sys.stdout.write(json.dumps({'status': r['status'], 'sig': r['stopped_by_signal']}))\n"
+        "sys.stdout.flush()\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(0.6)
+    proc.send_signal(signal.SIGTERM)
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 0, f"stderr={stderr}"
+    payload = json.loads(stdout)
+    assert payload["status"] == "interrupted"
+    assert payload["sig"] == int(signal.SIGTERM)

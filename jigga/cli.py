@@ -20,6 +20,7 @@ from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.capability_scanner import scan_capability
+from jigga.runtime.channel_listener import channel_listen, enabled_channels
 from jigga.runtime.gog import (
     DEFAULT_SERVICES,
     gog_auth_status,
@@ -175,6 +176,17 @@ def build_parser() -> argparse.ArgumentParser:
     telegram_sub.add_parser("status", help="Show Telegram bot token + allowlist + offset state")
     telegram_sub.add_parser("discover", help="Poll once bypassing the allowlist to find your chat ID")
     telegram_sub.add_parser("logout", help="Delete the stored Telegram bot token")
+
+    channels = sub.add_parser("channels", help="Channel listener (long-poll inbound -> tasks -> agents)")
+    channels_sub = channels.add_subparsers(dest="channels_command", required=True)
+    channels_sub.add_parser("status", help="List enabled channels and their config")
+    channels_listen = channels_sub.add_parser("listen", help="Run the long-poll channel listener")
+    channels_listen.add_argument("--long-poll-seconds", type=int, default=30)
+    channels_listen.add_argument("--max-cycles", type=int, default=None, help="Stop after N cycles (tests/demos)")
+    channels_listen.add_argument(
+        "--no-process", action="store_true",
+        help="Only enqueue messages as tasks; don't run agents (let the supervisor handle them)",
+    )
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -486,6 +498,33 @@ def main(argv: list[str] | None = None) -> int:
                     print("Removed stored Telegram bot token.")
                 else:
                     print("No stored Telegram bot token to remove.")
+                return 0
+            return 0
+
+        if args.command == "channels":
+            paths = get_paths(args.home)
+            if args.channels_command == "status":
+                print_json(
+                    [{"channel": name, "config": cfg} for name, cfg in enabled_channels(paths.home)]
+                )
+                return 0
+            if args.channels_command == "listen":
+                result = channel_listen(
+                    paths.home,
+                    paths.logs,
+                    paths.tasks,
+                    paths.agents,
+                    long_poll_seconds=args.long_poll_seconds,
+                    max_cycles=args.max_cycles,
+                    process_agents=not args.no_process,
+                )
+                print_json(
+                    {
+                        "status": result["status"],
+                        "cycles": result["cycles"],
+                        "stopped_by_signal": result["stopped_by_signal"],
+                    }
+                )
                 return 0
             return 0
 
