@@ -6,6 +6,7 @@ import pytest
 
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_workflows
+from jigga.core.models import AgentConfig
 from jigga.runtime.policy import evaluate_filesystem, evaluate_shell
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.tools.safe_process import ProcessPolicyError, run_safe_process
@@ -37,6 +38,36 @@ def test_workflow_required_approval_returns_needs_approval(tmp_path: Path) -> No
     assert any(step["policy"]["status"] == "needs_approval" for step in plan["steps"])
     result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "social_content_syndication")
     assert result["status"] == "needs_approval"
+
+
+def test_filesystem_deny_matches_bare_basename_anywhere_in_tree() -> None:
+    agent = AgentConfig(
+        id="sentry",
+        name="Sentry",
+        role="secrets guard",
+        permissions={"filesystem": {"allow": ["/workspace"], "deny": [".env", "id_rsa", "secrets/**"]}},
+    )
+    # bare basenames must match the file no matter how deeply nested
+    assert evaluate_filesystem(agent, "/workspace/.env").status == "deny"
+    assert evaluate_filesystem(agent, "/workspace/apps/api/.env").status == "deny"
+    assert evaluate_filesystem(agent, "/workspace/apps/api/config/id_rsa").status == "deny"
+    # `**` glob must match files under the prefix
+    assert evaluate_filesystem(agent, "/workspace/secrets/private.key").status == "deny"
+    # similar-looking names must NOT trigger a false match
+    assert evaluate_filesystem(agent, "/workspace/apps/foo.env.example").status == "allow"
+    assert evaluate_filesystem(agent, "/workspace/apps/.envrc").status == "allow"
+
+
+def test_filesystem_deny_handles_tilde_directory_patterns() -> None:
+    agent = AgentConfig(
+        id="sentry",
+        name="Sentry",
+        role="secrets guard",
+        permissions={"filesystem": {"allow": ["~/Projects"], "deny": ["~/.ssh", "~/.aws"]}},
+    )
+    assert evaluate_filesystem(agent, "~/.ssh/id_rsa").status == "deny"
+    assert evaluate_filesystem(agent, "~/.aws/credentials").status == "deny"
+    assert evaluate_filesystem(agent, "~/Projects/content/brief.md").status == "allow"
 
 
 def test_safe_process_plans_allowed_command_and_blocks_dangerous_command(tmp_path: Path) -> None:

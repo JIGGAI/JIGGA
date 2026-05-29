@@ -21,7 +21,7 @@ from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.team import run_team
 from jigga.runtime.workflow import plan_workflow, run_workflow
-from jigga.core.config import load_agents, load_workflows
+from jigga.core.config import default_permission_mode, load_agents, load_workflows
 
 
 def print_json(value: Any) -> None:
@@ -146,7 +146,11 @@ def main(argv: list[str] | None = None) -> int:
                 workflow = workflows.get(args.workflow_id)
                 if workflow is None:
                     raise ValueError(f"Workflow not found: {args.workflow_id}")
-                plan = plan_workflow(workflow, load_agents(paths.agents))
+                plan = plan_workflow(
+                    workflow,
+                    load_agents(paths.agents),
+                    default_mode=default_permission_mode(paths.home),
+                )
                 if args.json_output:
                     print_json(plan)
                 else:

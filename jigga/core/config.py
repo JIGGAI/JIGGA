@@ -3,7 +3,30 @@ from __future__ import annotations
 from pathlib import Path
 
 from jigga.core.io import list_config_files, read_yaml
-from jigga.core.models import AgentConfig, MemoryScope, TeamConfig, WorkflowConfig
+from jigga.core.models import AgentConfig, MemoryScope, TeamConfig, WorkflowConfig, validate_permission_mode
+
+DEFAULT_MAX_WAKES_PER_HOUR = 12
+DEFAULT_PERMISSION_MODE = "ask"
+
+
+def load_runtime_config(home: Path) -> dict:
+    config_file = home / "config.yaml"
+    if not config_file.exists():
+        return {}
+    return read_yaml(config_file) or {}
+
+
+def max_wakes_per_hour(home: Path) -> int:
+    config = load_runtime_config(home)
+    supervisor = config.get("supervisor") or {}
+    return int(supervisor.get("max_wakes_per_agent_per_hour", DEFAULT_MAX_WAKES_PER_HOUR))
+
+
+def default_permission_mode(home: Path) -> str:
+    config = load_runtime_config(home)
+    defaults = config.get("defaults") or {}
+    mode = defaults.get("permission_mode", DEFAULT_PERMISSION_MODE)
+    return validate_permission_mode(str(mode))
 
 
 def load_agents(path: Path) -> dict[str, AgentConfig]:

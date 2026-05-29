@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from jigga.core.config import load_agents, load_workflows
+from jigga.core.config import default_permission_mode, load_agents, load_workflows
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.memory import build_context_package, write_memory_result
-from jigga.runtime.policy import evaluate_workflow_step
+from jigga.runtime.policy import evaluate_workflow_step, resolve_permission_mode
 
 
 def _required_permissions(workflow: WorkflowConfig) -> list[str]:
@@ -16,16 +16,31 @@ def _required_permissions(workflow: WorkflowConfig) -> list[str]:
     return list(required) if isinstance(required, list) else []
 
 
-def _step_policy(step: WorkflowStep, workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> dict[str, str | None]:
+def _step_policy(
+    step: WorkflowStep,
+    workflow: WorkflowConfig,
+    agents: dict[str, AgentConfig],
+    default_mode: str,
+) -> dict[str, str | None]:
     agent = agents.get(step.agent or "")
-    decision = evaluate_workflow_step(step, agent)
+    decision = evaluate_workflow_step(step, agent, default_mode=default_mode)
     status = {"ask": "needs_approval", "deny": "blocked", "allow": "allow"}[decision.status]
     if decision.status == "allow" and step.agent and step.agent not in agents and step.optional:
         status = "skipped"
-    return {"status": status, "reason": decision.reason, "permission": decision.permission}
+    mode = resolve_permission_mode(agent, default_mode) if agent else None
+    return {
+        "status": status,
+        "reason": decision.reason,
+        "permission": decision.permission,
+        "permission_mode": mode,
+    }
 
 
-def plan_workflow(workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> dict[str, Any]:
+def plan_workflow(
+    workflow: WorkflowConfig,
+    agents: dict[str, AgentConfig],
+    default_mode: str = "ask",
+) -> dict[str, Any]:
     steps = []
     for step in workflow.steps:
         steps.append(
@@ -36,7 +51,7 @@ def plan_workflow(workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> d
                 "output": step.output,
                 "optional": step.optional,
                 "approval": step.approval or "not_required",
-                "policy": _step_policy(step, workflow, agents),
+                "policy": _step_policy(step, workflow, agents, default_mode),
             }
         )
     return {
@@ -50,6 +65,7 @@ def plan_workflow(workflow: WorkflowConfig, agents: dict[str, AgentConfig]) -> d
         "trigger": workflow.trigger,
         "permissions": _required_permissions(workflow),
         "memory": workflow.memory,
+        "default_permission_mode": default_mode,
         "steps": steps,
         "can_run": all(step["policy"]["status"] in {"allow", "skipped"} for step in steps),
     }
@@ -105,7 +121,7 @@ def run_workflow(home: Path, logs_dir: Path, workflows_dir: Path, agents_dir: Pa
     if workflow is None:
         raise ValueError(f"Workflow not found: {workflow_id}")
 
-    plan = plan_workflow(workflow, agents)
+    plan = plan_workflow(workflow, agents, default_mode=default_permission_mode(home))
     if not plan["can_run"]:
         status = "needs_approval" if any(step["policy"]["status"] == "needs_approval" for step in plan["steps"]) else "blocked"
         append_event(logs_dir, "workflow.plan_blocked", status=status, workflow=workflow_id, plan=plan)
