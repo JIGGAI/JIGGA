@@ -6,7 +6,17 @@ from typing import Any, get_args, Literal, TypeVar
 
 
 TaskState = Literal["pending", "claimed", "running", "blocked", "needs_approval", "failed", "completed", "archived"]
+PermissionMode = Literal["plan_only", "ask", "accept_edits", "autonomous", "locked_down"]
 T = TypeVar("T")
+
+
+def validate_permission_mode(mode: str) -> str:
+    if mode not in get_args(PermissionMode):
+        raise ValueError(
+            f"Invalid permission_mode: {mode!r}. "
+            f"Allowed: {', '.join(get_args(PermissionMode))}."
+        )
+    return mode
 
 
 def now_iso() -> str:
@@ -26,6 +36,7 @@ class AgentConfig:
     description: str | None = None
     model: str | None = None
     memory_scope: str | None = None
+    permission_mode: str | None = None
     tools: list[str] = field(default_factory=list)
     wake: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
@@ -35,6 +46,8 @@ class AgentConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any], source: str | None = None) -> "AgentConfig":
         obj = cls(**_filter(cls, data))
+        if obj.permission_mode is not None:
+            validate_permission_mode(obj.permission_mode)
         obj.source = source
         return obj
 

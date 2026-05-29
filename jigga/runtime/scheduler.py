@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_agents, load_workflows
 from jigga.runtime.events import JiggaEvent
+
+# Supported friendly-schedule patterns for workflow triggers. Cron strings on
+# agents use the full 5-field parser below; workflow `trigger.schedule:` strings
+# go through this generalized parser.
+#
+# Examples:
+#   "weekday 7:30am"        → Mon–Fri at 07:30
+#   "weekdays at 17:00"     → Mon–Fri at 17:00
+#   "daily 9:00"            → every day at 09:00
+#   "weekend 10am"          → Sat–Sun at 10:00
+#   "every day at 6:30pm"   → every day at 18:30
+_TIME_PATTERN = re.compile(r"(\d{1,2}):(\d{2})\s*(am|pm)?|(\d{1,2})\s*(am|pm)", re.IGNORECASE)
 
 
 def _cron_due(cron: str, now: datetime) -> bool:
@@ -46,13 +59,38 @@ def _weekday_matches(field: str, weekday: int) -> bool:
     return _field_matches(normalized, cron_weekday)
 
 
+def _parse_friendly_time(text: str) -> tuple[int, int] | None:
+    match = _TIME_PATTERN.search(text)
+    if not match:
+        return None
+    if match.group(1) is not None:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        period = (match.group(3) or "").lower()
+    else:
+        hour = int(match.group(4))
+        minute = 0
+        period = (match.group(5) or "").lower()
+    if period == "pm" and hour < 12:
+        hour += 12
+    elif period == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour, minute
+
+
 def _friendly_schedule_due(schedule: str, now: datetime) -> bool:
     lowered = schedule.lower()
-    if "weekday" in lowered and now.weekday() >= 5:
+    if ("weekday" in lowered or "weekdays" in lowered) and now.weekday() >= 5:
         return False
-    if "7:30" in lowered or "07:30" in lowered:
-        return now.hour == 7 and now.minute == 30
-    return False
+    if "weekend" in lowered and now.weekday() < 5:
+        return False
+    parsed = _parse_friendly_time(lowered)
+    if parsed is None:
+        return False
+    hour, minute = parsed
+    return now.hour == hour and now.minute == minute
 
 
 def due_events(agents_dir: Path, workflows_dir: Path, now: datetime | None = None) -> list[JiggaEvent]:

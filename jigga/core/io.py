@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -16,9 +17,17 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path: Path, value: Any) -> None:
+def _atomic_write_text(path: Path, content: str) -> None:
+    # Write to a temp sibling, then os.replace — atomic on POSIX, avoids
+    # partial-file races between concurrent readers and writers.
     ensure_dir(path.parent)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_json(path: Path, value: Any) -> None:
+    _atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def read_yaml(path: Path) -> Any:
@@ -26,8 +35,7 @@ def read_yaml(path: Path) -> Any:
 
 
 def write_yaml(path: Path, value: Any) -> None:
-    ensure_dir(path.parent)
-    path.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+    _atomic_write_text(path, yaml.safe_dump(value, sort_keys=False))
 
 
 def copy_if_missing(source: Path, target: Path) -> bool:
