@@ -55,12 +55,28 @@ There is at least one unrelated tool also named `gog` (a node-based script runne
 | `gog.gmail_send` | `gog --json gmail send --to ... [--subject ...]` | **gated**: requires `confirm_send: true` in step input; prefer drafts + `approval: required` |
 | `gog.calendar_events` | `gog --json calendar events [--today]` | |
 | `gog.calendar_create` | `gog --json calendar create --summary ... [--from/--to/--with-meet]` | requires `summary` |
+| `gog.drive_list` | `gog --json drive tree --parent <root\|folder_id> [--depth N]` | defaults to `root` |
+| `gog.drive_get` | `gog --json drive get <id> [--fields ...]` | requires `file_id` |
+| `gog.drive_share` | `gog --json drive share <id> --to <to> --email <email> [--notify]` | **gated**: requires `confirm_share: true` (external blast radius) |
+| `gog.sheets_get` | `gog --json sheets get <ssid> '<range>'` | requires `spreadsheet_id` + `range` |
+| `gog.sheets_append` | `gog --json sheets table append <ssid> <table> '<a\|b\|c>'` | takes `row` string or `values` list (joined with `\|`) |
+| `gog.docs_get` | `gog --json docs raw <id> --pretty` | requires `doc_id` |
+| `gog.docs_write` | `gog --json docs write <id> --append --markdown --text '...'` | appends to user's own doc; requires `doc_id` + `text` |
 
 Output: gog's `--json` stdout is parsed and returned under the `data` key. We pass it through rather than re-normalizing — gog already produces structured JSON, and re-shaping it would mean guessing field names we don't control.
 
-### Send is gated
+### Gated actions (external/irreversible blast radius)
 
-`gog.gmail_send` refuses unless the step input sets `confirm_send: true`. The recommended pattern is `gog.gmail_draft` (always safe) and let the user send from Gmail, or gate an autonomous send step with `approval: required` so it routes through the permission flow.
+Two actions are hard-gated — they refuse unless the step input opts in explicitly, on the principle that anything reaching *outside* the user's own account or sending mail needs a deliberate switch:
+
+- `gog.gmail_send` → requires `confirm_send: true`. Prefer `gog.gmail_draft` (always safe) and send from Gmail.
+- `gog.drive_share` → requires `confirm_share: true`. Grants someone else access to a file.
+
+Writes to the user's *own* data (`gog.sheets_append`, `gog.docs_write`) are **not** hard-gated — they're additive/reversible and scoped to the user's own documents. Gate them at the workflow level with `approval: required` if you want a human check.
+
+### Tasks deferred
+
+The Google Tasks service is reachable by gog, but its subcommands aren't documented in the gogcli README, so we did not add `gog.tasks_*` actions rather than guess the argv. Add them once the command surface is confirmed.
 
 ## CLI
 
@@ -97,7 +113,8 @@ The whole pattern is designed so a contributor adds a new Google-Workspace-style
 
 ## Follow-up work
 
-- Expand the action set (Drive, Sheets, Docs) — each is a few lines of argv mapping in `gog.py`.
+- Add Google Tasks actions once gog's Tasks subcommands are confirmed (deferred — undocumented in the gogcli README).
+- More Sheets ops (`batch-update` for arbitrary-cell writes — currently only additive `append` is exposed to avoid the overwrite surface) and Docs ops (`format`, `find-replace`).
 - Surface `gog`'s `--plain` TSV mode as an alternative output for workflows that want flat text.
 - Auto-detect gog's keyring backend choice rather than always forcing `file` (some desktop users may prefer the OS keyring for interactive use).
 - Decide whether to deprecate the native `google-calendar` connector once `gog` proves out in real use (currently both ship).

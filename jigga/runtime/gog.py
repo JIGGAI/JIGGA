@@ -49,7 +49,7 @@ from jigga.runtime.sandbox import SandboxSpec, run_sandboxed
 
 GOG_BINARY = "gog"
 KEYRING_PASSWORD_FILENAME = "gog_keyring_password"
-DEFAULT_SERVICES = ("gmail", "calendar", "drive")
+DEFAULT_SERVICES = ("gmail", "calendar", "drive", "sheets", "docs")
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 # Action → gog argv template. Each entry is the subcommand path; per-action
@@ -62,6 +62,13 @@ SUPPORTED_ACTIONS = (
     "gog.gmail_send",
     "gog.calendar_events",
     "gog.calendar_create",
+    "gog.drive_list",
+    "gog.drive_get",
+    "gog.drive_share",
+    "gog.sheets_get",
+    "gog.sheets_append",
+    "gog.docs_get",
+    "gog.docs_write",
 )
 
 # Sending mail is the one destructive Google action we expose. It's gated:
@@ -279,6 +286,20 @@ def gog_handler(
         return _calendar_events(secrets_dir, step.action, params)
     if step.action == "gog.calendar_create":
         return _calendar_create(secrets_dir, step.action, params)
+    if step.action == "gog.drive_list":
+        return _drive_list(secrets_dir, step.action, params)
+    if step.action == "gog.drive_get":
+        return _drive_get(secrets_dir, step.action, params)
+    if step.action == "gog.drive_share":
+        return _drive_share(secrets_dir, step.action, params)
+    if step.action == "gog.sheets_get":
+        return _sheets_get(secrets_dir, step.action, params)
+    if step.action == "gog.sheets_append":
+        return _sheets_append(secrets_dir, step.action, params)
+    if step.action == "gog.docs_get":
+        return _docs_get(secrets_dir, step.action, params)
+    if step.action == "gog.docs_write":
+        return _docs_write(secrets_dir, step.action, params)
     raise ValueError(
         f"Unknown gog action: {step.action!r}. Supported: {', '.join(SUPPORTED_ACTIONS)}."
     )
@@ -362,4 +383,109 @@ def _calendar_create(secrets_dir: Path, action: str, params: dict[str, Any]) -> 
         args += ["--to", str(params["to"])]
     if params.get("with_meet"):
         args.append("--with-meet")
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+# --- Drive -----------------------------------------------------------------
+
+
+def _drive_list(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Browse a Drive folder tree. Defaults to the user's root folder; the
+    Drive API accepts the alias 'root'. Pass folder_id to scope to a subtree."""
+    folder_id = str(params.get("folder_id") or "root")
+    args = ["drive", "tree", "--parent", folder_id]
+    depth = params.get("depth")
+    if depth is not None:
+        args += ["--depth", str(int(depth))]
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+def _drive_get(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    file_id = str(params.get("file_id") or "").strip()
+    if not file_id:
+        raise ValueError("gog.drive_get requires 'file_id' in input")
+    args = ["drive", "get", file_id]
+    fields = params.get("fields")
+    if fields:
+        args += ["--fields", str(fields)]
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+def _drive_share(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Share a Drive file. This has EXTERNAL blast radius (grants someone else
+    access), so it's gated like gmail_send: refuse unless confirm_share: true.
+    Prefer gating the workflow step with approval: required instead of baking
+    confirm_share into a stored workflow."""
+    if not bool(params.get("confirm_share", False)):
+        return {
+            "source": "capability.gog",
+            "action": action,
+            "status": "gog.share_refused",
+            "message": (
+                "gog.drive_share grants external access and requires "
+                "confirm_share: true in the step input. Prefer gating the step "
+                "with approval: required."
+            ),
+        }
+    file_id = str(params.get("file_id") or "").strip()
+    email = str(params.get("email") or "").strip()
+    if not file_id or not email:
+        raise ValueError("gog.drive_share requires 'file_id' and 'email' in input")
+    to = str(params.get("to") or "user")
+    args = ["drive", "share", file_id, "--to", to, "--email", email]
+    if params.get("notify"):
+        args.append("--notify")
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+# --- Sheets ----------------------------------------------------------------
+
+
+def _sheets_get(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    spreadsheet_id = str(params.get("spreadsheet_id") or "").strip()
+    cell_range = str(params.get("range") or "").strip()
+    if not spreadsheet_id or not cell_range:
+        raise ValueError("gog.sheets_get requires 'spreadsheet_id' and 'range' in input")
+    args = ["sheets", "get", spreadsheet_id, cell_range]
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+def _sheets_append(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Append a row to a sheets 'table'. gog takes the row as a pipe-delimited
+    string (e.g. 'Ship README|done'). Accepts either a pre-joined 'row' string
+    or a 'values' list which we join with '|'."""
+    spreadsheet_id = str(params.get("spreadsheet_id") or "").strip()
+    table = str(params.get("table") or "").strip()
+    if not spreadsheet_id or not table:
+        raise ValueError("gog.sheets_append requires 'spreadsheet_id' and 'table' in input")
+    row = params.get("row")
+    if row is None:
+        values = params.get("values")
+        if not isinstance(values, list) or not values:
+            raise ValueError("gog.sheets_append requires 'row' (string) or 'values' (list) in input")
+        row = "|".join(str(v) for v in values)
+    args = ["sheets", "table", "append", spreadsheet_id, table, str(row)]
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+# --- Docs ------------------------------------------------------------------
+
+
+def _docs_get(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    doc_id = str(params.get("doc_id") or "").strip()
+    if not doc_id:
+        raise ValueError("gog.docs_get requires 'doc_id' in input")
+    args = ["docs", "raw", doc_id, "--pretty"]
+    return _result(action, _run_gog_json(secrets_dir, args))
+
+
+def _docs_write(secrets_dir: Path, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Append markdown text to a doc the user owns. Writes to the user's own
+    document (not external), so it's ungated here — gate with approval:
+    required at the workflow level if you want a human check."""
+    doc_id = str(params.get("doc_id") or "").strip()
+    text = params.get("text")
+    if not doc_id or not text:
+        raise ValueError("gog.docs_write requires 'doc_id' and 'text' in input")
+    args = ["docs", "write", doc_id, "--append", "--markdown", "--text", str(text)]
     return _result(action, _run_gog_json(secrets_dir, args))
