@@ -148,14 +148,14 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 ### Milestone C — Observability & ops (in parallel with A/B)
 *Goal: when something goes wrong in production, you can tell what happened.*
 
-- `jigga logs tail` / `jigga logs inspect <event_id>` / `jigga trace <id>` / `jigga audit --agent X --since 24h`.
-- Secret redaction middleware on every audit write.
-- Trace ID propagation: supervisor tick → agent run → spawned subagent / capability invocation all share a parent trace.
-- Daily log rotation with retention policy in `config.yaml`.
-- Per-model-call cost recording (input/output tokens × provider rate) → per-agent/per-workflow rollups.
-- Per-agent budget caps + soft-warn audit event at 80% / `policy.denied` at 100%.
+- ✅ **Audit query CLI** — `jigga logs tail`, `jigga audit --agent X --type T --since 24h --status S`, `jigga trace <id>`. (`docs/OBSERVABILITY_RUNTIME_NOTES.md`)
+- ✅ **Secret redaction** on every audit write (key-based + value-pattern based).
+- ⏭️ **Trace ID propagation:** supervisor tick → agent run → spawned subagent / capability invocation all share a parent trace (today `trace` correlates by existing run/task/session ids).
+- ⏭️ **Daily log rotation** with retention policy in `config.yaml` (log grows unbounded today).
+- ⏭️ **Per-model-call cost recording** (input/output tokens × provider rate) → per-agent/per-workflow rollups.
+- ⏭️ **Per-agent budget caps** + soft-warn audit event at 80% / `policy.denied` at 100%.
 
-**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call.
+**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call. (Audit/trace shipped; cost + budgets remain.)
 
 ### Milestone D — Memory at scale
 *Goal: long-running agents don't drown.*
