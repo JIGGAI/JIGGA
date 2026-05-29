@@ -151,12 +151,12 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
     },
     {
         "name": "notifications",
-        "version": "0.1.0",
-        "summary": "Dry-run notification delivery actions for MVP workflows.",
+        "version": "0.2.0",
+        "summary": "Cross-platform desktop notifications (notify-send on Linux, osascript on macOS).",
         "actions": ["notifications.send"],
         "permissions": {"notifications": "send"},
         "risk_level": "low",
-        "handler": "dry_run.notifications",
+        "handler": "runtime.notifications",
     },
     {
         "name": "summarization",

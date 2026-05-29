@@ -36,6 +36,7 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                 "home": str(paths.home),
                 "supervisor": {"interval_seconds": 60, "max_wakes_per_agent_per_hour": 12},
                 "defaults": {"memory_scope": "task_only", "permission_mode": "ask"},
+                "notifications": {"delivery_mode": "real"},
                 "delegation_policy": {
                     "enabled": True,
                     "allowed_backends": ["dry_run"],
