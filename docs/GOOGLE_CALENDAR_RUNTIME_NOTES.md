@@ -74,9 +74,9 @@ jigga capabilities uninstall google-calendar  # full removal
 
 ## Design decision: bring-your-own-OAuth-client (locked in 2026-05-29)
 
-JIGGA does **not** ship a shared OAuth app, and won't. Each user creates their own Google Cloud project + OAuth client, and their calendar data flows through credentials they own and can revoke. This is consistent with the local-first philosophy: JIGGA-the-org never has anything to revoke, no shared client to secure, no centralized trust required. The ~3-minute Google Cloud Console setup is acceptable friction for that posture.
+For the **local-first runtime** (this repo), JIGGA does not ship a shared OAuth app. Each user creates their own Google Cloud project + OAuth client, and their calendar data flows through credentials they own and can revoke. This is consistent with the local-first philosophy: JIGGA-the-org never holds a shared credential, no centralized trust required, no shared client to secure. The ~3-minute Google Cloud Console setup is acceptable friction for that posture.
 
-If a future contributor proposes a shared JIGGA OAuth app: that's a design change, not a convenience optimization — surface it explicitly rather than landing it as a "quick win."
+A future **cloud version of JIGGA** may use a JIGGA-managed OAuth app to simplify onboarding, but that's a separate product target with a different trust model — out of scope for the local-first runtime. If you're working on this codebase and tempted to land "a shared OAuth app for convenience," that's a design change, not an optimization; surface it explicitly rather than slipping it in.
 
 ## Follow-up work
 
