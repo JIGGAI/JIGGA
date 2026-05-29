@@ -11,4 +11,5 @@ args:
 permissions:
   network:
     mode: deny
-risk_level: medium
+# Local stdio echo with no network use — risk_level matches actual surface
+risk_level: low

@@ -11,6 +11,7 @@ from jigga.commands.init import init_runtime
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
+from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
@@ -81,6 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capability_approve.add_argument("path", type=Path)
     capability_approve.add_argument("--approve", action="store_true", dest="confirm")
+
+    auth = sub.add_parser("auth", help="Authenticate external subagent CLI backends (codex, claude)")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    auth_sub.add_parser("status", help="Show which external CLI backends are installed and on PATH")
+    auth_login = auth_sub.add_parser(
+        "login", help="Run the upstream `<cli> login` flow for an external backend"
+    )
+    auth_login.add_argument("backend", help="Backend to authenticate (codex_cli, claude_code)")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -267,6 +276,14 @@ def main(argv: list[str] | None = None) -> int:
                         "scan": report.to_dict(),
                     }
                 )
+            return 0
+
+        if args.command == "auth":
+            if args.auth_command == "status":
+                print_json([status.to_dict() for status in auth_status()])
+            elif args.auth_command == "login":
+                exit_code = run_external_login(args.backend)
+                return exit_code
             return 0
 
         if args.command == "sessions":
