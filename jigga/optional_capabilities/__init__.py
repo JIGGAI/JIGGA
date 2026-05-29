@@ -36,6 +36,7 @@ from jigga.optional_capabilities.gog import setup as gog_setup
 from jigga.optional_capabilities.google_calendar import (
     setup as google_calendar_setup,
 )
+from jigga.optional_capabilities.telegram import setup as telegram_setup
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,12 @@ REGISTRY: dict[str, OptionalCapability] = {
         summary="Read events from your Google Calendar via OAuth (native, no external tool)",
         manifest_path=_here() / "google_calendar" / "manifest.yaml",
         setup_fn=google_calendar_setup,
+    ),
+    "telegram": OptionalCapability(
+        name="telegram",
+        summary="Telegram channel — receive and reply to messages via a bot",
+        manifest_path=_here() / "telegram" / "manifest.yaml",
+        setup_fn=telegram_setup,
     ),
 }
 

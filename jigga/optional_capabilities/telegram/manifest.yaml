@@ -1,0 +1,16 @@
+name: telegram
+version: 0.1.0
+summary: Telegram channel — receive and reply to messages via a Telegram bot.
+type: native
+actions:
+  - telegram.poll_messages
+  - telegram.send_message
+permissions:
+  network:
+    mode: allow
+    target: https://api.telegram.org
+  secrets:
+    required:
+      - TELEGRAM_BOT_TOKEN
+risk_level: medium
+handler: runtime.telegram

@@ -1,0 +1,44 @@
+# Telegram echo demo workflow.
+#
+# Requires: `jigga capabilities install telegram` (collects bot token + your
+# allowed chat ID).
+#
+# Polls for new inbound messages and is the scaffold for a reply step. Because
+# the reply needs the chat_id from a specific polled message, a real auto-reply
+# loop is best driven by an agent that reads the poll output and calls
+# telegram.send_message per message (see the "auto-reply" note in
+# docs/CHANNELS_TELEGRAM_RUNTIME_NOTES.md). This demo shows the poll step and a
+# static-reply example you can point at your own chat_id.
+#
+# Run with:
+#   jigga --home $JIGGA_HOME workflow run telegram_echo
+#
+# Schedule it (so JIGGA "listens") by giving it a cron trigger and running the
+# supervisor — polling on a cadence is how this channel stays live without a
+# public webhook.
+
+id: telegram_echo
+name: Telegram echo
+purpose: Poll Telegram for new messages (and demonstrate a reply).
+status: approved
+trigger:
+  manual: true
+steps:
+  - id: poll
+    agent: daily_briefing_agent
+    action: telegram.poll_messages
+    input:
+      limit: 20
+
+  # Example static reply. Replace <YOUR_CHAT_ID> with an allowed chat ID to
+  # see an outbound message; in a real workflow an agent step would derive the
+  # chat_id from each polled message instead.
+  # - id: reply
+  #   agent: daily_briefing_agent
+  #   action: telegram.send_message
+  #   input:
+  #     chat_id: <YOUR_CHAT_ID>
+  #     text: "JIGGA received your message."
+
+outputs:
+  - poll

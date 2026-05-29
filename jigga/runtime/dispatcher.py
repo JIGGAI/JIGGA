@@ -14,6 +14,7 @@ from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.filesystem import filesystem_handler
 from jigga.runtime.gog import gog_handler
 from jigga.runtime.google_calendar import google_calendar_handler
+from jigga.runtime.telegram import telegram_handler
 from jigga.runtime.mcp_client import call_mcp_tool
 from jigga.runtime.notifications import (
     NotificationRequest,
@@ -437,6 +438,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.filesystem": filesystem_handler,
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,
+    "runtime.telegram": telegram_handler,
     "skill_pack.default": _skill_pack_handler,
     "mcp_server.subprocess": _mcp_server_handler,
 }
