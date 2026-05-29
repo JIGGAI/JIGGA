@@ -118,13 +118,21 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 ### Milestone A — Real connectors (current biggest gap to demo value)
 *Goal: the bundled workflows do something users can feel.*
 
-- Real **Notification adapter** (desktop first — `notify-send` on Linux, `osascript` on macOS, native toast on Windows). Wire it behind the existing `notifications` capability.
-- Real **Calendar connector** for at least one provider (Google Calendar via OAuth; iCal feed URL as a stopgap). New `mcp_server`-typed capability is probably the cleanest path so it lives outside the core runtime.
-- Real **Email connector** — IMAP read + SMTP draft; send always requires approval. Same packaging choice as calendar.
-- Project-local capability discovery (`<project>/.jigga/capabilities/`) so workflows can ship their own connectors without polluting `~/.jigga/`.
-- Filesystem capabilities (`read_file`, `write_file`, `apply_patch`, `list_directory`, `search_files`) as native handlers — used by the email/calendar/content workflows internally.
+**Status as of 2026-05-29 (after PR #11):**
 
-**Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification.
+- ✅ **Notification adapter** (PR #7) — real cross-platform via `notify-send`/`osascript`. Bundled.
+- ✅ **Filesystem capabilities** (PR #9) — `read_file`/`write_file`/`list_directory`/`search_files` as a bundled native capability.
+- ✅ **Project-local capability discovery** (PR #10) — `<project>/.jigga/capabilities/` with auto-detect from cwd.
+- ✅ **Google Calendar via OAuth** (PR #11) — first opt-in first-party capability; also introduced the **three-tier capability model** (bundled / opt-in first-party / user-or-project-local).
+- ⏭️ **Email connector** (IMAP read + SMTP draft) — next slice. Ships as opt-in first-party (`jigga capabilities install email`).
+- ⏭️ **iCal stopgap** (small follow-up after email) — covers Apple/iCloud users and public calendar feeds. Also opt-in first-party — no OAuth, just an iCal URL.
+- ⏭️ **Outlook Calendar** (later) — same opt-in pattern, Microsoft Graph instead of Google.
+
+**Convention locked in by PR #11:** every real third-party connector ships as an opt-in first-party capability under `jigga/optional_capabilities/`. Users who don't want it never see it. No connector goes into `BUILTIN_CAPABILITY_DATA` — bundled is reserved for universal local primitives (filesystem, notifications, subagent-delegation, summarization).
+
+**Convention locked in for first-party connectors:** bring-your-own-OAuth-client / bring-your-own-credentials. JIGGA-the-org never holds a shared credential. A future cloud version of JIGGA is a separate product target with a different trust model — out of scope for this codebase.
+
+**Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification. Currently ~80% there (Google Calendar + notifications + filesystem are real; email is the gating item).
 
 ### Milestone B — Channels (how invocations reach the runtime)
 *Goal: JIGGA responds to events that didn't come from a CLI.*
