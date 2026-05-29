@@ -74,17 +74,67 @@ path for *all* capability invocation → identical policy/audit for workflow
 steps and (soon) agent tool calls. No behavior change (artifact path is still
 traced via `workflow.step.completed`).
 
-### PR B — tool-calling in `model_router`
-Extend the model request/response to pass a tool schema and parse tool-call
-responses. `dry_run` provider becomes scriptable (deterministic tool calls for
-tests); `openai_compatible` passes `tools` and reads `tool_calls`. Mocked-
-provider tests. No agent wiring yet.
+### PR B — tool-calling in `model_router` ✅
+Extended the model request/response to pass a tool schema and parse tool-call
+responses. `dry_run` provider is scriptable via `dry_run_tool_calls`
+(deterministic tool calls for tests); `openai_compatible` passes `tools` and
+reads `tool_calls`. Mocked-provider tests.
 
-### PR C — the agent loop
-Wire A + B together in `run_agent` (or a `run_agent_loop`): allowlist from
-`agent.tools` + permissions, bounded iterations, policy/approval per call,
-audit. This is where **channel auto-reply works** — an agent woken on a
-Telegram-message task reads it and calls `telegram.send_message` itself.
+### PR C — the agent loop ✅
+`run_agent` is now a bounded tool-use loop. Per task: resolve the tool
+allowlist (`agent.tools` + `permissions.tools.allow`, filtered to
+registry-resolvable actions), build OpenAI tool schemas (dot-sanitized names —
+`telegram.send_message` → `telegram__send_message` — with an exact reverse
+map), call the model with tools, dispatch each requested call via
+`dispatch_action` with the per-call gate, feed results back, loop. Bounded by
+`max_tool_calls_per_run` / `max_iterations`. Audit:
+`agent.tool_call.requested` / `.executed` / `.denied` / `.needs_approval`.
+
+Gate per call (`_gate_tool_call`):
+- not in the agent's allowlist → denied (tool-result error, loop continues).
+- `evaluate_capability_permissions` deny → denied (tool-result error, continues).
+- `risk_level` medium/high and mode ≠ `autonomous` → `needs_approval`, **halt
+  the task** (decided 2026-05-29).
+- over the call cap → halt.
+
+No-tool / dry-run behavior is preserved exactly (one call → final text →
+completed), so agents without `tools` or running against the dry-run provider
+behave as before.
+
+## Running against a real model
+
+The loop calls whatever provider is configured — there's nothing dry-run-only
+about it. To make agents act with a real LLM:
+
+```yaml
+# ~/.jigga/config.yaml
+models:
+  defaults:
+    provider: openai
+  providers:
+    openai:
+      kind: openai_compatible
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      default_model: gpt-4o-mini          # or any tool-calling model
+  profiles:
+    default:
+      primary: openai
+      fallback: [dry_run]
+```
+
+Then `export OPENAI_API_KEY=...`. Any agent with `tools` will now have the real
+model decide which capabilities to call; each call still passes through the
+same policy/risk/approval gate as a workflow step. An agent can also set
+`model: profile:default` or `model: gpt-4o-mini` to override per-agent.
+
+Optional loop bounds:
+
+```yaml
+agent_loop:
+  max_tool_calls_per_run: 10
+  max_iterations: 8
+```
 
 ## Related track (not part of this arc): channel listeners
 
