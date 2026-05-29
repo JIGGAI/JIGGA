@@ -9,6 +9,13 @@ actions:
   - gog.gmail_send
   - gog.calendar_events
   - gog.calendar_create
+  - gog.drive_list
+  - gog.drive_get
+  - gog.drive_share
+  - gog.sheets_get
+  - gog.sheets_append
+  - gog.docs_get
+  - gog.docs_write
 permissions:
   network:
     mode: allow

@@ -4,15 +4,13 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.models import WorkflowStep
-from jigga.runtime import gog as gog_module
 from jigga.runtime.gog import (
     GOGCLI_MARKERS,
     SUPPORTED_ACTIONS,
@@ -232,6 +230,166 @@ def test_unknown_action_raises(monkeypatch, tmp_path: Path) -> None:
     runtime = _StubRuntime(home=tmp_path)
     with pytest.raises(ValueError, match="Unknown gog action"):
         gog_handler(_step("gog.translate"), None, {}, {}, runtime)
+
+
+# --- Drive -----------------------------------------------------------------
+
+
+def test_drive_list_defaults_to_root(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path, stdout=json.dumps({"tree": []}))
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(_step("gog.drive_list"), None, {}, {}, runtime)
+    assert calls["args"] == ["--json", "drive", "tree", "--parent", "root"]
+
+
+def test_drive_list_with_folder_and_depth(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path, stdout=json.dumps({"tree": []}))
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(
+        _step("gog.drive_list", {"folder_id": "abc", "depth": 2}),
+        None,
+        {"folder_id": "abc", "depth": 2},
+        {},
+        runtime,
+    )
+    assert calls["args"] == ["--json", "drive", "tree", "--parent", "abc", "--depth", "2"]
+
+
+def test_drive_get_requires_file_id(monkeypatch, tmp_path: Path) -> None:
+    _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    with pytest.raises(ValueError, match="file_id"):
+        gog_handler(_step("gog.drive_get"), None, {}, {}, runtime)
+
+
+def test_drive_share_refused_without_confirm(monkeypatch, tmp_path: Path) -> None:
+    _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    result = gog_handler(
+        _step("gog.drive_share", {"file_id": "f1", "email": "a@b.com"}),
+        None,
+        {"file_id": "f1", "email": "a@b.com"},
+        {},
+        runtime,
+    )
+    assert result["status"] == "gog.share_refused"
+
+
+def test_drive_share_proceeds_with_confirm(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path, stdout=json.dumps({"shared": True}))
+    runtime = _StubRuntime(home=tmp_path)
+    result = gog_handler(
+        _step(
+            "gog.drive_share",
+            {"file_id": "f1", "email": "a@b.com", "notify": True, "confirm_share": True},
+        ),
+        None,
+        {"file_id": "f1", "email": "a@b.com", "notify": True, "confirm_share": True},
+        {},
+        runtime,
+    )
+    assert result["status"] == "ok"
+    assert calls["args"] == [
+        "--json", "drive", "share", "f1", "--to", "user", "--email", "a@b.com", "--notify",
+    ]
+
+
+# --- Sheets ----------------------------------------------------------------
+
+
+def test_sheets_get_maps_range(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path, stdout=json.dumps({"values": []}))
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(
+        _step("gog.sheets_get", {"spreadsheet_id": "ss1", "range": "Sheet1!A1:D20"}),
+        None,
+        {"spreadsheet_id": "ss1", "range": "Sheet1!A1:D20"},
+        {},
+        runtime,
+    )
+    assert calls["args"] == ["--json", "sheets", "get", "ss1", "Sheet1!A1:D20"]
+
+
+def test_sheets_get_requires_id_and_range(monkeypatch, tmp_path: Path) -> None:
+    _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    with pytest.raises(ValueError, match="spreadsheet_id"):
+        gog_handler(
+            _step("gog.sheets_get", {"spreadsheet_id": "ss1"}),
+            None,
+            {"spreadsheet_id": "ss1"},
+            {},
+            runtime,
+        )
+
+
+def test_sheets_append_joins_values_with_pipe(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(
+        _step("gog.sheets_append", {"spreadsheet_id": "ss1", "table": "Tasks", "values": ["Ship README", "done"]}),
+        None,
+        {"spreadsheet_id": "ss1", "table": "Tasks", "values": ["Ship README", "done"]},
+        {},
+        runtime,
+    )
+    assert calls["args"] == ["--json", "sheets", "table", "append", "ss1", "Tasks", "Ship README|done"]
+
+
+def test_sheets_append_accepts_prejoined_row(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(
+        _step("gog.sheets_append", {"spreadsheet_id": "ss1", "table": "Tasks", "row": "a|b"}),
+        None,
+        {"spreadsheet_id": "ss1", "table": "Tasks", "row": "a|b"},
+        {},
+        runtime,
+    )
+    assert calls["args"] == ["--json", "sheets", "table", "append", "ss1", "Tasks", "a|b"]
+
+
+def test_sheets_append_requires_row_or_values(monkeypatch, tmp_path: Path) -> None:
+    _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    with pytest.raises(ValueError, match="'row'.*'values'"):
+        gog_handler(
+            _step("gog.sheets_append", {"spreadsheet_id": "ss1", "table": "Tasks"}),
+            None,
+            {"spreadsheet_id": "ss1", "table": "Tasks"},
+            {},
+            runtime,
+        )
+
+
+# --- Docs ------------------------------------------------------------------
+
+
+def test_docs_get_maps_args(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path, stdout=json.dumps({"body": "..."}))
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(_step("gog.docs_get", {"doc_id": "d1"}), None, {"doc_id": "d1"}, {}, runtime)
+    assert calls["args"] == ["--json", "docs", "raw", "d1", "--pretty"]
+
+
+def test_docs_write_maps_args(monkeypatch, tmp_path: Path) -> None:
+    calls = _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    gog_handler(
+        _step("gog.docs_write", {"doc_id": "d1", "text": "## Status"}),
+        None,
+        {"doc_id": "d1", "text": "## Status"},
+        {},
+        runtime,
+    )
+    assert calls["args"] == ["--json", "docs", "write", "d1", "--append", "--markdown", "--text", "## Status"]
+
+
+def test_docs_write_requires_doc_id_and_text(monkeypatch, tmp_path: Path) -> None:
+    _handler_with_fake_gog(monkeypatch, tmp_path)
+    runtime = _StubRuntime(home=tmp_path)
+    with pytest.raises(ValueError, match="doc_id"):
+        gog_handler(_step("gog.docs_write", {"doc_id": "d1"}), None, {"doc_id": "d1"}, {}, runtime)
 
 
 # --- send gating -----------------------------------------------------------
