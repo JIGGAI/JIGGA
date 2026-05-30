@@ -83,6 +83,37 @@ The agent never knows or cares that a LoRA is applied; the router resolves the a
 
 ---
 
+## Local-provider load and cache strategy
+
+A loaded 8B base model + LoRA is heavy on memory and slow to cold-start. The local provider needs an in-process cache or the runtime is unusable in practice.
+
+**Cache shape.** Keep one resident model per `(base_model, quantization)` pair. Multiple LoRAs that share a base attach as adapters to the same loaded model and switch via `peft.PeftModel.set_adapter()` — cheap (no reload). LoRAs against different bases each require their own loaded base.
+
+```
+local_provider state:
+  loaded_bases: {
+    "meta-llama/Llama-3.1-8B-Instruct@int4": <PeftModel instance>,
+  }
+  attached_adapters: {
+    "meta-llama/Llama-3.1-8B-Instruct@int4": ["voice_v3", "voice_v4"],
+  }
+  active_adapter_per_base: {
+    "meta-llama/Llama-3.1-8B-Instruct@int4": "voice_v3",
+  }
+```
+
+**Memory budget.** Llama 3.1 8B at int4 is ~5GB resident; bf16 is ~16GB. Default to int4 for the local provider; expose a `quantization: bf16|int4|int8` knob per provider config. A new `models.local_provider.max_resident_bases: 1` config knob caps memory pressure — exceeding it evicts the least-recently-used base.
+
+**Cold start.** Lazy-load on first invocation. Emit `model.local.warming` audit event before the load and `model.local.warmed` after, with duration. Subsequent invocations against the same base + adapter combo are warm.
+
+**Lifecycle within a supervisor tick.** Each `agent.run` today instantiates fresh runtime structures but does not fork a process — the cache lives in the supervisor process for the duration of `supervisor_loop`. A `jigga run agent <id>` (one-shot CLI) pays a cold start every time; a long-running `jigga supervisor start` warms once and reuses. Document this trade-off — users running ad-hoc commands against local LoRAs will hit cold starts they would not see under the daemon.
+
+**Future helper-process option.** If cold start cost dominates one-shot UX, the implementation agent can split the local provider into a small persistent helper (think `vllm`-style daemon) that the runtime talks to over a UNIX socket. Out of scope for v1, but the provider interface should not assume in-process; pass an opaque handle (string or socket path), do not hand the runtime a `PeftModel`.
+
+**Hot-swap during a run.** Pin the adapter at the start of an `agent.run` and do not switch mid-run. If the user activates a new version while a run is in flight, the run completes against the old version; the next run picks up the new. This is the only safe semantics — switching adapters mid-generation produces undefined behavior.
+
+---
+
 ## The four actions
 
 | Action | What it does | v0 status |
@@ -125,6 +156,58 @@ lora.train(training_scope, base_model, hyperparams) ->
 
 Activation (`lora.activate <name> v<N>`) is the second gate. It mutates `config.yaml` to swap which version a profile points at, runs through the existing plan/apply approval flow, and emits `lora.activated`. A regression beyond a configurable threshold refuses activation without `--accept-regression`.
 
+### Augmentation: a worked example
+
+Step 3 of the pipeline — augmentation — is the make-or-break step. Under-augmented LoRAs confabulate; over-augmented LoRAs overfit to the augmentation provider's voice instead of the user's. Concrete shape so the next agent has a target to build against.
+
+**Source row** (from `~/.jigga/memory/summaries/preferences.md`):
+
+> "I prefer narrow PRs — under 400 lines, one concern per PR, even if it means more PRs. Reviewer time is the bottleneck, not author time."
+
+**Augmented variants** (the augmenter generates ~50–200 of these per source row; sampling 5 here):
+
+```yaml
+- type: qa_pair
+  question: "How should I size my pull requests?"
+  answer: "Narrow — under 400 lines, one concern per PR. Reviewer time is the bottleneck, not author time."
+
+- type: qa_pair
+  question: "Should this PR be split?"
+  answer: "If it crosses 400 lines or touches more than one concern, yes. Reviewer time is the bottleneck, not author time."
+
+- type: paraphrase
+  text: "Keep PRs small. Under 400 lines. One concern each. Even if that means more PRs."
+
+- type: contextual
+  context: "User is reviewing a PR that touches both the migration runner and the email adapter."
+  response: "These are two concerns. Split into two PRs — the migration runner is its own review surface and shouldn't ride on an email-adapter change."
+
+- type: stylistic_seed
+  text: "Reviewer time is the bottleneck, not author time."
+```
+
+**Training row format** (Llama 3.1 chat template):
+
+```
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+You are a personal assistant that mirrors the user's writing voice and decision style.<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+How should I size my pull requests?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Narrow — under 400 lines, one concern per PR. Reviewer time is the bottleneck, not author time.<|eot_id|>
+```
+
+**Five rules the augmenter must follow** (otherwise the LoRA absorbs the wrong thing):
+
+1. **Q&A pairs use the user's voice in the answer, not the augmenter's voice.** Generate the question freely; constrain the answer to the user's own phrasing wherever possible. A LoRA trained on "the augmenter's idea of how the user would phrase X" will sound like the augmenter, not the user.
+2. **Paraphrases preserve specifics.** If the source says "under 400 lines," the paraphrase must not drift to "under 500 lines" or "around 400 lines." Specifics that drift in augmentation become hallucination at inference.
+3. **Contextual rows ground the preference in a scenario.** This is how the LoRA learns *when* to apply the preference, not just that it exists.
+4. **Stylistic seeds preserve raw phrases.** Verbatim user phrases trained as standalone rows reinforce voice without binding to any specific Q&A.
+5. **No augmentation across the sensitivity boundary.** If a source row carries `sensitivity.allow_sensitive: false`, the augmenter must not generate variants that include or paraphrase that content — period. The simplest implementation: pass the sensitivity flag through to the augmenter prompt and reject the entire row at curation time.
+
+The augmenter is a model call routed through `model_router` — it inherits dry-run default, the user's configured providers, and the audit trail. Do not bake in a direct OpenAI dependency.
+
 ---
 
 ## When training triggers
@@ -165,6 +248,33 @@ A bundled or first-party capability ordinarily carries `risk_level: low` (or `me
 
 `risk_level: high` means workflow steps that invoke `lora.*` actions require explicit approval unless the agent is in `autonomous` mode — same gate as `spawn_subagent` carries today.
 
+### Privacy invariant: training-scope containment
+
+The hardest safety question this module raises: **when a LoRA is trained on data X, every agent consuming a profile that uses that LoRA effectively has implicit access to X through the weights — even if the agent's own `memory_scope` explicitly excludes X.** This is the core trade-off of fine-tuning vs. retrieval, and it is not theoretical: LLMs can regurgitate training data under adversarial prompts.
+
+JIGGA's existing scoped-memory model exists precisely so that a research subagent does not see the user's medical notes. A LoRA trained on those notes and consumed by that subagent's profile silently breaks that boundary.
+
+**The activation-time check** (the agent implementing this *must* land it before any real activation flow):
+
+```
+For each profile referencing LoRA L:
+  Resolve L.training_scope -> set of memory paths P_train.
+  For each agent A whose `model:` points at this profile:
+    Resolve A.memory_scope -> set of memory paths P_agent.
+    If (P_train \ P_agent) is non-empty:
+      Refuse activation. Surface the leak:
+        "Agent {A.id} (profile {profile.id}, scope {A.memory_scope})
+         cannot read {leak_paths} through retrieval, but adapter
+         {L.name}/{L.version} was trained on it. Activating would
+         grant implicit access through model weights."
+```
+
+**Override path.** The user can `--accept-leak` to proceed, but the activation emits a sticky `lora.privacy.override` audit event naming each impacted agent and each leaked path. This is the kind of decision that should be inspectable in `jigga audit` for months afterward, not buried.
+
+**Where this fails open today.** Until activation enforces this rule, the safest default is: do not activate a LoRA against any profile whose agents are scoped tighter than `full_user`. Document this as the v0.5 fallback — a coarse "if the LoRA exists, the agent has at least `manager_view`" rule — until the per-path computation lands.
+
+**Why not enforce at training time instead.** Tempting but wrong: a LoRA might be trained for a profile that doesn't exist yet, or be intended for activation on a profile that gets reconfigured later. The check belongs at the moment the LoRA starts affecting an agent, not the moment it gets created.
+
 ---
 
 ## Authority vs render — does training go through `runtime.sandbox`?
@@ -188,6 +298,120 @@ Following the existing `<domain>.<verb>[.<modifier>]` naming pattern:
 - `lora.deactivated` — profile reverted to no-LoRA or previous version.
 
 Trace correlation uses the existing `run_id` / `training_run_id` pattern so `jigga trace <id>` walks across train → eval → activate.
+
+### Cost tracking
+
+Both phases cost real money — augmentation is N model calls (cheap per call but adds up at 50–200 variants × thousands of source rows), training is compute (free locally, billable on offload). Both must emit cost-tagged audit events so Milestone C's per-agent/per-workflow rollups (`docs/ROADMAP_TO_PRODUCTION.md` Milestone C) capture LoRA spend alongside model-call spend.
+
+Event shape:
+
+```yaml
+type: lora.cost.recorded
+status: ok
+details:
+  phase: augmentation | training | evaluation
+  provider: openai | modal | local_gpu
+  input_tokens: 12345          # null for training/eval phases on local_gpu
+  output_tokens: 6789          # null for training/eval phases on local_gpu
+  wall_clock_seconds: 3624     # null for augmentation
+  estimated_cost_usd: 0.42
+  training_run: lora_run_abc123
+```
+
+For local-GPU training, cost is wall-clock × estimated draw — not exact, but enough for budget caps to fire. New config knob `models.local_gpu_cost_per_hour: 0.0` lets users who own their GPU set it to 0 and offload users set it to provider pricing.
+
+A training run is the kind of action that should hit Milestone C's **hard stop** at 100% budget, not soft warn — the next several hours of work won't help if the user is over budget on the first 30 seconds. Wire `lora.train.started` to consult the budget before spawning the trainer.
+
+---
+
+## Disk schemas
+
+The two JSON files that live under each adapter version directory.
+
+### `~/.jigga/loras/<name>/v<N>/adapter.json`
+
+Written by `lora.train` at the end of a successful run.
+
+```json
+{
+  "schema_version": 1,
+  "name": "voice",
+  "version": "v3",
+  "base_model": "meta-llama/Llama-3.1-8B-Instruct",
+  "base_model_revision": "5206a32",
+  "training_run": "lora_run_abc123",
+  "created_at": "2026-05-30T12:34:56Z",
+  "corpus": {
+    "hash": "sha256:f3a2...",
+    "source_token_count": 245000,
+    "augmented_row_count": 18420,
+    "training_scope": "voice"
+  },
+  "hyperparams": {
+    "rank": 32,
+    "alpha": 64,
+    "learning_rate": 0.0001,
+    "epochs": 3,
+    "batch_size": 4,
+    "general_data_mix_pct": 30
+  }
+}
+```
+
+`base_model_revision` matters — Hugging Face model snapshots change. A LoRA trained against revision A applied on revision B drifts silently. The local provider must verify this on load and refuse mismatch.
+
+### `~/.jigga/loras/<name>/v<N>/eval.json`
+
+Written by `lora.evaluate` (or by `lora.train` as a final step).
+
+```json
+{
+  "schema_version": 1,
+  "adapter": "voice/v3",
+  "baseline": "voice/v2",
+  "evaluated_at": "2026-05-30T13:05:11Z",
+  "facts_recall": {
+    "total": 60,
+    "correct": 51,
+    "score": 0.85,
+    "examples": [
+      {"question": "How do I size PRs?", "expected": "narrow, <400 lines", "got": "narrow, <400 lines", "match": true}
+    ]
+  },
+  "general_capability": {
+    "harness": "mmlu_subset_v1",
+    "adapter_score": 0.612,
+    "baseline_score": 0.624,
+    "delta": -0.012,
+    "delta_pct": -1.92
+  },
+  "regression": {
+    "threshold_pct": -5.0,
+    "verdict": "passed"
+  }
+}
+```
+
+When there is no previous version, `baseline` is `null` and the baseline score comes from the base model with no adapter attached.
+
+### Activation gate logic
+
+```python
+def can_activate(eval_payload: dict, threshold_pct: float = -5.0,
+                 accept_regression: bool = False) -> tuple[bool, str | None]:
+    cap = eval_payload["general_capability"]
+    if cap["baseline_score"] == 0:
+        return True, None  # nothing to compare
+    delta_pct = (cap["delta"] / cap["baseline_score"]) * 100
+    if delta_pct < threshold_pct and not accept_regression:
+        return False, (
+            f"capability regression {delta_pct:.1f}% exceeds threshold "
+            f"{threshold_pct}%. Use --accept-regression to override."
+        )
+    return True, None
+```
+
+The threshold is a one-line policy. Pull it from `~/.jigga/config.yaml` at `models.loras.regression_threshold_pct` — default `-5.0`, configurable per user. Negative numbers because a regression is a negative delta; positive deltas (the adapter is *better* than the base on general capability) never trigger the gate.
 
 ---
 
@@ -218,7 +442,27 @@ These are sequenced so the next agent does not paint themselves into a corner.
 | `jigga/optional_capabilities/personal_lora/manifest.yaml` | declares the four actions, `risk_level: high`, native type |
 | `jigga/runtime/personal_lora.py` | handler module; `lora.list` real, other actions stub-return planned payloads |
 
-No tests. No training. No model loading. No CLI surface. The intent is to make the *shape* exist so the next agent can write the real trainer against a clear contract.
+No tests. No training. No model loading. No `jigga lora` CLI surface yet — see the next section for the target shape. The intent is to make the *shape* exist so the next agent can write the real trainer against a clear contract.
+
+### CLI surface (target)
+
+The four capability actions are reachable today through workflow steps, but a `jigga lora` subcommand is the right ergonomic shape for v1. Sketch:
+
+```
+jigga lora list                                    # list adapters on disk
+jigga lora inspect <name>/<version>                # show adapter.json + eval.json
+jigga lora train <scope> [--base <model>]          # kick off training
+jigga lora evaluate <name>/<version>               # run eval against baseline
+jigga lora activate <name>/<version>               # plan-apply; mutates config.yaml
+    [--accept-regression] [--accept-leak]          # explicit overrides
+jigga lora rollback <profile>                      # revert profile.lora to previous
+jigga lora deactivate <profile>                    # set profile.lora to null
+jigga lora training-scopes [list|inspect]          # browse training_scopes.yaml
+```
+
+`activate` runs through the existing plan/apply flow — it writes to `config.yaml`, which is a state file the user reviews via `jigga plan` before `jigga apply --approve`. The two `--accept-*` flags map to the regression and privacy gates above; both emit sticky audit events.
+
+`rollback` and `deactivate` are config-only — they do not touch adapter files. Disk artifacts are immutable: a deleted profile reference does not delete the adapter, just stops pointing at it. Adapter deletion is a separate `jigga lora rm <name>/<version>` (not in v1 sketch — explicit `rm -rf` on the directory works fine for now).
 
 ### Deliberately not wired yet
 
@@ -245,6 +489,37 @@ Recommended order, smallest unit of forward motion first:
 6. **Auto-eval + activation gate.** The catastrophic-forgetting check is what makes this safe to ship.
 
 The recommended **next concrete PR** after this scaffolding is item 2 (local provider) — it unlocks the rest. A LoRA on disk is useless until something can apply it at inference.
+
+## Base-model upgrade flow
+
+When a new base lands (Llama 3.1 → 3.2, or a switch from Llama to Qwen), the user-facing path is **retrain on the new base, then activate**. LoRAs do not transfer across base models — a Llama 3.1 adapter on Llama 3.2 weights produces garbage. The local provider hard-fails on mismatch (see `adapter.json` `base_model_revision` field) rather than silently degrading.
+
+Expected sequence:
+
+```
+$ jigga lora list
+voice/v3 (base: Llama-3.1-8B-Instruct)    — active in profile:voice
+voice/v4 (base: Llama-3.1-8B-Instruct)    — trained, not active
+
+# Configure the new base in models.providers (config.yaml edit).
+# Then train against the new base:
+
+$ jigga lora train voice --base meta-llama/Llama-3.2-8B-Instruct
+# trains voice/v5 against the new base
+# eval runs against voice/v3 — they are not directly comparable
+# (different bases produce different general-capability scores),
+# so the eval is INFORMATIONAL not gating. The regression threshold
+# does not apply across base-model boundaries.
+
+$ jigga lora activate voice/v5
+# updates config.yaml: profiles.voice.lora -> voice_v5
+# also requires profiles.voice.primary to point at a provider whose
+# base_model matches voice/v5's adapter.json. Refuses on mismatch.
+```
+
+**The "blue-green" pattern.** During the upgrade window, the user can keep v3 active while v5 is training and evaluating. Switch profiles atomically when satisfied. Old versions stay on disk for fast rollback. Adapter directories are small (~50–200MB) — keep at least the last two versions per scope by default.
+
+**What does NOT work:** quantization changes (`bf16` → `int4`) of the *base* the LoRA was trained against. The adapter sees subtly different activations. Treat this as a base change and retrain. The local provider should refuse a quantization mismatch the same way it refuses a base mismatch.
 
 ## Risk register
 
