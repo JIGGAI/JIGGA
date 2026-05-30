@@ -1,0 +1,23 @@
+name: personal-lora
+version: 0.0.1
+summary: Personal LoRA adapter — bake user voice/style/preferences into model weights (sketch / v0 scaffolding, no training yet).
+type: native
+actions:
+  - lora.list
+  - lora.train
+  - lora.evaluate
+  - lora.activate
+permissions:
+  filesystem:
+    read:
+      - ~/.jigga/memory/**
+      - ~/.jigga/loras/**
+    write:
+      - ~/.jigga/loras/**
+  memory: read
+# risk_level: high because activation mutates model behavior for every
+# downstream agent that uses the affected profile. Training reads sensitive
+# memory; the resulting adapter cannot be surgically edited or deleted.
+# Approval-gated unless the executing agent is in `autonomous` mode.
+risk_level: high
+handler: runtime.personal_lora
