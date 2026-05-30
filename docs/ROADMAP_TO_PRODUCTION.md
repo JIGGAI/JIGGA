@@ -63,7 +63,7 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 |---|---|---|
 | Audit JSONL | ✅ events at every boundary | CLI tail/inspect (`jigga logs tail`, `jigga trace <id>`, `jigga audit --agent X --since 24h`) |
 | Secret redaction | none | Middleware that scrubs API keys / tokens / cookies before write |
-| Trace IDs | each run has its own id | Cross-run correlation (e.g. parent supervisor tick → agent run → spawned subagent) |
+| Trace IDs | ✅ ambient `trace_id` propagated across tick → agent run → subagent | — |
 | Cost tracking | not started | Per-model-call cost; per-agent/per-workflow rollup; budget caps |
 | Log rotation | none | Daily rollover, retention policy |
 
@@ -150,7 +150,7 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 
 - ✅ **Audit query CLI** — `jigga logs tail`, `jigga audit --agent X --type T --since 24h --status S`, `jigga trace <id>`. (`docs/OBSERVABILITY_RUNTIME_NOTES.md`)
 - ✅ **Secret redaction** on every audit write (key-based + value-pattern based).
-- ⏭️ **Trace ID propagation:** supervisor tick → agent run → spawned subagent / capability invocation all share a parent trace (today `trace` correlates by existing run/task/session ids).
+- ✅ **Trace ID propagation:** an ambient `trace_id` (ContextVar bound at supervisor-tick / run_agent / run_workflow / channel ingest) threads through every event, so `jigga trace <trace_id>` returns the full tree supervisor tick → agent run → tool call → spawned subagent. Run records/artifacts carry it too.
 - ⏭️ **Daily log rotation** with retention policy in `config.yaml` (log grows unbounded today).
 - ⏭️ **Per-model-call cost recording** (input/output tokens × provider rate) → per-agent/per-workflow rollups.
 - ⏭️ **Per-agent budget caps** + soft-warn audit event at 80% / `policy.denied` at 100%.

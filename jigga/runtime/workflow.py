@@ -6,7 +6,7 @@ from typing import Any
 from jigga.core.config import default_permission_mode, load_agents, load_workflows
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
-from jigga.runtime.audit import append_event, new_id
+from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
@@ -108,6 +108,22 @@ def run_workflow(
     workflow_id: str,
     project_capabilities: Path | None = None,
 ) -> dict[str, Any]:
+    # Inherits the supervisor trace when scheduled; mints its own on CLI apply.
+    with trace_context():
+        return _run_workflow(
+            home, logs_dir, workflows_dir, agents_dir, memory_dir, workflow_id, project_capabilities
+        )
+
+
+def _run_workflow(
+    home: Path,
+    logs_dir: Path,
+    workflows_dir: Path,
+    agents_dir: Path,
+    memory_dir: Path,
+    workflow_id: str,
+    project_capabilities: Path | None = None,
+) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
     registry = CapabilityRegistry.load(
@@ -180,6 +196,7 @@ def run_workflow(
         "run_dir": str(run_dir),
         "outputs": outputs,
         "memory_artifact": str(memory_artifact) if memory_artifact else None,
+        "trace_id": current_trace_id(),
     }
     write_json(run_dir / "run.json", record)
     append_event(logs_dir, "workflow.run.completed", workflow=workflow_id, run_id=run_id)
