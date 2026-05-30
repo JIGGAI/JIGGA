@@ -21,6 +21,7 @@ from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.audit_query import format_event, query_events, tail_events
 from jigga.runtime.audit_query import trace as trace_events
+from jigga.runtime.cost import budget_status, cost_summary
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.channel_listener import channel_listen, enabled_channels
 from jigga.runtime.gog import (
@@ -60,6 +61,24 @@ from jigga.core.config import default_permission_mode, load_agents, load_workflo
 
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _print_cost(rows: list[dict[str, Any]], total: dict[str, Any], budgets: dict[str, Any]) -> None:
+    if not rows:
+        print("No model calls recorded.")
+        return
+    print(f"{'agent':<24}{'calls':>7}{'in_tok':>9}{'out_tok':>9}{'cost':>10}  budget")
+    for row in rows:
+        budget = budgets.get(row["agent"])
+        if budget:
+            flag = {"warn": " ⚠", "exceeded": " ⛔"}.get(budget["state"], "")
+            budget_col = f"${budget['spent_usd']:.2f}/${budget['limit_usd']:.2f} ({budget['fraction'] * 100:.0f}%){flag}"
+        else:
+            budget_col = "—"
+        print(f"{row['agent']:<24}{row['calls']:>7}{row['input_tokens']:>9}{row['output_tokens']:>9}"
+              f"{'$' + format(row['cost_usd'], '.4f'):>10}  {budget_col}")
+    print(f"{'total':<24}{total['calls']:>7}{total['input_tokens']:>9}{total['output_tokens']:>9}"
+          f"{'$' + format(total['cost_usd'], '.4f'):>10}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -207,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     trace = sub.add_parser("trace", help="Show events correlated to an id (run/task/session/event id)")
     trace.add_argument("identifier")
     trace.add_argument("--json", action="store_true", dest="json_output")
+
+    cost = sub.add_parser("cost", help="Per-agent model cost rollup and budget status")
+    cost.add_argument("--agent", help="Show only this agent")
+    cost.add_argument("--since", help="Only calls newer than e.g. 24h / 7d / 30d or an ISO timestamp")
+    cost.add_argument("--json", action="store_true", dest="json_output")
 
     sessions = sub.add_parser("sessions", help="Inspect subagent sessions")
     sessions_sub = sessions.add_subparsers(dest="sessions_command", required=True)
@@ -584,6 +608,23 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 for event in events:
                     print(format_event(event))
+            return 0
+
+        if args.command == "cost":
+            paths = get_paths(args.home)
+            summary = cost_summary(paths.logs, since=args.since)
+            rows = summary["agents"]
+            if args.agent:
+                rows = [row for row in rows if row["agent"] == args.agent]
+            budgets = {}
+            for row in rows:
+                status = budget_status(paths.home, paths.logs, row["agent"])
+                if status is not None:
+                    budgets[row["agent"]] = status
+            if args.json_output:
+                print_json({"agents": rows, "total": summary["total"], "budgets": budgets})
+            else:
+                _print_cost(rows, summary["total"], budgets)
             return 0
 
         if args.command == "sessions":

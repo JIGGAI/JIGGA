@@ -25,11 +25,20 @@ _current_trace: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "jigga_trace_id", default=None
 )
 
-# Detail keys whose values are scrubbed regardless of content.
+# Detail keys whose values are scrubbed regardless of content. Matched at word
+# boundaries (see `_SENSITIVE_KEY_PATTERNS`) so `token` redacts `bot_token` /
+# `access_token` but not the non-secret `input_tokens` / `output_tokens`.
 _SENSITIVE_KEYS = (
     "token", "password", "secret", "api_key", "apikey", "authorization",
     "credential", "credentials", "access_token", "refresh_token", "bot_token",
     "client_secret", "private_key",
+)
+
+# A term is sensitive when it appears delimited by string ends or a non
+# alphanumeric char — so `tokens` (a count) is not mistaken for `token`.
+_SENSITIVE_KEY_PATTERNS = tuple(
+    re.compile(rf"(?:^|[^a-z0-9]){re.escape(term)}(?:[^a-z0-9]|$)")
+    for term in _SENSITIVE_KEYS
 )
 
 # Value patterns scrubbed wherever they appear (a token echoed inside an error
@@ -71,6 +80,11 @@ def trace_context(trace_id: str | None = None) -> Iterator[str]:
         _current_trace.reset(token)
 
 
+def _is_sensitive_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(pattern.search(lowered) for pattern in _SENSITIVE_KEY_PATTERNS)
+
+
 def _scrub_str(value: str) -> str:
     scrubbed = value
     for pattern in _VALUE_PATTERNS:
@@ -86,7 +100,7 @@ def redact(value: Any, *, key: str | None = None) -> Any:
     are durable and user-inspectable, so this is a defensive net against a
     capability echoing a credential into an error/detail field.
     """
-    if key is not None and any(token in key.lower() for token in _SENSITIVE_KEYS):
+    if key is not None and _is_sensitive_key(key):
         return REDACTED
     if isinstance(value, dict):
         return {k: redact(v, key=str(k)) for k, v in value.items()}

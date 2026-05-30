@@ -11,6 +11,14 @@ from typing import Any
 from jigga.core.io import read_yaml
 from jigga.core.models import AgentConfig
 from jigga.runtime.audit import append_event
+from jigga.runtime.cost import (
+    WARN_FRACTION,
+    agent_budget,
+    agent_spend,
+    estimate_tokens,
+    load_pricing,
+    price_call,
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +115,12 @@ class ModelCallResult:
     # Non-empty → this is a tool-call turn; `content` may be empty. Empty →
     # `content` is the model's final answer.
     tool_calls: list[ModelToolCall] = field(default_factory=list)
+    # Token usage and priced cost. Real providers report exact usage; dry-run
+    # estimates it. cost_usd is filled in by call_model from the config rate
+    # table (0.0 when the model has no configured price).
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -203,7 +217,12 @@ def build_task_model_request(agent: AgentConfig, task: dict[str, Any], dry_run: 
     )
 
 
+def _prompt_tokens(request: ModelCallRequest) -> int:
+    return estimate_tokens(" ".join(item.content or "" for item in request.items))
+
+
 def _dry_run_result(request: ModelCallRequest, provider_id: str = "dry_run", model: str = "dry-run") -> ModelCallResult:
+    input_tokens = _prompt_tokens(request)
     if request.dry_run_tool_calls:
         # Scripted tool-call turn — used by tests and by the agent loop to run
         # deterministically without a real model.
@@ -214,14 +233,18 @@ def _dry_run_result(request: ModelCallRequest, provider_id: str = "dry_run", mod
             content="",
             dry_run=True,
             tool_calls=list(request.dry_run_tool_calls),
+            input_tokens=input_tokens,
         )
     title = request.task.get("title", "untitled task")
+    content = f"Dry-run model response for task '{title}'. Configure a model provider to execute this with AI."
     return ModelCallResult(
         status="ok",
         provider=provider_id,
         model=model,
-        content=f"Dry-run model response for task '{title}'. Configure a model provider to execute this with AI.",
+        content=content,
         dry_run=True,
+        input_tokens=input_tokens,
+        output_tokens=estimate_tokens(content),
     )
 
 
@@ -259,6 +282,9 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
     content = message.get("content")
     if not content and not tool_calls:
         raise RuntimeError("Model response included neither content nor tool_calls")
+    usage = data.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0) or _prompt_tokens(request)
+    output_tokens = int(usage.get("completion_tokens") or 0) or estimate_tokens(content or "")
     return ModelCallResult(
         status="ok",
         provider=provider.id,
@@ -266,6 +292,8 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
         content=content or "",
         dry_run=False,
         tool_calls=tool_calls,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -297,16 +325,87 @@ def _provider_order(profile: ModelProfileConfig) -> list[str]:
     return [profile.primary, *profile.fallback]
 
 
+def _budget_spent_before(logs_dir: Path, agent_id: str, budget: dict[str, Any] | None) -> float:
+    if not budget:
+        return 0.0
+    window = budget.get("window")
+    since = None if window in (None, "", "all", "0") else window
+    return agent_spend(logs_dir, agent_id, since=since)
+
+
+def _budget_hard_stop(
+    logs_dir: Path,
+    request: ModelCallRequest,
+    profile: ModelProfileConfig,
+    budget: dict[str, Any] | None,
+    spent_before: float,
+) -> ModelCallResult | None:
+    """Deny the call when the agent has already spent its whole cap. Returns an
+    error result to short-circuit, or None to proceed."""
+    if not budget:
+        return None
+    limit = float(budget["limit_usd"])
+    if spent_before < limit:
+        return None
+    append_event(logs_dir, "budget.exceeded", status="deny", agent_id=request.agent_id,
+                 spent_usd=round(spent_before, 6), limit_usd=limit)
+    return ModelCallResult(
+        status="error",
+        provider=profile.primary,
+        model=request.model or "unknown",
+        content="",
+        dry_run=request.dry_run,
+        error=f"budget_exceeded: agent {request.agent_id} spent ${spent_before:.4f} of ${limit:.2f} cap",
+    )
+
+
+def _emit_and_return(
+    logs_dir: Path,
+    request: ModelCallRequest,
+    result: ModelCallResult,
+    budget: dict[str, Any] | None,
+    spent_before: float,
+) -> ModelCallResult:
+    append_event(
+        logs_dir,
+        "model.call",
+        agent_id=request.agent_id,
+        provider=result.provider,
+        model=result.model,
+        dry_run=result.dry_run,
+        fallback_used=result.fallback_used,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+    # Soft-warn exactly once, on the call that crosses the threshold.
+    if budget:
+        limit = float(budget["limit_usd"])
+        spent_after = spent_before + result.cost_usd
+        if limit > 0 and spent_before < WARN_FRACTION * limit <= spent_after:
+            append_event(logs_dir, "budget.warning", status="ask", agent_id=request.agent_id,
+                         spent_usd=round(spent_after, 6), limit_usd=limit,
+                         fraction=round(spent_after / limit, 4))
+    return result
+
+
 def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCallResult:
     validate_unique_input_items(request.items)
     providers = _load_providers(home)
     profiles = _load_profiles(home)
     profile = profiles.get(request.model_profile or "default") or profiles["default"]
+    pricing = load_pricing(home)
+    budget = agent_budget(home, request.agent_id)
+    spent_before = _budget_spent_before(logs_dir, request.agent_id, budget)
+
+    denied = _budget_hard_stop(logs_dir, request, profile, budget, spent_before)
+    if denied is not None:
+        return denied
 
     if request.dry_run:
-        result = _dry_run_result(request)
-        append_event(logs_dir, "model.call", agent_id=request.agent_id, provider=result.provider, model=result.model, dry_run=True)
-        return result
+        base = _dry_run_result(request)
+        result = replace(base, cost_usd=price_call(base.model, base.input_tokens, base.output_tokens, pricing))
+        return _emit_and_return(logs_dir, request, result, budget, spent_before)
 
     failures: list[str] = []
     for index, provider_id in enumerate(_provider_order(profile)):
@@ -323,17 +422,12 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
             else:
                 raise ValueError(f"Unsupported provider kind: {provider.kind}")
             # Use replace (not to_dict round-trip) so typed tool_calls survive.
-            result = replace(result, fallback_used=index > 0)
-            append_event(
-                logs_dir,
-                "model.call",
-                agent_id=request.agent_id,
-                provider=result.provider,
-                model=result.model,
-                dry_run=result.dry_run,
-                fallback_used=result.fallback_used,
+            result = replace(
+                result,
+                fallback_used=index > 0,
+                cost_usd=price_call(result.model, result.input_tokens, result.output_tokens, pricing),
             )
-            return result
+            return _emit_and_return(logs_dir, request, result, budget, spent_before)
         except DuplicateModelInputError:
             raise
         except Exception as exc:  # provider fallback boundary

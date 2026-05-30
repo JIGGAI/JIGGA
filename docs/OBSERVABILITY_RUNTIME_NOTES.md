@@ -39,6 +39,50 @@ Every audit event carries an ambient `trace_id`. It's bound by a `ContextVar` (`
 
 So `jigga trace <trace_id>` returns the **whole causal tree from a single id** — supervisor tick → agent run → tool calls → spawned subagent — while the narrower `run_id` / `task_id` still scope to a single run or task. Run records and task artifacts under `~/.jigga/runs/` also carry `trace_id`, so you can jump from a stored run straight to `jigga trace`.
 
+## Cost tracking & budgets
+
+Every model call records token usage and dollar cost on its `model.call` audit event. `call_model` is the single chokepoint for model spend, so that's where pricing and enforcement live.
+
+- **Usage:** real providers report exact `prompt`/`completion` tokens; dry-run and providers that omit usage are estimated (~4 chars/token).
+- **Pricing is config** under `models.pricing` — per-model `input_per_1k` / `output_per_1k` rates, with a `default` fallback and free (0.0) when a model isn't priced:
+
+  ```yaml
+  models:
+    pricing:
+      gpt-4o:  {input_per_1k: 0.005, output_per_1k: 0.015}
+      default: {input_per_1k: 0.0,   output_per_1k: 0.0}
+  ```
+
+- **Budgets are opt-in** under `budgets` — a per-agent or `default` `limit_usd` over a rolling `window` (default `30d`; `all` for no time bound):
+
+  ```yaml
+  budgets:
+    window: 30d
+    agents:
+      marketing_lead: {limit_usd: 10.0}
+    default: {limit_usd: 5.0}
+  ```
+
+  Enforcement: when an agent has already spent its whole cap, the next call is **hard-stopped** — `call_model` returns an error result and emits `budget.exceeded` (`status=deny`); the agent loop surfaces that as a failed run rather than silently overspending. On the way up, the call that first crosses 80% emits `budget.warning` (`status=ask`) exactly once.
+
+`jigga cost` reads it all back:
+
+```bash
+jigga cost                       # per-agent rollup + budget status, all time
+jigga cost --since 7d            # this week
+jigga cost --agent marketing_lead --json
+```
+
+```
+agent                     calls   in_tok  out_tok      cost  budget
+marketing_lead                2      146       46   $7.1400  $7.14/$6.00 (119%) ⛔
+copywriter                    1       27       23   $2.1900  $2.19/$2.00 (110%) ⛔
+seo_analyst                   1        3       23   $1.4700  $1.47/$2.00 (74%)
+total                         4      176       92  $10.8000
+```
+
+> **Note:** spend-to-date is computed by scanning `events.jsonl` on each model call (O(events)). Fine at current scale; a running per-agent ledger is the obvious optimization if the log grows large — tracked with log rotation below.
+
 ## Example
 
 ```bash
@@ -51,9 +95,11 @@ jigga audit --type agent.tool_call.needs_approval --since 24h
 
 # follow one agent run end to end
 jigga trace agent_run_f312fd56539d
+
+# what did the team cost me this week?
+jigga cost --since 7d
 ```
 
 ## Follow-up work (rest of Milestone C)
 
-- **Cost tracking + budgets** — record per-model-call cost (tokens × provider rate), roll up per agent/workflow, soft-warn at 80% / hard-stop (`policy.denied`) at 100% of a configured cap.
-- **Log rotation + retention** — daily rollover of `events.jsonl` with a configurable retention window (the log grows unbounded today).
+- **Log rotation + retention** — daily rollover of `events.jsonl` with a configurable retention window (the log grows unbounded today). A running per-agent cost ledger naturally falls out of this work.
