@@ -75,6 +75,11 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                 # Per-agent spend caps (opt-in). Add agents.<id>.limit_usd or a
                 # default.limit_usd to enforce; window is a rolling duration.
                 "budgets": {"window": "30d", "agents": {}},
+                # Audit-log rollover: archive events.jsonl by day or size, prune
+                # dated archives past retention. Runs on the supervisor heartbeat.
+                "logs": {
+                    "rotation": {"enabled": True, "max_bytes": 10485760, "retention_days": 30},
+                },
             },
         )
 

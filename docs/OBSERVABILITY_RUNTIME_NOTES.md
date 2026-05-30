@@ -83,6 +83,28 @@ total                         4      176       92  $10.8000
 
 > **Note:** spend-to-date is computed by scanning `events.jsonl` on each model call (O(events)). Fine at current scale; a running per-agent ledger is the obvious optimization if the log grows large — tracked with log rotation below.
 
+## Log rotation & retention
+
+`events.jsonl` is append-only and would otherwise grow forever. The supervisor rolls it over on its heartbeat (`supervisor_tick` → `rotate_logs`), so the write path (`append_event`) stays free of config loads and file stats — the common tick is a `stat` and nothing else.
+
+- **Rollover** when the active log crosses a calendar day *or* a size cap, into a dated archive `events-YYYY-MM-DD.jsonl` (same-day size splits get a `.N` suffix).
+- **Retention:** dated archives older than `retention_days` are pruned right after a rollover (not on every tick).
+- **Readers fold archives back in:** `read_events` reads the dated archives (oldest first) then the active log, so `jigga audit` / `trace` / `cost` and the **budget windows** still see history across a rollover — a 30-day budget isn't reset by a daily rotation.
+
+```yaml
+logs:
+  rotation:
+    enabled: true
+    max_bytes: 10485760     # 10 MiB
+    retention_days: 30
+```
+
+```bash
+jigga logs rotate            # force a rollover + prune now (otherwise automatic)
+```
+
+> Because readers concatenate all retained archives, a query over a long window does more file I/O as history grows. The running per-agent cost ledger noted above is the natural next optimization riding on this archive structure.
+
 ## Example
 
 ```bash
@@ -100,6 +122,6 @@ jigga trace agent_run_f312fd56539d
 jigga cost --since 7d
 ```
 
-## Follow-up work (rest of Milestone C)
+## Status
 
-- **Log rotation + retention** — daily rollover of `events.jsonl` with a configurable retention window (the log grows unbounded today). A running per-agent cost ledger naturally falls out of this work.
+Milestone C is complete: audit query CLI + secret redaction, trace-id propagation, cost tracking + per-agent budgets, and log rotation + retention all shipped. The one remaining optimization (not a feature gap) is a **running per-agent cost ledger** so spend isn't recomputed by scanning the log on each model call — a natural follow-up on the archive structure above, worth doing if model-call volume grows.
