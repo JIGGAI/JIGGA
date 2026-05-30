@@ -22,6 +22,7 @@ from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manif
 from jigga.runtime.audit_query import format_event, query_events, tail_events
 from jigga.runtime.audit_query import trace as trace_events
 from jigga.runtime.cost import budget_status, cost_summary
+from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.channel_listener import channel_listen, enabled_channels
 from jigga.runtime.gog import (
@@ -214,6 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
     logs_tail = logs_sub.add_parser("tail", help="Show the most recent audit events")
     logs_tail.add_argument("-n", "--count", type=int, default=20)
     logs_tail.add_argument("--json", action="store_true", dest="json_output")
+    logs_rotate = logs_sub.add_parser("rotate", help="Force a log rollover + retention prune now")
+    logs_rotate.add_argument("--json", action="store_true", dest="json_output")
 
     audit = sub.add_parser("audit", help="Query the audit log with filters")
     audit.add_argument("--agent", help="Filter to an agent id")
@@ -581,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     for event in events:
                         print(format_event(event))
+            elif args.logs_command == "rotate":
+                result = rotate_logs(paths.home, paths.logs)
+                if args.json_output:
+                    print_json(result)
+                elif result["rotated"] or result["pruned"]:
+                    print(f"rotated: {result['rotated'] or '(none)'}; pruned: {', '.join(result['pruned']) or '(none)'}")
+                else:
+                    print("Nothing to rotate.")
             return 0
 
         if args.command == "audit":

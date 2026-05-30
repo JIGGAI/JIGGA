@@ -8,6 +8,7 @@ from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.loop_guard import (
     cron_already_fired,
     load_loop_state,
@@ -33,6 +34,13 @@ def supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
 
 def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     paths = get_paths(home)
+    # Roll the audit log over (by day / size) and prune old archives on the
+    # heartbeat, so the write path stays free of this. Emits an event when it
+    # actually rotates or prunes.
+    rotation = rotate_logs(paths.home, paths.logs)
+    if rotation["rotated"] or rotation["pruned"]:
+        append_event(paths.logs, "logs.rotated", archived=rotation["rotated"],
+                     pruned=rotation["pruned"])
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows)

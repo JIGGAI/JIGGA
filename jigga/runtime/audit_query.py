@@ -28,19 +28,28 @@ def events_path(logs_dir: Path) -> Path:
     return logs_dir / "events.jsonl"
 
 
+def _log_files(logs_dir: Path) -> list[Path]:
+    """Dated archives (oldest first) followed by the active log, so readers see
+    the full retained history across rotations — not just the current day."""
+    archives = sorted(
+        p for p in logs_dir.glob("events-*.jsonl")
+        if re.match(r"^events-\d{4}-\d{2}-\d{2}(?:\.\d+)?\.jsonl$", p.name)
+    )
+    active = events_path(logs_dir)
+    return [*archives, *([active] if active.exists() else [])]
+
+
 def read_events(logs_dir: Path) -> list[dict[str, Any]]:
-    path = events_path(logs_dir)
-    if not path.exists():
-        return []
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    for path in _log_files(logs_dir):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     return events
 
 
