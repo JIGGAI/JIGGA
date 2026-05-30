@@ -65,7 +65,7 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 | Secret redaction | none | Middleware that scrubs API keys / tokens / cookies before write |
 | Trace IDs | ✅ ambient `trace_id` propagated across tick → agent run → subagent | — |
 | Cost tracking | ✅ per-call cost on `model.call`; `jigga cost` rollups; opt-in per-agent budget caps (hard-stop + 80% warn) | Per-workflow rollup; running ledger (with log rotation) |
-| Log rotation | none | Daily rollover, retention policy |
+| Log rotation | ✅ supervisor rolls over by day/size into dated archives + retention prune; `jigga logs rotate` | Running cost ledger (optimization) |
 
 ### Memory at scale
 
@@ -153,9 +153,9 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 - ✅ **Trace ID propagation:** an ambient `trace_id` (ContextVar bound at supervisor-tick / run_agent / run_workflow / channel ingest) threads through every event, so `jigga trace <trace_id>` returns the full tree supervisor tick → agent run → tool call → spawned subagent. Run records/artifacts carry it too.
 - ✅ **Per-model-call cost recording** (input/output tokens × config rate) on every `model.call` event → per-agent rollups via `jigga cost`.
 - ✅ **Per-agent budget caps** — opt-in `budgets` config, hard-stop (`budget.exceeded`, deny) at 100% in `call_model`, soft-warn (`budget.warning`) once at 80%.
-- ⏭️ **Daily log rotation** with retention policy in `config.yaml` (log grows unbounded today). A running per-agent cost ledger falls out of this work.
+- ✅ **Log rotation + retention** — supervisor rolls `events.jsonl` over by day/size into dated archives and prunes past `logs.rotation.retention_days`; readers fold archives back in so queries/budgets span rollovers. `jigga logs rotate` forces it.
 
-**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call (`jigga cost --since 7d`). ✅ — only log rotation remains in Milestone C.
+**Exit:** ✅ **Milestone C complete.** You can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call (`jigga cost --since 7d`), trace a whole run from one id, and the audit log is bounded. The one remaining item is an optimization, not a feature gap: a running per-agent cost ledger (vs. scanning the log per call) if model-call volume grows.
 
 ### Milestone D — Memory at scale
 *Goal: long-running agents don't drown.*
