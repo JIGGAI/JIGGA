@@ -1,6 +1,6 @@
 # Observability Runtime Notes (Milestone C)
 
-The runtime writes a JSONL audit event at every trust boundary. Milestone C adds the **read** side — the ability to see what happened — plus **secret redaction** so the durable log never captures credentials. This is the first slice; trace-id propagation, cost/budget tracking, and log rotation are separate follow-up PRs (tracked in `ROADMAP_TO_PRODUCTION.md`).
+The runtime writes a JSONL audit event at every trust boundary. Milestone C adds the **read** side — the ability to see what happened — plus **secret redaction** so the durable log never captures credentials, and **trace-id propagation** so one id returns a whole causal tree. Cost/budget tracking and log rotation are the remaining follow-up PRs (tracked in `ROADMAP_TO_PRODUCTION.md`).
 
 ## Secret redaction (always on)
 
@@ -31,9 +31,13 @@ jigga trace <id> [--json]                    # everything correlated to an id
 
 ### `jigga trace <id>`
 
-Correlates by any id-shaped value an event carries — its own `id`, or `run_id` / `task_id` / `session_id` / `trace_id` / `workflow` / `agent` in details — matched exactly or by prefix. So `jigga trace <run_id>` stitches together a whole agent run (started → tool calls → task completed → run completed), and `jigga trace <task_id>` follows one task across runs.
+Correlates by any id-shaped value an event carries — its own `id`, or `trace_id` / `run_id` / `task_id` / `session_id` / `workflow` / `agent` in details — matched exactly or by prefix. So `jigga trace <run_id>` stitches together a whole agent run (started → tool calls → task completed → run completed), and `jigga trace <task_id>` follows one task across runs.
 
-Until **trace-id propagation** lands (follow-up), there's no single parent id spanning supervisor-tick → agent-run → spawned-subagent; `trace` correlates by the ids that already exist, which covers most chains. The propagation PR will thread one `trace_id` through so a single id returns the full causal tree.
+### Trace-id propagation
+
+Every audit event carries an ambient `trace_id`. It's bound by a `ContextVar` (`audit.trace_context`) at the runtime's entry points — `supervisor_tick`, `run_agent`, `run_workflow`, and the channel `ingest_once` cycle — and **inherited** by anything they call rather than re-minted. Because a tick, the agent runs it wakes, the workflow steps they execute, and the subagents they spawn all run on one thread in one process, the id threads through every `append_event` without each call site passing it. A standalone `run_agent` / `run_workflow` (CLI) mints its own.
+
+So `jigga trace <trace_id>` returns the **whole causal tree from a single id** — supervisor tick → agent run → tool calls → spawned subagent — while the narrower `run_id` / `task_id` still scope to a single run or task. Run records and task artifacts under `~/.jigga/runs/` also carry `trace_id`, so you can jump from a stored run straight to `jigga trace`.
 
 ## Example
 
@@ -51,6 +55,5 @@ jigga trace agent_run_f312fd56539d
 
 ## Follow-up work (rest of Milestone C)
 
-- **Trace-id propagation** — one `trace_id` threaded supervisor-tick → agent-run → tool-call / subagent so `trace` returns the full tree from a single id.
 - **Cost tracking + budgets** — record per-model-call cost (tokens × provider rate), roll up per agent/workflow, soft-warn at 80% / hard-stop (`policy.denied`) at 100% of a configured cap.
 - **Log rotation + retention** — daily rollover of `events.jsonl` with a configurable retention window (the log grows unbounded today).

@@ -6,9 +6,10 @@ The runtime writes a JSONL audit event at every trust boundary
 module reads `~/.jigga/logs/events.jsonl` back with filtering, tailing, and
 id-correlation, backing the `jigga logs` / `jigga audit` / `jigga trace` CLI.
 
-Until trace-id propagation lands (a follow-up), `trace(id)` correlates by any
-id-shaped value an event carries (run_id / task_id / session_id / the event's
-own id), which already stitches together most causal chains.
+`trace(id)` correlates by any id-shaped value an event carries — the ambient
+`trace_id` propagated across a whole operation (supervisor tick → agent run →
+subagent), or a narrower `run_id` / `task_id` / `session_id` / the event's own
+id when you want to follow a single run.
 """
 
 from __future__ import annotations

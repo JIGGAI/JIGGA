@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import re
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +13,17 @@ from jigga.core.io import ensure_dir
 from jigga.core.models import now_iso
 
 REDACTED = "***redacted***"
+
+# Ambient trace id for the current logical operation. A supervisor tick, the
+# agent runs it wakes, the workflow steps they execute, and any subagents they
+# spawn all run on one thread in one process, so a ContextVar threads a single
+# trace_id through every `append_event` without each call site passing it. Set
+# at the entry points (supervisor_tick / run_agent / run_workflow / ingest_once)
+# via `trace_context`; nested entries inherit the active id rather than mint a
+# new one, so `jigga trace <id>` returns the whole causal tree from one id.
+_current_trace: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "jigga_trace_id", default=None
+)
 
 # Detail keys whose values are scrubbed regardless of content.
 _SENSITIVE_KEYS = (
@@ -33,6 +47,28 @@ _VALUE_PATTERNS = (
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def current_trace_id() -> str | None:
+    """The trace id bound to the current operation, or None outside one."""
+    return _current_trace.get()
+
+
+@contextlib.contextmanager
+def trace_context(trace_id: str | None = None) -> Iterator[str]:
+    """Bind an ambient trace id for the duration of a logical operation.
+
+    An explicit `trace_id` wins; otherwise an already-active trace is inherited
+    (so nested entry points join their parent's trace) and only a top-level
+    entry with no active trace mints a fresh one. Every `append_event` emitted
+    inside the block carries this id under `details.trace_id`.
+    """
+    resolved = trace_id or current_trace_id() or new_id("trace")
+    token = _current_trace.set(resolved)
+    try:
+        yield resolved
+    finally:
+        _current_trace.reset(token)
 
 
 def _scrub_str(value: str) -> str:
@@ -63,12 +99,16 @@ def redact(value: Any, *, key: str | None = None) -> Any:
 
 def append_event(logs_dir: Path, event_type: str, status: str = "ok", **details: Any) -> dict[str, Any]:
     ensure_dir(logs_dir)
+    scrubbed = {key: redact(value, key=key) for key, value in details.items()}
+    trace_id = _current_trace.get()
+    if trace_id is not None and "trace_id" not in scrubbed:
+        scrubbed["trace_id"] = trace_id
     event = {
         "id": new_id("evt"),
         "time": now_iso(),
         "type": event_type,
         "status": status,
-        "details": {key: redact(value, key=key) for key, value in details.items()},
+        "details": scrubbed,
     }
     with (logs_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")

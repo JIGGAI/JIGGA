@@ -43,7 +43,7 @@ from typing import Any, Callable
 from jigga.core.config import load_runtime_config
 from jigga.runtime import telegram
 from jigga.runtime.agent import run_agent
-from jigga.runtime.audit import append_event
+from jigga.runtime.audit import append_event, trace_context
 from jigga.runtime.tasks import create_task
 
 def _poll_telegram(home: Path, **kwargs: Any) -> dict[str, Any]:
@@ -101,8 +101,25 @@ def ingest_once(
     """Run a single ingest cycle across all enabled channels. Returns a summary.
 
     Factored out of the loop so tests can drive exactly one cycle and the loop
-    stays a thin wrapper.
+    stays a thin wrapper. One trace per cycle ties the inbound messages, the
+    tasks they create, and the agent runs they trigger together.
     """
+    with trace_context():
+        return _ingest_once(
+            home, logs_dir, tasks_dir, agents_dir,
+            long_poll_seconds=long_poll_seconds, process_agents=process_agents,
+        )
+
+
+def _ingest_once(
+    home: Path,
+    logs_dir: Path,
+    tasks_dir: Path,
+    agents_dir: Path,
+    *,
+    long_poll_seconds: int = DEFAULT_LONG_POLL_SECONDS,
+    process_agents: bool = True,
+) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     affected_agents: set[str] = set()
     polled: list[str] = []

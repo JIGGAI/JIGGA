@@ -7,7 +7,7 @@ from jigga.core.config import load_agents, load_workflows, max_wakes_per_hour
 from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
-from jigga.runtime.audit import append_event
+from jigga.runtime.audit import append_event, trace_context
 from jigga.runtime.loop_guard import (
     cron_already_fired,
     load_loop_state,
@@ -24,6 +24,14 @@ from jigga.runtime.workflow import run_workflow
 
 
 def supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
+    # One trace per tick: every event this tick produces — agent runs, workflow
+    # runs, and the subagents they spawn — shares this id, so `jigga trace <id>`
+    # returns the whole tick's causal tree.
+    with trace_context():
+        return _supervisor_tick(home)
+
+
+def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     paths = get_paths(home)
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)

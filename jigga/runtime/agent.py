@@ -7,7 +7,7 @@ from typing import Any
 from jigga.core.config import default_permission_mode, load_agents, load_runtime_config
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
-from jigga.runtime.audit import append_event, new_id
+from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.dispatcher import (
     RuntimeContext,
@@ -256,6 +256,20 @@ def run_agent(
     agent_id: str,
     dry_run_model: bool = False,
 ) -> dict[str, Any]:
+    # Inherits the supervisor/channel trace when called from one; mints its own
+    # when run standalone (CLI). Either way every event below shares the id.
+    with trace_context():
+        return _run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id, dry_run_model)
+
+
+def _run_agent(
+    home: Path,
+    logs_dir: Path,
+    tasks_dir: Path,
+    agents_dir: Path,
+    agent_id: str,
+    dry_run_model: bool = False,
+) -> dict[str, Any]:
     agents = load_agents(agents_dir)
     agent = agents.get(agent_id)
     if agent is None:
@@ -281,7 +295,8 @@ def run_agent(
                          permission=f"permission_mode.{effective_mode}",
                          reason=f"Agent permission_mode={effective_mode}; held without executing.")
         record = {"id": run_id, "agent_id": agent_id, "role": agent.role, "permission_mode": effective_mode,
-                  "status": "policy_denied", "processed_tasks": [], "held_tasks": held, "run_dir": str(run_dir)}
+                  "status": "policy_denied", "processed_tasks": [], "held_tasks": held, "run_dir": str(run_dir),
+                  "trace_id": current_trace_id()}
         write_json(run_dir / "run.json", record)
         append_event(logs_dir, "agent.run.completed", agent=agent_id, run_id=run_id, task_count=0,
                      status="policy_denied", permission_mode=effective_mode, held_task_count=len(held))
@@ -313,6 +328,7 @@ def run_agent(
             "result": loop["final_text"],
             "tool_calls": loop["tool_calls"],
             "halted": loop["halted"],
+            "trace_id": current_trace_id(),
         }
         write_json(run_dir / f"{task.id}.json", artifact)
         completed = set_task_state(tasks_dir, task.id, loop["state"])
@@ -333,6 +349,7 @@ def run_agent(
         "permission_mode": effective_mode,
         "processed_tasks": processed,
         "run_dir": str(run_dir),
+        "trace_id": current_trace_id(),
     }
     write_json(run_dir / "run.json", run_record)
     append_event(logs_dir, "agent.run.completed", agent=agent_id, run_id=run_id, task_count=len(processed))
