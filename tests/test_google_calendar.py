@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import io
 import json
-import urllib.error
-import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -241,9 +239,6 @@ def test_normalize_event_uses_fallback_title_for_missing_summary() -> None:
 
 
 # --- Handler dispatch ------------------------------------------------------
-
-
-from dataclasses import dataclass
 
 
 @dataclass

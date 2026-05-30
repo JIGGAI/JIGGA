@@ -40,7 +40,8 @@ from jigga.runtime.subagents import spawn_subagent
 # Capabilities declare flat scalar permissions like `{calendar: "read"}` or
 # `{notifications: "send"}`. These are dispatched to evaluate_resource_permission.
 # Filesystem and network use their own structured evaluators. Memory is handled
-# separately via memory_scope. Delegation is enforced inside spawn_subagent.
+# separately via memory_scope. Secrets are handled explicitly because their
+# manifest shape is `{required: [...]}`. Delegation is enforced inside spawn_subagent.
 SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications")
 
 
@@ -128,6 +129,17 @@ def evaluate_capability_permissions(capability: CapabilityManifest, agent: Agent
         decision = evaluate_resource_permission(agent, resource, operation)
         if decision.status != "allow":
             return decision
+
+    # Secrets — manifests declare concrete names under `required`; agents must
+    # opt in with `permissions.secrets.allow` (or `mode: allow` for all). This
+    # prevents an approved capability pack from implicitly receiving every
+    # secret it names without an agent-level grant.
+    secrets = permissions.get("secrets")
+    if isinstance(secrets, dict):
+        for secret_name in list(secrets.get("required") or []):
+            decision = evaluate_resource_permission(agent, "secrets", str(secret_name))
+            if decision.status != "allow":
+                return decision
 
     return PolicyDecision("allow")
 

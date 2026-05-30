@@ -14,7 +14,7 @@ from jigga.runtime.capabilities import (
     load_capability_manifest,
     record_approval,
 )
-from jigga.runtime.workflow import plan_workflow, run_workflow
+from jigga.runtime.workflow import run_workflow
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_SKILL_PACK = REPO_ROOT / "examples" / "capabilities" / "skill-demo"

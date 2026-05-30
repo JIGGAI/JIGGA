@@ -20,10 +20,5 @@ permissions:
   network:
     mode: allow
     target: https://www.googleapis.com
-  secrets:
-    # gog reads its keyring password from this env var when using the file
-    # backend; JIGGA injects it via SandboxSpec.extra_env at dispatch time.
-    required:
-      - GOG_KEYRING_PASSWORD
 risk_level: medium
 handler: runtime.gog
