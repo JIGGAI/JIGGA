@@ -64,7 +64,7 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 | Audit JSONL | ✅ events at every boundary | CLI tail/inspect (`jigga logs tail`, `jigga trace <id>`, `jigga audit --agent X --since 24h`) |
 | Secret redaction | none | Middleware that scrubs API keys / tokens / cookies before write |
 | Trace IDs | ✅ ambient `trace_id` propagated across tick → agent run → subagent | — |
-| Cost tracking | not started | Per-model-call cost; per-agent/per-workflow rollup; budget caps |
+| Cost tracking | ✅ per-call cost on `model.call`; `jigga cost` rollups; opt-in per-agent budget caps (hard-stop + 80% warn) | Per-workflow rollup; running ledger (with log rotation) |
 | Log rotation | none | Daily rollover, retention policy |
 
 ### Memory at scale
@@ -151,11 +151,11 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 - ✅ **Audit query CLI** — `jigga logs tail`, `jigga audit --agent X --type T --since 24h --status S`, `jigga trace <id>`. (`docs/OBSERVABILITY_RUNTIME_NOTES.md`)
 - ✅ **Secret redaction** on every audit write (key-based + value-pattern based).
 - ✅ **Trace ID propagation:** an ambient `trace_id` (ContextVar bound at supervisor-tick / run_agent / run_workflow / channel ingest) threads through every event, so `jigga trace <trace_id>` returns the full tree supervisor tick → agent run → tool call → spawned subagent. Run records/artifacts carry it too.
-- ⏭️ **Daily log rotation** with retention policy in `config.yaml` (log grows unbounded today).
-- ⏭️ **Per-model-call cost recording** (input/output tokens × provider rate) → per-agent/per-workflow rollups.
-- ⏭️ **Per-agent budget caps** + soft-warn audit event at 80% / `policy.denied` at 100%.
+- ✅ **Per-model-call cost recording** (input/output tokens × config rate) on every `model.call` event → per-agent rollups via `jigga cost`.
+- ✅ **Per-agent budget caps** — opt-in `budgets` config, hard-stop (`budget.exceeded`, deny) at 100% in `call_model`, soft-warn (`budget.warning`) once at 80%.
+- ⏭️ **Daily log rotation** with retention policy in `config.yaml` (log grows unbounded today). A running per-agent cost ledger falls out of this work.
 
-**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call. (Audit/trace shipped; cost + budgets remain.)
+**Exit:** you can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call (`jigga cost --since 7d`). ✅ — only log rotation remains in Milestone C.
 
 ### Milestone D — Memory at scale
 *Goal: long-running agents don't drown.*

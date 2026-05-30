@@ -68,7 +68,13 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
                     "profiles": {
                         "default": {"primary": "dry_run", "fallback": []},
                     },
+                    # Per-model $/1k-token rates drive `jigga cost` and budgets.
+                    # e.g. gpt-4o: {input_per_1k: 0.005, output_per_1k: 0.015}
+                    "pricing": {},
                 },
+                # Per-agent spend caps (opt-in). Add agents.<id>.limit_usd or a
+                # default.limit_usd to enforce; window is a rolling duration.
+                "budgets": {"window": "30d", "agents": {}},
             },
         )
 

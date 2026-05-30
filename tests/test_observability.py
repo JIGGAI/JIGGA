@@ -51,6 +51,19 @@ def test_append_event_redacts_before_writing(tmp_path: Path) -> None:
     assert event["details"]["note"] == "ok"
 
 
+def test_redact_key_matching_respects_word_boundaries() -> None:
+    # `token` must redact real secret keys but not token *counts*.
+    out = redact(
+        {"bot_token": "abc", "access_token": "xyz", "input_tokens": 12, "output_tokens": 8, "max_tokens": 100},
+        key="details",
+    )
+    assert out["bot_token"] == REDACTED
+    assert out["access_token"] == REDACTED
+    assert out["input_tokens"] == 12
+    assert out["output_tokens"] == 8
+    assert out["max_tokens"] == 100
+
+
 def test_redaction_leaves_ordinary_text_alone() -> None:
     # Don't over-redact: normal prose with words/numbers must survive.
     text = "Processed 42 emails and 3 events for user alice in 1.2s"
