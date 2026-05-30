@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
 from jigga.commands.init import init_runtime
+from jigga.core.io import read_yaml
 from jigga.core.models import WorkflowStep
-from jigga.runtime.capabilities import CapabilityRegistry
-from jigga.runtime.dispatcher import RuntimeContext, dispatch_action
+from jigga.optional_capabilities import REGISTRY as OPTIONAL_CAPABILITIES
+from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
+from jigga.runtime.dispatcher import RuntimeContext, dispatch_action, evaluate_capability_permissions
 
 
 @dataclass
@@ -107,3 +109,35 @@ def test_dispatch_action_workflow_id_optional(tmp_path: Path) -> None:
     )
     started = next(e for e in _events(paths) if e["type"] == "capability.invocation.started")
     assert started["details"]["workflow"] is None
+
+
+def test_optional_capabilities_do_not_claim_unenforced_secret_permissions() -> None:
+    for optional in OPTIONAL_CAPABILITIES.values():
+        capability = CapabilityManifest.from_dict(read_yaml(optional.manifest_path))
+        assert "secrets" not in capability.permissions
+
+
+def test_secret_permissions_require_agent_grant() -> None:
+    capability = CapabilityRegistry.load().resolve_action("calendar.list_events")
+    capability = replace(capability, permissions={"secrets": {"required": ["TELEGRAM_BOT_TOKEN"]}})
+    agent = _Agent(permissions={"network": {"mode": "allow"}})
+
+    decision = evaluate_capability_permissions(capability, agent)
+
+    assert decision.status == "deny"
+    assert decision.permission == "secrets.TELEGRAM_BOT_TOKEN"
+
+
+def test_secret_permissions_allow_named_secret() -> None:
+    capability = CapabilityRegistry.load().resolve_action("calendar.list_events")
+    capability = replace(capability, permissions={"secrets": {"required": ["TELEGRAM_BOT_TOKEN"]}})
+    agent = _Agent(
+        permissions={
+            "network": {"mode": "allow"},
+            "secrets": {"allow": ["TELEGRAM_BOT_TOKEN"]},
+        }
+    )
+
+    decision = evaluate_capability_permissions(capability, agent)
+
+    assert decision.status == "allow"

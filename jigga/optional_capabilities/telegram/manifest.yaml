@@ -9,8 +9,5 @@ permissions:
   network:
     mode: allow
     target: https://api.telegram.org
-  secrets:
-    required:
-      - TELEGRAM_BOT_TOKEN
 risk_level: medium
 handler: runtime.telegram

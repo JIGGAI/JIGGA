@@ -140,10 +140,11 @@ def evaluate_filesystem(agent: AgentConfig, path: str | Path, operation: str = "
 
 
 def evaluate_resource_permission(agent: AgentConfig, resource: str, required: str) -> PolicyDecision:
-    """Generic evaluator for flat scalar permissions like calendar/email/notifications/memory.
+    """Generic evaluator for flat scalar permissions like calendar/email/notifications/secrets.
 
-    Agents declare grants like `calendar: read` or `notifications: send`;
-    capabilities declare needs like `permissions: {calendar: "read"}`.
+    Agents declare grants like `calendar: read`, `notifications: send`, or
+    `secrets: {allow: [TELEGRAM_BOT_TOKEN]}`; capabilities declare needs like
+    `permissions: {calendar: "read"}` or `permissions: {secrets: {required: [...]}}`.
 
     Match rules:
       - missing/None → deny

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-
-import pytest
 
 from jigga.cli import main
 from jigga.commands.init import init_runtime

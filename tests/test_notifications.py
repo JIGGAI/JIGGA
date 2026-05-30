@@ -5,8 +5,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from jigga.commands.init import init_runtime
 from jigga.core.io import write_yaml
 from jigga.runtime.notifications import (

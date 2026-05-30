@@ -182,6 +182,24 @@ def test_max_tool_calls_per_run_halts(tmp_path: Path) -> None:
     assert any("max_tool_calls" in d["details"].get("reason", "") for d in denied)
 
 
+def test_max_iterations_halt_is_explicit(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _write_agent(paths, "looper", tools=["calendar.list_events"])
+    _set_loop_limits(paths, max_iterations=1)
+    create_task(paths.tasks, "loop", assignee="looper")
+    sequence = [_result(tool_calls=[ModelToolCall(id="c1", name=_to_tool_name("calendar.list_events"), arguments={})])]
+    with patch("jigga.runtime.agent.call_model", _scripted_call_model(sequence)):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "looper")
+
+    assert list_tasks(paths.tasks)[0].state == "completed"
+    halted = [e for e in _events(paths) if e["type"] == "agent.loop.halted"]
+    assert halted
+    assert halted[-1]["details"]["reason"] == "max_iterations=1"
+    run_files = list((paths.home / "runs" / "agents" / "looper").rglob("*.json"))
+    artifact = next(json.loads(f.read_text()) for f in run_files if f.name.startswith("task_"))
+    assert artifact["halted"] == {"reason": "max_iterations=1"}
+
+
 # --- no-tool path preserved ------------------------------------------------
 
 

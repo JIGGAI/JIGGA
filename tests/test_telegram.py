@@ -14,7 +14,6 @@ from jigga.core.models import WorkflowStep
 from jigga.runtime.telegram import (
     SUPPORTED_ACTIONS,
     allowed_chat_ids,
-    bot_token_path,
     load_bot_token,
     load_offset,
     poll_messages,

@@ -151,6 +151,7 @@ def _run_task_loop(
     halted: dict[str, Any] | None = None
     tool_calls_log: list[dict[str, Any]] = []
 
+    exhausted_iterations = max_iterations <= 0
     for _iteration in range(max_iterations):
         request = ModelCallRequest(
             agent_id=agent.id,
@@ -169,6 +170,7 @@ def _run_task_loop(
                     "halted": None, "tool_calls": tool_calls_log}
         if not result.tool_calls:
             final_text = result.content
+            exhausted_iterations = False
             break
 
         # Assistant tool-call turn → echo it into the transcript.
@@ -218,11 +220,19 @@ def _run_task_loop(
             _tool_result(output if isinstance(output, dict) else {"result": output})
 
         if halted is not None:
+            exhausted_iterations = False
             break
+    else:
+        exhausted_iterations = True
+
+    if exhausted_iterations:
+        halted = {"reason": f"max_iterations={max_iterations}"}
+        append_event(logs_dir, "agent.loop.halted", status="deny", agent=agent.id,
+                     run_id=run_id, task_id=task.id, reason=halted["reason"])
 
     state = "needs_approval" if halted and "action" in halted else ("completed" if last_result and last_result.status == "ok" else "failed")
-    # max_tool_calls/iteration exhaustion without a final answer still completes
-    # the run (bounded), recording what happened.
+    # Bound exhaustion without a final answer still completes the run, but the
+    # halted marker and audit event make the stop reason explicit.
     if halted and "action" not in halted:
         state = "completed"
     return {
