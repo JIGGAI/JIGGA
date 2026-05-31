@@ -399,11 +399,11 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
             "input_tokens": input_tokens, "output_tokens": output_tokens}
 
 
-def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str) -> ModelCallResult:
+def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str, home: Path) -> ModelCallResult:
     """Call the ChatGPT/Codex backend on a subscription OAuth token (no API key)."""
     from jigga.runtime.chatgpt_auth import load_credentials  # local import: optional dependency path
 
-    creds = load_credentials()
+    creds = load_credentials(home=home)
     payload = json.dumps(_build_responses_payload(request, model)).encode("utf-8")
 
     def _post(access_token: str, account_id: str | None):
@@ -570,7 +570,7 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
             elif provider.kind == "openai_compatible":
                 result = _call_openai_compatible(provider, request, model)
             elif provider.kind == "chatgpt_oauth":
-                result = _call_chatgpt_oauth(provider, request, model)
+                result = _call_chatgpt_oauth(provider, request, model, home)
             else:
                 raise ValueError(f"Unsupported provider kind: {provider.kind}")
             # Use replace (not to_dict round-trip) so typed tool_calls survive.

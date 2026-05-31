@@ -100,27 +100,30 @@ def test_parse_stream_tolerates_bytes_and_junk() -> None:
 # --- credential loader -----------------------------------------------------
 
 
-def test_load_credentials_reads_store_and_account_id(tmp_path: Path) -> None:
+def test_load_credentials_reads_store_and_account_id(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chatgpt_auth, "codex_store", lambda: tmp_path / "nope.json")
     access = _jwt({"exp": int(time.time()) + 3600, "https://api.openai.com/auth": {"chatgpt_account_id": "acct_9"}})
-    (tmp_path / "auth.json").write_text(json.dumps({"tokens": {"access_token": access, "refresh_token": "r"}}))
+    chatgpt_auth.save_credentials(tmp_path, {"access_token": access, "refresh_token": "r"})
     creds = load_credentials(home=tmp_path)
     assert creds.access_token == access
     assert creds.account_id == "acct_9"
 
 
 def test_load_credentials_refreshes_when_expired(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chatgpt_auth, "codex_store", lambda: tmp_path / "nope.json")
     expired = _jwt({"exp": int(time.time()) - 10})
     fresh = _jwt({"exp": int(time.time()) + 3600, "https://api.openai.com/auth": {"chatgpt_account_id": "acct_new"}})
-    (tmp_path / "auth.json").write_text(json.dumps({"tokens": {"access_token": expired, "refresh_token": "r0"}}))
+    chatgpt_auth.save_credentials(tmp_path, {"access_token": expired, "refresh_token": "r0"})
     monkeypatch.setattr(chatgpt_auth, "_refresh", lambda rt: {"access_token": fresh, "refresh_token": "r1"})
     creds = load_credentials(home=tmp_path)
     assert creds.access_token == fresh
     assert creds.account_id == "acct_new"
-    # rotated tokens persisted back to the store
-    saved = json.loads((tmp_path / "auth.json").read_text())["tokens"]
+    # rotated tokens persisted back to the JIGGA store
+    saved = json.loads(chatgpt_auth.jigga_store(tmp_path).read_text())["tokens"]
     assert saved["access_token"] == fresh and saved["refresh_token"] == "r1"
 
 
-def test_load_credentials_missing_store_raises(tmp_path: Path) -> None:
+def test_load_credentials_missing_store_raises(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(chatgpt_auth, "codex_store", lambda: tmp_path / "nope.json")
     with pytest.raises(ChatGptAuthError):
         load_credentials(home=tmp_path)
