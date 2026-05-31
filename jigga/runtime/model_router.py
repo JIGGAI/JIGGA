@@ -10,7 +10,7 @@ from typing import Any
 
 from jigga.core.io import read_yaml
 from jigga.core.models import AgentConfig
-from jigga.runtime.audit import append_event
+from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.cost import (
     WARN_FRACTION,
     agent_budget,
@@ -297,6 +297,156 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
     )
 
 
+CHATGPT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
+# Codex masquerade headers — the ChatGPT backend only serves clients that look
+# like the Codex CLI. Verified against codex 0.135.0 + the live backend.
+_CODEX_ORIGINATOR = "codex_cli_rs"
+_CODEX_UA = "codex_cli_rs/0.135.0"
+
+
+def _build_responses_payload(request: ModelCallRequest, model: str) -> dict[str, Any]:
+    """Map a ModelCallRequest into a ChatGPT/Codex Responses-API body.
+
+    System items become `instructions`; user/assistant/tool items become Responses
+    `input` items; assistant tool-call turns become `function_call` items and tool
+    results become `function_call_output` items. Tools are flattened from the
+    chat-completions `{type, function:{...}}` shape to the Responses `{type, name,
+    description, parameters}` shape.
+    """
+    instructions: list[str] = []
+    input_items: list[dict[str, Any]] = []
+    for item in request.items:
+        if item.role == "system":
+            if item.content:
+                instructions.append(item.content)
+            continue
+        if item.role == "tool":
+            input_items.append(
+                {"type": "function_call_output", "call_id": item.tool_call_id, "output": item.content or ""}
+            )
+            continue
+        if item.role == "assistant" and item.tool_calls:
+            if item.content:
+                input_items.append({"type": "message", "role": "assistant",
+                                    "content": [{"type": "output_text", "text": item.content}]})
+            for call in item.tool_calls:
+                input_items.append({"type": "function_call", "call_id": call.id,
+                                    "name": call.name, "arguments": json.dumps(call.arguments)})
+            continue
+        text_type = "input_text" if item.role == "user" else "output_text"
+        input_items.append({"type": "message", "role": item.role,
+                            "content": [{"type": text_type, "text": item.content or ""}]})
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "instructions": "\n\n".join(instructions),
+        "input": input_items,
+        "store": False,          # the ChatGPT backend requires stateless requests
+        "stream": True,
+        "reasoning": {"effort": "low"},
+    }
+    if request.tools:
+        payload["tools"] = [
+            {"type": "function", "name": fn.get("name"), "description": fn.get("description"),
+             "parameters": fn.get("parameters")}
+            for tool in request.tools if (fn := tool.get("function", tool))
+        ]
+    return payload
+
+
+def parse_responses_stream(lines: Any) -> dict[str, Any]:
+    """Parse a Responses-API SSE byte/line stream into a normalized result.
+
+    Items arrive on `response.output_item.done` (this backend leaves
+    `response.completed.output` empty); usage arrives on `response.completed`.
+    Returns {content, tool_calls, input_tokens, output_tokens}.
+    """
+    content_parts: list[str] = []
+    tool_calls: list[ModelToolCall] = []
+    input_tokens = output_tokens = 0
+    for raw in lines:
+        line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else raw
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("type")
+        if etype == "response.output_item.done":
+            item = event.get("item") or {}
+            if item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if part.get("type") in ("output_text", "text") and part.get("text"):
+                        content_parts.append(part["text"])
+            elif item.get("type") == "function_call":
+                try:
+                    arguments = json.loads(item.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    arguments = {"_raw": item.get("arguments")}
+                tool_calls.append(ModelToolCall(
+                    id=str(item.get("call_id") or item.get("id") or item.get("name")),
+                    name=str(item.get("name")), arguments=arguments))
+        elif etype in ("response.completed", "response.done"):
+            usage = (event.get("response") or {}).get("usage") or {}
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+    return {"content": "".join(content_parts), "tool_calls": tool_calls,
+            "input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str) -> ModelCallResult:
+    """Call the ChatGPT/Codex backend on a subscription OAuth token (no API key)."""
+    from jigga.runtime.chatgpt_auth import load_credentials  # local import: optional dependency path
+
+    creds = load_credentials()
+    payload = json.dumps(_build_responses_payload(request, model)).encode("utf-8")
+
+    def _post(access_token: str, account_id: str | None):
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "OpenAI-Beta": "responses=experimental",
+            "originator": _CODEX_ORIGINATOR,
+            "User-Agent": _CODEX_UA,
+            "session_id": new_id("session").split("_", 1)[1],
+            "accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
+        http_request = urllib.request.Request(CHATGPT_CODEX_URL, data=payload, headers=headers, method="POST")
+        return urllib.request.urlopen(http_request, timeout=provider.timeout_seconds)  # noqa: S310
+
+    try:
+        response = _post(creds.access_token, creds.account_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):  # token expired/rejected → refresh once and retry
+            creds.force_refresh()
+            try:
+                response = _post(creds.access_token, creds.account_id)
+            except urllib.error.HTTPError as retry_exc:
+                detail = retry_exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"ChatGPT request failed after refresh: HTTP {retry_exc.code}: {detail}") from retry_exc
+        else:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"ChatGPT request failed: HTTP {exc.code}: {detail}") from exc
+
+    with response:
+        parsed = parse_responses_stream(response)
+    if not parsed["content"] and not parsed["tool_calls"]:
+        raise RuntimeError("ChatGPT response included neither content nor tool_calls")
+    return ModelCallResult(
+        status="ok", provider=provider.id, model=model, content=parsed["content"], dry_run=False,
+        tool_calls=parsed["tool_calls"],
+        input_tokens=parsed["input_tokens"] or _prompt_tokens(request),
+        output_tokens=parsed["output_tokens"] or estimate_tokens(parsed["content"]),
+    )
+
+
 def _parse_tool_calls(raw: Any) -> list[ModelToolCall]:
     """Parse OpenAI `message.tool_calls` into ModelToolCall. Tolerates missing
     or malformed argument JSON (falls back to an empty/raw dict) so a single
@@ -419,6 +569,8 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
                 result = _dry_run_result(request, provider_id=provider.id, model=model)
             elif provider.kind == "openai_compatible":
                 result = _call_openai_compatible(provider, request, model)
+            elif provider.kind == "chatgpt_oauth":
+                result = _call_chatgpt_oauth(provider, request, model)
             else:
                 raise ValueError(f"Unsupported provider kind: {provider.kind}")
             # Use replace (not to_dict round-trip) so typed tool_calls survive.
