@@ -83,6 +83,51 @@ def _set_model_provider(paths: Any, provider: str, model: str | None) -> None:
     write_yaml(paths.config, config)
 
 
+# Installable channels: channel name -> (optional capability to install, blurb).
+# New adapters (Slack, iMessage) register here once their capability exists.
+_CHANNEL_CATALOG: dict[str, tuple[str, str]] = {
+    "telegram": ("telegram", "Telegram bot — poll inbound + reply"),
+}
+
+
+def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
+    """Interactive channel onboarding: pick a channel → run its guided install
+    (auth + config + approval, reused from `capabilities install`) → set the
+    activation mode → enable. Pluggable via `_CHANNEL_CATALOG`."""
+    names = sorted(_CHANNEL_CATALOG)
+    echo("Set up a channel:")
+    for i, name in enumerate(names, 1):
+        echo(f"  {i}) {name} — {_CHANNEL_CATALOG[name][1]}")
+    choice = prompt("> ").strip()
+    name = names[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(names) else (
+        choice if choice in _CHANNEL_CATALOG else None
+    )
+    if name is None:
+        echo("No channel selected.")
+        return
+
+    capability = _CHANNEL_CATALOG[name][0]
+    # Reuse the channel's guided install: token/credentials + config + approval.
+    if install_capability(paths, capability, input_fn=prompt, print_fn=echo) != 0:
+        return
+
+    echo("\nActivation mode — when should the bot respond?")
+    echo("  1) always              (every allowed message)")
+    echo("  2) mention             (DMs always; groups only when @mentioned)")
+    echo("  3) direct_message_only (only 1:1 chats)")
+    echo("  4) disabled            (polled but inert)")
+    mode = {"1": "always", "2": "mention", "3": "direct_message_only", "4": "disabled"}.get(
+        prompt("> ").strip(), "always"
+    )
+    config = read_yaml(paths.config)
+    entry = config.setdefault("channels", {}).setdefault(name, {})
+    entry["enabled"] = True
+    entry["activation"] = mode
+    write_yaml(paths.config, config)
+    echo(f"\n✓ {name} ready (activation={mode}). The supervisor polls it each tick — "
+         "run `jigga supervisor run` (or install it as a service).")
+
+
 def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
     """Interactive onboarding: pick a provider, then (for ChatGPT) authenticate."""
     from jigga.runtime.chatgpt_auth import login_state
@@ -251,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     channels = sub.add_parser("channels", help="Channel listener (long-poll inbound -> tasks -> agents)")
     channels_sub = channels.add_subparsers(dest="channels_command", required=True)
     channels_sub.add_parser("status", help="List enabled channels and their config")
+    channels_sub.add_parser("setup", help="Interactive: pick a channel, authenticate, set activation, enable")
     channels_listen = channels_sub.add_parser("listen", help="Run the long-poll channel listener")
     channels_listen.add_argument("--long-poll-seconds", type=int, default=30)
     channels_listen.add_argument("--max-cycles", type=int, default=None, help="Stop after N cycles (tests/demos)")
@@ -613,6 +659,9 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(
                     [{"channel": name, "config": cfg} for name, cfg in enabled_channels(paths.home)]
                 )
+                return 0
+            if args.channels_command == "setup":
+                _channels_setup(paths)
                 return 0
             if args.channels_command == "listen":
                 result = channel_listen(
