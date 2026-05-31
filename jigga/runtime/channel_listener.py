@@ -44,6 +44,7 @@ from typing import Any
 from jigga.core.config import load_runtime_config
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.approvals import find_by_code, parse_approval_reply, resolve_and_requeue
 from jigga.runtime.channels import (
     ADAPTERS,
     JiggaEvent,
@@ -134,6 +135,30 @@ def _ingest_once(
                              chat_id=event.conversation_id, sender=event.actor_name,
                              event_id=event.id, reason="sender not in allowlist")
                 continue
+            # Approval reply? (B6) An allowlisted sender typing `approve <code>` /
+            # `deny <code>` resolves a pending approval and re-queues the held
+            # task — it is not turned into a new task. Only intercept when the
+            # code matches a real pending approval (so ordinary prose passes through).
+            parsed = parse_approval_reply(event.text)
+            if parsed is not None:
+                approved, code = parsed
+                record = find_by_code(home / "approvals", code)
+                if record is not None:
+                    resolve_and_requeue(home / "approvals", tasks_dir, code, approved=approved)
+                    append_event(logs_dir, "approval.resolved", status="ok" if approved else "deny",
+                                 channel=name, code=code, approved=approved,
+                                 task_id=record.get("task_id"), agent_id=record.get("agent_id"))
+                    if approved and record.get("agent_id"):
+                        affected_agents.add(record["agent_id"])
+                    try:
+                        adapter.send(home, conversation_id=event.conversation_id,
+                                     text=f"{'Approved' if approved else 'Denied'} {code}."
+                                          + (" Resuming." if approved else ""))
+                    except Exception as exc:  # noqa: BLE001 — notify failure must not break ingest
+                        append_event(logs_dir, "approval.notify_failed", status="error", code=code, error=str(exc))
+                    continue
+                # no matching pending code → fall through; treat as a normal message
+
             # Activation mode — should this message wake the agent at all?
             if not activation_allows(event, cfg):
                 append_event(logs_dir, "channel.message.ignored", channel=name,
