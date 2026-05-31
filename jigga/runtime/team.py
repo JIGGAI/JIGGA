@@ -8,6 +8,7 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.tasks import create_task
 from jigga.runtime.workflow import run_workflow
+from jigga.runtime.workspaces import scaffold_workspace
 
 
 def run_team(
@@ -24,6 +25,10 @@ def run_team(
     team = teams.get(team_id)
     if team is None:
         raise ValueError(f"Team not found: {team_id}")
+
+    # Ensure the team's shared workspace exists (idempotent) — created on first
+    # use regardless of how the team was created (yaml drop, examples, ...).
+    scaffold_workspace(home, team)
 
     run_id = new_id("team_run")
     run_dir = home / "runs" / "teams" / team_id / run_id
