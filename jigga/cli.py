@@ -58,6 +58,7 @@ from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.team import run_team
+from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_team
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import default_permission_mode, load_agents, load_teams, load_workflows
@@ -363,6 +364,13 @@ def build_parser() -> argparse.ArgumentParser:
     team_init.add_argument("--json", action="store_true", dest="json_output")
     team_ws = team_sub.add_parser("workspace", help="Show a team's workspace path and files")
     team_ws.add_argument("team_id")
+    team_scaffold = team_sub.add_parser("scaffold", help="Scaffold a team + member agents + workspace from a recipe")
+    team_scaffold.add_argument("recipe", help="Recipe name (e.g. marketing-team) or path to a .md recipe")
+    team_scaffold.add_argument("--team-id", dest="team_id", help="Team id to create (default: the recipe's id)")
+    team_scaffold.add_argument("--overwrite", action="store_true", help="Overwrite existing agent/team files")
+    team_scaffold.add_argument("--json", action="store_true", dest="json_output")
+    team_recipes = team_sub.add_parser("recipes", help="List available team recipes")
+    team_recipes.add_argument("--json", action="store_true", dest="json_output")
     team_run.add_argument("team_id")
 
     model = sub.add_parser("model", help="Inspect and test model execution")
@@ -835,6 +843,33 @@ def main(argv: list[str] | None = None) -> int:
                 for path in sorted(root.rglob("*")):
                     if path.is_file():
                         print(f"  {path.relative_to(root)}")
+                return 0
+            if args.team_command == "recipes":
+                recipes = list_recipes(paths.home)
+                if args.json_output:
+                    print_json(recipes)
+                elif not recipes:
+                    print("No recipes found.")
+                else:
+                    for r in recipes:
+                        print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
+                return 0
+            if args.team_command == "scaffold":
+                recipe_path = find_recipe(paths.home, args.recipe)
+                if recipe_path is None:
+                    print(f"Recipe not found: {args.recipe!r}. List options with: jigga team recipes")
+                    return 1
+                summary = scaffold_team(paths.home, load_recipe(recipe_path), team_id=args.team_id,
+                                        overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
+                if args.json_output:
+                    print_json(summary)
+                else:
+                    print(f"Scaffolded team {summary['team_id']!r} (lead: {summary['lead']})")
+                    print(f"  team:      {summary['team_file']}{'' if summary['team_written'] else '  (exists, skipped)'}")
+                    print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
+                          + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
+                    print(f"  workspace: {summary['workspace']}")
+                    print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
                 return 0
             return 0
 
