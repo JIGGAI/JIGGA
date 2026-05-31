@@ -21,10 +21,11 @@ Run it as its own process alongside the supervisor:
 
 ## Generality
 
-`CHANNEL_POLLERS` maps a channel name to its poll function. Today only
-`telegram` is registered; Slack / iMessage register here once they exist and
-inherit the whole listener for free. Enabled channels come from
-`config.channels.<name>.enabled`.
+Channels go through the normalized gateway (`runtime.channels`): each implements
+the `ChannelAdapter` contract and produces `JiggaEvent`s, and every inbound
+message passes the `identity_allowed` policy/identity check before becoming a
+task. Adding Slack / iMessage = register an adapter in `channels.ADAPTERS`; the
+listener is unchanged. Enabled channels come from `config.channels.<name>.enabled`.
 
 ## Known limitation (follow-up)
 
@@ -38,53 +39,40 @@ from __future__ import annotations
 import signal
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from jigga.core.config import load_runtime_config
-from jigga.runtime import telegram
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.channels import ADAPTERS, JiggaEvent, identity_allowed
 from jigga.runtime.tasks import create_task
-
-def _poll_telegram(home: Path, **kwargs: Any) -> dict[str, Any]:
-    # Thin wrapper so the registry resolves telegram.poll_messages at CALL time
-    # (not import time) — keeps it patchable in tests and decoupled from the
-    # concrete function object.
-    return telegram.poll_messages(home, **kwargs)
-
-
-# channel name -> poll function (home, *, long_poll_seconds) -> {messages: [...]}
-CHANNEL_POLLERS: dict[str, Callable[..., dict[str, Any]]] = {
-    "telegram": _poll_telegram,
-}
 
 DEFAULT_LONG_POLL_SECONDS = 30
 
 
 def enabled_channels(home: Path) -> list[tuple[str, dict[str, Any]]]:
     """Return [(channel_name, config)] for channels with enabled=true that also
-    have a registered poller."""
+    have a registered adapter in the gateway."""
     config = load_runtime_config(home)
     channels = config.get("channels") or {}
     result: list[tuple[str, dict[str, Any]]] = []
     for name, cfg in channels.items():
         if not isinstance(cfg, dict) or not cfg.get("enabled"):
             continue
-        if name not in CHANNEL_POLLERS:
+        if name not in ADAPTERS:
             continue
         result.append((name, cfg))
     return result
 
 
-def _message_to_task_fields(channel: str, message: dict[str, Any]) -> tuple[str, str]:
-    sender = message.get("sender") or "unknown"
-    chat_id = message.get("chat_id")
-    text = message.get("text") or ""
-    title = f"{channel} message from {sender}"
+def _event_to_task_fields(event: JiggaEvent) -> tuple[str, str]:
+    sender = event.actor_name
+    chat_id = event.conversation_id
+    title = f"{event.source} message from {sender}"
     description = (
-        f"Message received via {channel} from {sender} (chat_id: {chat_id}):\n\n"
-        f"{text}\n\n"
-        f"To reply, use the {channel}.send_message capability with chat_id={chat_id}."
+        f"Message received via {event.source} from {sender} (chat_id: {chat_id}):\n\n"
+        f"{event.text}\n\n"
+        f"To reply, use the {event.source}.send_message capability with chat_id={chat_id}."
     )
     return title, description
 
@@ -125,16 +113,23 @@ def _ingest_once(
     polled: list[str] = []
 
     for name, cfg in enabled_channels(home):
-        poller = CHANNEL_POLLERS[name]
+        adapter = ADAPTERS[name]
         polled.append(name)
-        result = poller(home, long_poll_seconds=long_poll_seconds)
+        result = adapter.poll(home, long_poll_seconds=long_poll_seconds)
         if result.get("status") and result["status"] != "ok":
             append_event(logs_dir, "channel.poll_skipped", status="ask", channel=name,
                          detail=result.get("status"))
             continue
         default_agent = cfg.get("default_agent")
-        for message in result.get("messages", []):
-            title, description = _message_to_task_fields(name, message)
+        for event in result.get("events", []):
+            # Policy / identity check — the gateway authorizes every sender.
+            if not identity_allowed(event, cfg):
+                append_event(logs_dir, "channel.message.rejected", status="deny", channel=name,
+                             chat_id=event.conversation_id, sender=event.actor_name,
+                             event_id=event.id, reason="sender not in allowlist")
+                continue
+            event.target = {"agent": default_agent}
+            title, description = _event_to_task_fields(event)
             task = create_task(
                 tasks_dir,
                 title=title,
@@ -142,15 +137,16 @@ def _ingest_once(
                 assignee=default_agent,
                 metadata={
                     "channel": name,
-                    "chat_id": message.get("chat_id"),
-                    "sender": message.get("sender"),
-                    "message_id": message.get("message_id"),
-                    "text": message.get("text"),
+                    "chat_id": event.conversation_id,
+                    "sender": event.actor.get("name"),
+                    "message_id": event.raw.get("message_id"),
+                    "text": event.text,
+                    "event_id": event.id,
                 },
             )
             created.append(task.to_dict())
             append_event(logs_dir, "channel.message.received", channel=name, task_id=task.id,
-                         chat_id=message.get("chat_id"), sender=message.get("sender"))
+                         chat_id=event.conversation_id, sender=event.actor.get("name"), event_id=event.id)
             if default_agent:
                 affected_agents.add(default_agent)
 
