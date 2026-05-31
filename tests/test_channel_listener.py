@@ -88,7 +88,7 @@ def test_ingest_creates_task_per_message_and_runs_agent(tmp_path: Path) -> None:
         ran.append(agent_id)
         return {"agent_id": agent_id}
 
-    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value=poll_result), patch(
+    with patch("jigga.runtime.telegram.poll_messages", return_value=poll_result), patch(
         "jigga.runtime.channel_listener.run_agent", fake_run_agent
     ):
         summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
@@ -107,7 +107,7 @@ def test_ingest_creates_task_per_message_and_runs_agent(tmp_path: Path) -> None:
 def test_ingest_no_messages_is_noop(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     _enable_telegram(paths)
-    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
+    with patch("jigga.runtime.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
         "jigga.runtime.channel_listener.run_agent"
     ) as run_mock:
         summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
@@ -120,7 +120,7 @@ def test_ingest_skips_not_connected_channel(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     _enable_telegram(paths)
     with patch(
-        "jigga.runtime.channel_listener.telegram.poll_messages",
+        "jigga.runtime.telegram.poll_messages",
         return_value={"status": "telegram.not_connected", "messages": []},
     ):
         summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
@@ -131,7 +131,7 @@ def test_ingest_skips_not_connected_channel(tmp_path: Path) -> None:
 def test_ingest_no_process_skips_agents(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     _enable_telegram(paths)
-    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
+    with patch("jigga.runtime.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
         "jigga.runtime.channel_listener.run_agent"
     ) as run_mock:
         summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, process_agents=False)
@@ -145,7 +145,7 @@ def test_ingest_no_process_skips_agents(tmp_path: Path) -> None:
 def test_channel_listen_bounded(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     _enable_telegram(paths)
-    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
+    with patch("jigga.runtime.telegram.poll_messages", return_value={"status": "ok", "messages": [_msg()]}), patch(
         "jigga.runtime.channel_listener.run_agent", return_value={}
     ):
         result = channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=2)
@@ -158,7 +158,7 @@ def test_channel_listen_bounded(tmp_path: Path) -> None:
 def test_channel_listen_emits_lifecycle_events(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     _enable_telegram(paths)
-    with patch("jigga.runtime.channel_listener.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
+    with patch("jigga.runtime.telegram.poll_messages", return_value={"status": "ok", "messages": []}), patch(
         "jigga.runtime.channel_listener.run_agent", return_value={}
     ):
         channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=1)
@@ -181,7 +181,7 @@ def test_channel_listen_handles_sigterm(tmp_path: Path) -> None:
         "from jigga.core.paths import get_paths\n"
         "from jigga.runtime import channel_listener\n"
         f"paths = get_paths({str(tmp_path)!r})\n"
-        "with patch('jigga.runtime.channel_listener.telegram.poll_messages', return_value={'status':'ok','messages':[]}):\n"
+        "with patch('jigga.runtime.telegram.poll_messages', return_value={'status':'ok','messages':[]}):\n"
         "    r = channel_listener.channel_listen(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, max_cycles=None)\n"
         "sys.stdout.write(json.dumps({'status': r['status'], 'sig': r['stopped_by_signal']}))\n"
         "sys.stdout.flush()\n"
