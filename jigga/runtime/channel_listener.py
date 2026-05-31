@@ -44,7 +44,13 @@ from typing import Any
 from jigga.core.config import load_runtime_config
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
-from jigga.runtime.channels import ADAPTERS, JiggaEvent, identity_allowed
+from jigga.runtime.channels import (
+    ADAPTERS,
+    JiggaEvent,
+    activation_allows,
+    from_public_conversation,
+    identity_allowed,
+)
 from jigga.runtime.tasks import create_task
 
 DEFAULT_LONG_POLL_SECONDS = 30
@@ -128,6 +134,13 @@ def _ingest_once(
                              chat_id=event.conversation_id, sender=event.actor_name,
                              event_id=event.id, reason="sender not in allowlist")
                 continue
+            # Activation mode — should this message wake the agent at all?
+            if not activation_allows(event, cfg):
+                append_event(logs_dir, "channel.message.ignored", channel=name,
+                             chat_id=event.conversation_id, event_id=event.id,
+                             reason=f"activation={cfg.get('activation') or 'always'}",
+                             conversation_type=event.conversation_type)
+                continue
             event.target = {"agent": default_agent}
             title, description = _event_to_task_fields(event)
             task = create_task(
@@ -142,6 +155,11 @@ def _ingest_once(
                     "message_id": event.raw.get("message_id"),
                     "text": event.text,
                     "event_id": event.id,
+                    "conversation_type": event.conversation_type,
+                    # Group/channel messages should run with restricted memory
+                    # (prompt-injection safety). Recorded now; agent-loop
+                    # enforcement of the restricted scope is a follow-up.
+                    "restricted_memory": from_public_conversation(event),
                 },
             )
             created.append(task.to_dict())

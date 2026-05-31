@@ -165,12 +165,19 @@ def _normalize(update: dict[str, Any]) -> dict[str, Any] | None:
     chat = message.get("chat") or {}
     sender = message.get("from") or {}
     sender_name = sender.get("username") or sender.get("first_name") or str(sender.get("id", "unknown"))
+    # Best-effort "was the bot addressed?" for activation modes: an @mention,
+    # text_mention, or /command entity. (We don't resolve which bot; in a
+    # one-bot group this is the right signal — documented limitation.)
+    entities = message.get("entities") or []
+    mentions_bot = any(e.get("type") in {"mention", "text_mention", "bot_command"} for e in entities)
     return {
         "channel": "telegram",
         "chat_id": chat.get("id"),
+        "chat_type": chat.get("type"),          # private / group / supergroup / channel
         "sender": sender_name,
         "sender_id": sender.get("id"),
         "text": message.get("text", ""),
+        "mentions_bot": mentions_bot,
         "message_id": message.get("message_id"),
         "date": message.get("date"),
         "update_id": update.get("update_id"),
