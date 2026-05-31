@@ -177,6 +177,27 @@ Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds 
 
 **Exit:** ✅ **Milestone C complete.** You can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call (`jigga cost --since 7d`), trace a whole run from one id, and the audit log is bounded. The one remaining item is an optimization, not a feature gap: a running per-agent cost ledger (vs. scanning the log per call) if model-call volume grows.
 
+### Teams & Shared Workspaces — adopt the ClawRecipes model (sequenced AFTER Milestone B)
+
+*Goal: build/manage teams the way `~/ClawRecipes` does — a per-team shared workspace with file-first coordination. ClawRecipes (the OpenClaw-plugin precursor in the JIGGAI org) and its UI `~/clawkitchen` are the reference; JIGGA already shares the file-first/local-first/agents-teams-workflows DNA, so this is adopting a proven model into the Python runtime, not a pivot. Decision (2026-05-31): finish Milestone B first, then this.*
+
+ClawRecipes-parity map — where each feature lands in the JIGGA milestone process:
+
+| ClawRecipes feature | JIGGA home | Notes |
+|---|---|---|
+| **Per-team workspace** `~/.jigga/workspaces/<team>/` (`roles/`, `work/`, `notes/`, `shared-context/`) | **W1 (this workstream)** | JIGGA state is global today; this adds per-team dirs |
+| **Shared-context curator model** — lead-owned `plan.md`/`priorities.md`, append-only `agent-outputs/` + `feedback/` | **W1** | distinct from memory *scopes*; pure file conventions |
+| **Team/role memory** (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`) | **W2** → folds into **Milestone D** | D adds indexing/compaction on top |
+| **Ticket lanes** (`backlog→in-progress→testing→done`) + `take`/`handoff`/`complete`/`assign` | **W3** | evolve JIGGA's task queue (states+assignee) toward lanes |
+| **Markdown recipes + `scaffold-team`** templating (`{{teamId}}`) | **W4** | JIGGA hand-writes yaml today; add a scaffolder |
+| **Workflow DAG** (nodes/edges, `human_approval`/media nodes, `workflow-runs/`) | future "workflow engine v2" | extends Milestone B6 (approval) + linear workflows; bigger lift, separate |
+| **Channel approval-code flow** (Telegram `approve <code>`) | **Milestone B6** | already planned |
+| **ClawKitchen UI** (reads workspace files + shells the CLI, no cache) | **Milestone F dashboard** | the blueprint for JIGGA's dashboard |
+
+Slices: **W1** per-team workspace + shared-context curator model (smallest, most aligned — start here); **W2** team/role memory layers; **W3** ticket lanes + handoff; **W4** recipes + `jigga teams scaffold`. Re-scope at the time — pull each in "when it makes sense" rather than all at once.
+
+**Exit:** a JIGGA team has a real shared workspace — lead curates `plan.md`/`priorities.md`, roles append outputs, work moves through lanes — matching how ClawRecipes teams operate.
+
 ### Milestone D — Memory at scale
 *Goal: long-running agents don't drown.*
 
@@ -184,6 +205,7 @@ Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds 
 - Optional vector index behind a feature flag — embed via model router or local model.
 - Compaction pipeline: summarize completed tasks weekly, archive raw logs older than N days, mark stale facts.
 - Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.
+- **Team/role memory layers** (from the Teams & Shared Workspaces workstream above) get indexed/compacted here — `team.jsonl`/`pinned.jsonl` per team, per-role `MEMORY.md`.
 
 **Exit:** memory size is bounded and retrieval gets faster as it grows.
 
@@ -202,7 +224,7 @@ Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds 
 
 - Pip-publishable package (`pip install jigga`).
 - Supervisor autostart templates (systemd / launchd / Windows Service) + a `jigga install-service` helper.
-- Headless-first GUI/dashboard — Electron or web-app pointing at a local API. Read-only at first: state, audit log, sessions, capability registry. Approve actions in v1.1.
+- Headless-first GUI/dashboard — Electron or web-app pointing at a local API. Read-only at first: state, audit log, sessions, capability registry. Approve actions in v1.1. **Blueprint: `~/clawkitchen`** — the ClawRecipes UI reads workspace files directly + shells the CLI, with no cache (no hidden app state); adopt that integration boundary.
 - Capability marketplace UX: `jigga capabilities search <query>`, `jigga capabilities install <name>`, `jigga capabilities update`. Backed by a static registry index (git-based, no server needed for v1).
 - Encrypted backup with `jigga backup create / restore`. Cloud sync as an optional layer (S3-compatible, age-encrypted).
 - Opt-in telemetry: documented payload, off by default, `jigga telemetry on/off` toggle.
