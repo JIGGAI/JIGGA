@@ -48,7 +48,8 @@ from jigga.runtime.google_calendar import (
 )
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
-from jigga.runtime.model_router import build_task_model_request, call_model
+from jigga.runtime.model_router import build_task_model_request, call_model, load_model_config
+from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
 from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
 from jigga.runtime.scheduler import serialize_events, due_events
@@ -62,6 +63,54 @@ from jigga.core.config import default_permission_mode, load_agents, load_workflo
 
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _set_model_provider(paths: Any, provider: str, model: str | None) -> None:
+    """Make `provider` the default in config.yaml, creating its provider entry
+    and pointing the default profile at it (preserves other config)."""
+    config = read_yaml(paths.config)
+    models = config.setdefault("models", {})
+    providers = models.setdefault("providers", {})
+    profiles = models.setdefault("profiles", {})
+    if provider == "chatgpt":
+        providers["chatgpt"] = {"kind": "chatgpt_oauth", "default_model": model or "gpt-5.5", "timeout_seconds": 120}
+        # Subscription billing: $0 marginal, but keep tokens tracked in `jigga cost`.
+        models.setdefault("pricing", {}).setdefault(model or "gpt-5.5", {"input_per_1k": 0.0, "output_per_1k": 0.0})
+    elif provider == "dry_run":
+        providers["dry_run"] = {"kind": "dry_run", "default_model": "dry-run"}
+    models["defaults"] = {**(models.get("defaults") or {}), "provider": provider}
+    profiles["default"] = {**(profiles.get("default") or {}), "primary": provider, "fallback": []}
+    write_yaml(paths.config, config)
+
+
+def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
+    """Interactive onboarding: pick a provider, then (for ChatGPT) authenticate."""
+    from jigga.runtime.chatgpt_auth import login_state
+    echo("Select a model provider:")
+    echo("  1) ChatGPT subscription  (no API key, runs on your ChatGPT plan)")
+    echo("  2) Dry-run               (no model; canned responses)")
+    if prompt("> ").strip() in ("2", "dry_run", "dry-run"):
+        _set_model_provider(paths, "dry_run", None)
+        echo("Provider set to dry_run.")
+        return
+    _set_model_provider(paths, "chatgpt", None)
+    if login_state(paths.home).get("logged_in"):
+        echo("Provider set to chatgpt — an existing login was found. Done.")
+        return
+    echo("\nAuthenticate your ChatGPT subscription:")
+    echo("  1) Browser    (open a URL, paste the return URL back)")
+    echo("  2) Device code (enter a short code at a URL — best for headless/remote)")
+    echo("  3) Skip       (use an existing `codex login` if present)")
+    choice = prompt("> ").strip()
+    from jigga.runtime.chatgpt_login import browser_login, device_login
+    if choice in ("1", "browser"):
+        browser_login(paths.home)
+    elif choice in ("2", "device", "device-code"):
+        device_login(paths.home)
+    else:
+        echo("Skipped login. JIGGA will use an existing credential if one is available.")
+        return
+    echo("\n✓ Logged in. Check with: jigga model status")
 
 
 def _print_cost(rows: list[dict[str, Any]], total: dict[str, Any], budgets: dict[str, Any]) -> None:
@@ -260,6 +309,16 @@ def build_parser() -> argparse.ArgumentParser:
     model_test.add_argument("agent_id")
     model_test.add_argument("--prompt", required=True)
     model_test.add_argument("--dry-run", action="store_true", help="Do not call external providers")
+    model_login = model_sub.add_parser(
+        "login", help="Authenticate the ChatGPT-subscription provider (browser paste by default)"
+    )
+    model_login.add_argument("--device-code", action="store_true", dest="device_code",
+                             help="Use the device-code flow (best for headless/remote)")
+    model_sub.add_parser("status", help="Show the configured model provider and ChatGPT login state")
+    model_use = model_sub.add_parser("use", help="Set the default model provider in config.yaml")
+    model_use.add_argument("provider", choices=["chatgpt", "dry_run"], help="Provider to make default")
+    model_use.add_argument("--model", help="Default model id for the provider")
+    model_sub.add_parser("setup", help="Interactive onboarding: pick a model provider and authenticate")
 
     run = sub.add_parser("run", help="Run an agent manually")
     run.add_argument("kind", choices=["agent"])
@@ -676,6 +735,26 @@ def main(argv: list[str] | None = None) -> int:
                 task = {"id": "model_test", "title": "Model test", "description": args.prompt}
                 request = build_task_model_request(agent, task, dry_run=args.dry_run)
                 print_json(call_model(paths.home, paths.logs, request).to_dict())
+            elif args.model_command == "login":
+                from jigga.runtime.chatgpt_login import browser_login, device_login
+                result = device_login(paths.home) if args.device_code else browser_login(paths.home)
+                print(f"\n✓ Logged in to ChatGPT subscription (account {result.get('account_id') or 'unknown'}).")
+                print("  Set it as your provider with: jigga model use chatgpt")
+            elif args.model_command == "status":
+                from jigga.runtime.chatgpt_auth import login_state
+                config = load_model_config(paths.home)
+                print_json({
+                    "default_provider": (config.get("defaults") or {}).get("provider"),
+                    "providers": sorted((config.get("providers") or {}).keys()),
+                    "chatgpt_login": login_state(paths.home),
+                })
+            elif args.model_command == "use":
+                _set_model_provider(paths, args.provider, args.model)
+                print(f"Default model provider set to {args.provider!r}.")
+                if args.provider == "chatgpt":
+                    print("If not logged in yet: jigga model login  (or --device-code)")
+            elif args.model_command == "setup":
+                _model_setup(paths)
             return 0
 
         if args.command == "run":
