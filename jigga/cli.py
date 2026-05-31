@@ -58,8 +58,9 @@ from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.team import run_team
+from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
-from jigga.core.config import default_permission_mode, load_agents, load_workflows
+from jigga.core.config import default_permission_mode, load_agents, load_teams, load_workflows
 
 
 def print_json(value: Any) -> None:
@@ -357,6 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
     team = sub.add_parser("team", help="Run team runtime skeleton")
     team_sub = team.add_subparsers(dest="team_command", required=True)
     team_run = team_sub.add_parser("run")
+    team_init = team_sub.add_parser("init", help="Scaffold a team's shared workspace (notes/ + shared-context/ + roles/)")
+    team_init.add_argument("team_id")
+    team_init.add_argument("--json", action="store_true", dest="json_output")
+    team_ws = team_sub.add_parser("workspace", help="Show a team's workspace path and files")
+    team_ws.add_argument("team_id")
     team_run.add_argument("team_id")
 
     model = sub.add_parser("model", help="Inspect and test model execution")
@@ -805,6 +811,31 @@ def main(argv: list[str] | None = None) -> int:
             paths = get_paths(args.home)
             if args.team_command == "run":
                 print_json(run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, args.team_id))
+                return 0
+            if args.team_command == "init":
+                teams = load_teams(paths.teams)
+                team = teams.get(args.team_id)
+                if team is None:
+                    raise ValueError(f"Team not found: {args.team_id}")
+                summary = scaffold_workspace(paths.home, team)
+                if args.json_output:
+                    print_json(summary)
+                else:
+                    print(f"Workspace: {summary['workspace']}")
+                    print(f"Lead/curator: {summary['lead']}")
+                    print(f"Members: {', '.join(summary['members']) or '(none)'}")
+                    print(f"Created: {', '.join(summary['created']) or '(already scaffolded)'}")
+                return 0
+            if args.team_command == "workspace":
+                root = workspace_dir(paths.home, args.team_id)
+                if not root.exists():
+                    print(f"No workspace for {args.team_id!r}. Run: jigga team init {args.team_id}")
+                    return 1
+                print(str(root))
+                for path in sorted(root.rglob("*")):
+                    if path.is_file():
+                        print(f"  {path.relative_to(root)}")
+                return 0
             return 0
 
         if args.command == "model":
