@@ -179,7 +179,7 @@ Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds 
 
 **Exit:** ✅ **Milestone C complete.** You can answer "what did `daily_briefing_agent` cost me this week?" with one CLI call (`jigga cost --since 7d`), trace a whole run from one id, and the audit log is bounded. The one remaining item is an optimization, not a feature gap: a running per-agent cost ledger (vs. scanning the log per call) if model-call volume grows.
 
-### Teams & Shared Workspaces — adopt the ClawRecipes model (sequenced AFTER Milestone B)
+### Teams & Shared Workspaces — adopt the ClawRecipes model — **IN PROGRESS** (Milestone B done)
 
 *Goal: build/manage teams the way `~/ClawRecipes` does — a per-team shared workspace with file-first coordination. ClawRecipes (the OpenClaw-plugin precursor in the JIGGAI org) and its UI `~/clawkitchen` are the reference; JIGGA already shares the file-first/local-first/agents-teams-workflows DNA, so this is adopting a proven model into the Python runtime, not a pivot. Decision (2026-05-31): finish Milestone B first, then this.*
 
@@ -189,16 +189,24 @@ ClawRecipes-parity map — where each feature lands in the JIGGA milestone proce
 |---|---|---|
 | **Per-team workspace** `~/.jigga/workspaces/<team>/` (`roles/`, `work/`, `notes/`, `shared-context/`) | **W1 (this workstream)** | JIGGA state is global today; this adds per-team dirs |
 | **Shared-context curator model** — lead-owned `plan.md`/`priorities.md`, append-only `agent-outputs/` + `feedback/` | **W1** | distinct from memory *scopes*; pure file conventions |
-| **Team/role memory** (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`) | **W2** → folds into **Milestone D** | D adds indexing/compaction on top |
+| **Team/role memory** (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`) | **Milestone D (Memory at scale)** — NOT a Teams slice | memory is its own milestone; the workspace just provides the on-disk locations, D owns indexing/compaction/retrieval |
 | **Ticket lanes** (`backlog→in-progress→testing→done`) + `take`/`handoff`/`complete`/`assign` | **W3** | evolve JIGGA's task queue (states+assignee) toward lanes |
 | **Markdown recipes + `scaffold-team`** templating (`{{teamId}}`) | **W4** | JIGGA hand-writes yaml today; add a scaffolder |
 | **Workflow DAG** (nodes/edges, `human_approval`/media nodes, `workflow-runs/`) | future "workflow engine v2" | extends Milestone B6 (approval) + linear workflows; bigger lift, separate |
 | **Channel approval-code flow** (Telegram `approve <code>`) | **Milestone B6** | already planned |
 | **ClawKitchen UI** (reads workspace files + shells the CLI, no cache) | **Milestone F dashboard** | the blueprint for JIGGA's dashboard |
 
-Slices: ✅ **W1** per-team workspace + shared-context curator model (PR pending) — `~/.jigga/workspaces/<team>/` with `notes/plan.md`+`shared-context/priorities.md` (lead-curated, create-only), append-only `agent-outputs/`+`feedback/`, per-member `roles/`; `runtime/workspaces.py` + `jigga team init|workspace`; curator guard (`CuratorError` for non-lead writes to curated files). **W2** team/role memory layers (folds into Milestone D); **W3** ticket lanes + handoff; **W4** recipes + `jigga teams scaffold`. ✅ **W1.5 — workspaces created on first use + agent binding** (PR pending): `run_team` and `run_agent` scaffold the workspace idempotently (so it exists however the team/agent was created — yaml drop, examples, supervisor wake), team members bind to their team's workspace while team-less agents get their own per-agent workspace, and the agent loop reads the lead-curated plan/priorities into its prompt and appends results to `agent-outputs/` + `notes/status.md` (the read→act→write loop). Next: **W3** ticket lanes + handoff, **W2** team/role memory (folds into Milestone D), **W4** recipes + scaffold. Re-scope at the time — pull each in "when it makes sense" rather than all at once.
+Slices:
 
-**Exit:** a JIGGA team has a real shared workspace — lead curates `plan.md`/`priorities.md`, roles append outputs, work moves through lanes — matching how ClawRecipes teams operate.
+- ✅ **W1 — per-team workspace + shared-context curator model** (#38): `~/.jigga/workspaces/<team>/` (`notes/plan.md` + `shared-context/priorities.md` lead-curated create-only; append-only `agent-outputs/` + `feedback/`; per-member `roles/`); `runtime/workspaces.py`; curator guard (`CuratorError`); `jigga team init|workspace`.
+- ✅ **W1.5 — workspaces created on first use + agent binding** (#39): `run_team`/`run_agent` scaffold idempotently (so the workspace exists however the team/agent was created); team members bind to their team workspace, team-less agents get a per-agent one; the agent loop reads the lead-curated plan/priorities into its prompt and appends results to `agent-outputs/` + `notes/status.md` (the read→act→write loop).
+- ✅ **W4 (slice 1) — recipe-driven scaffolding** (#40): Markdown-frontmatter recipes + `jigga team scaffold <recipe> --team-id` / `jigga team recipes`; bundled `examples/recipes/marketing-team.md`. Follow-ups deferred: `cronJobs` (scheduled role work-loops), `agentTools` policy, `files:`/`templates:`, `kind: agent` recipes.
+- ⏭️ **W3 — ticket lanes** (`backlog→in-progress→testing→done` + `take`/`handoff`/`complete`): **DEFERRED (2026-05-31), pending design.** Likely shape: an **opt-in per-team toggle** (lanes are a work-management mode over the existing task queue, not an agent action) + maybe a thin handoff capability agents invoke. Don't build until the design is decided.
+- **Team/role memory is NOT a slice here — it's Milestone D.** The workspace provides the on-disk locations (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`); Milestone D owns indexing/compaction/retrieval.
+
+Pull remaining items in "when it makes sense" rather than all at once.
+
+**Exit (mostly met):** a JIGGA team has a real shared workspace it coordinates through — lead curates `plan.md`/`priorities.md`, members append outputs (read→act→write), and teams are scaffolded from recipes. Ticket lanes (W3, deferred) and the memory layers (Milestone D) extend it later.
 
 ### Milestone D — Memory at scale
 *Goal: long-running agents don't drown.*
@@ -207,7 +215,7 @@ Slices: ✅ **W1** per-team workspace + shared-context curator model (PR pending
 - Optional vector index behind a feature flag — embed via model router or local model.
 - Compaction pipeline: summarize completed tasks weekly, archive raw logs older than N days, mark stale facts.
 - Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.
-- **Team/role memory layers** (from the Teams & Shared Workspaces workstream above) get indexed/compacted here — `team.jsonl`/`pinned.jsonl` per team, per-role `MEMORY.md`.
+- **Team/role memory** is owned here (not in the Teams & Workspaces workstream): the per-team workspace just provides the on-disk locations (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`); this milestone adds writing, indexing, compaction, and `search_memory` over them.
 
 **Exit:** memory size is bounded and retrieval gets faster as it grows.
 
