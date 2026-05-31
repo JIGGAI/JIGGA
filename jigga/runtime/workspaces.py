@@ -23,8 +23,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from jigga.core.config import load_teams
 from jigga.core.io import ensure_dir
-from jigga.core.models import TeamConfig, now_iso
+from jigga.core.models import AgentConfig, TeamConfig, now_iso
 
 # Files only the lead may edit; everyone else appends to agent-outputs/feedback.
 CURATED = ("notes/plan.md", "shared-context/priorities.md")
@@ -115,6 +116,46 @@ def append_agent_output(home: Path, team_id: str, member: str, text: str) -> Pat
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"\n## {now_iso()}\n{text}\n")
     return path
+
+
+def find_agent_teams(teams_dir: Path, agent_id: str) -> list[TeamConfig]:
+    """Every team `agent_id` is a member of."""
+    return [team for team in load_teams(teams_dir).values() if agent_id in members(team)]
+
+
+def synthetic_team_for_agent(agent: AgentConfig) -> TeamConfig:
+    """A team-less agent is modelled as its own one-member team — it's its own
+    lead/curator — so it reuses the same workspace layout."""
+    return TeamConfig(
+        id=agent.id, name=agent.name or agent.id, purpose=agent.role,
+        agents=[{"id": agent.id, "role": agent.role or ""}],
+        routing={"default_assignee": agent.id},
+    )
+
+
+def ensure_agent_workspace(home: Path, teams_dir: Path, agent: AgentConfig) -> str:
+    """Ensure a workspace exists for `agent` (idempotent) and return the
+    workspace id to bind its reads/writes to. Team members bind to their first
+    team's shared workspace; a team-less agent gets its own per-agent workspace."""
+    teams = find_agent_teams(teams_dir, agent.id)
+    if teams:
+        for team in teams:
+            scaffold_workspace(home, team)
+        return teams[0].id
+    scaffold_workspace(home, synthetic_team_for_agent(agent))
+    return agent.id
+
+
+def workspace_context(home: Path, team_id: str, *, limit: int = 2000) -> str:
+    """Compact plan + priorities text for grounding an agent (the read side of
+    the read → act → write loop). Empty string if the workspace has neither."""
+    parts = [
+        text.strip() for text in (
+            read_file(home, team_id, "notes/plan.md"),
+            read_file(home, team_id, "shared-context/priorities.md"),
+        ) if text and text.strip()
+    ]
+    return "\n\n".join(parts)[:limit]
 
 
 def write_curated(home: Path, team: TeamConfig, relpath: str, content: str, *, member: str) -> Path:
