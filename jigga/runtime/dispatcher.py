@@ -298,6 +298,64 @@ def _generic_handler(
     }
 
 
+def _draft_prompt(agent: AgentConfig, resolved_input: Any) -> tuple[str, str]:
+    """Build (system, user) prompt text for a draft_with_model step.
+
+    The agent's name/role is the system prompt. The step input is the brief:
+    a bare string is used as-is; a dict's `prompt`/`brief`/`instructions` becomes
+    the ask and every other key (typically prior step outputs wired in via
+    `input:`) is appended as a labelled context section.
+    """
+    system = f"You are {agent.name}. Role: {agent.role}".strip()
+    if isinstance(resolved_input, str):
+        return system, resolved_input
+    if isinstance(resolved_input, dict):
+        data = dict(resolved_input)
+        ask = data.pop("prompt", None) or data.pop("brief", None) or data.pop("instructions", None) or ""
+        parts = [str(ask)] if ask else []
+        for key, value in data.items():
+            rendered = value if isinstance(value, str) else json.dumps(value, indent=2, default=str)
+            parts.append(f"## {key}\n{rendered}")
+        return system, "\n\n".join(parts) if parts else json.dumps(resolved_input, indent=2, default=str)
+    return system, json.dumps(resolved_input, indent=2, default=str)
+
+
+def _draft_with_model_handler(
+    step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Make a workflow step *think*: route its brief through the agent's model.
+
+    Returns the model's text directly (not a dict) so it chains cleanly — a
+    downstream step's `input: {context: this_step_output.md}` receives the prose,
+    and a `.md`/`.txt` `output:` writes the prose verbatim.
+    """
+    if runtime.agent is None:
+        raise ValueError("draft_with_model requires an executing agent")
+    system, brief = _draft_prompt(runtime.agent, resolved_input)
+    task = {"id": f"draft_{step.id}", "title": step.action, "description": brief}
+    items = [
+        ModelCallItem(id=f"draft_system:{step.id}", role="system", content=system),
+        ModelCallItem(id=f"step:{step.id}", role="user", content=brief),
+    ]
+    request = ModelCallRequest(
+        agent_id=runtime.agent.id,
+        role=runtime.agent.role,
+        task=task,
+        items=items,
+        model=resolve_agent_model(runtime.agent),
+        model_profile=resolve_agent_model_profile(runtime.agent),
+        dry_run=False,
+    )
+    result = call_model(runtime.home, runtime.logs_dir, request)
+    if result.status != "ok":
+        raise RuntimeError(f"draft_with_model step {step.id!r} failed: {result.error}")
+    return result.content
+
+
 def _skill_pack_handler(
     step: WorkflowStep,
     capability: CapabilityManifest,
@@ -447,6 +505,7 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,
+    "runtime.draft_with_model": _draft_with_model_handler,
     "runtime.filesystem": filesystem_handler,
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,
