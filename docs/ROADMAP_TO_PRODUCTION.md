@@ -21,7 +21,7 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 | Scoped memory (`includes:`/`excludes:` + retrieval pipeline shape) | ✅ |
 | Workflow runner + Terraform-style `plan` / `apply` | ✅ |
 | Workflow inference (multi-step session shapes + single-action repetition) | ✅ |
-| Model router with dry-run default + OpenAI-compatible provider + fallbacks | ✅ |
+| Model router: dry-run default + OpenAI-compatible + **ChatGPT-subscription (`chatgpt_oauth`)** providers + fallbacks | ✅ |
 | Capability registry with type discriminator (`native`/`skill_pack`/`mcp_server`) | ✅ |
 | Capability handlers: 6 bundled dry-run + 2 real (skill_pack via model_router, mcp_server via JSON-RPC stdio) | ✅ |
 | First-use approval for user packs + manifest hash drift detection | ✅ |
@@ -29,7 +29,17 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 | Subagent delegation (`dry_run` + gated `codex_cli` + gated `claude_code`) with sandbox primitive | ✅ |
 | Audit log (JSONL, lifecycle events for every major boundary) | ✅ |
 
-**Footprint:** ~4,300 LOC Python + 950 LOC tests, stdlib + PyYAML only. 122 passing tests, ~2.5s suite.
+**Footprint:** stdlib + PyYAML only; ~400 passing tests as of 2026-05-31.
+
+### Shipped since the original plan (off-sequence — recorded here so the plan matches reality)
+
+After Milestone C completed, work pivoted (user-directed) to making a real team *think*, ahead of the documented sequence. These shipped and are now part of the baseline:
+
+- **ChatGPT-subscription model provider** (`chatgpt_oauth`, PR #27) + **JIGGA-native login & onboarding** (PR #28) — run on a ChatGPT Plus/Pro subscription with no API key (Responses API on `chatgpt.com/backend-api`, PKCE login: browser-paste / device-code, own credential store; codex store as fallback). **This resolves Decision Point #5** (see below). `docs/CHATGPT_OAUTH_PROVIDER.md`.
+- **Model-backed workflow steps** (`draft_with_model`, PR #29) — a workflow step can route its brief through the agent's model and chain prose by named outputs, so a team becomes a declarative workflow. `docs/MODEL_BACKED_WORKFLOWS.md`.
+- **Marketing-team example** (PR #30) — `jigga init --examples` ships a lead→copywriter→SEO `team_launch` workflow.
+
+These are real and tested, but they were **not** milestone items; the milestone sequence below is otherwise unchanged. **Milestone B (channels) remains the next incomplete milestone** and is where the current channel work belongs.
 
 ---
 
@@ -49,13 +59,20 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 ### Channels (how users actually talk to JIGGA)
 
+> ⚠️ **The normalized gateway architecture in `docs/tools/CHANNEL_GATEWAY_MESSAGE_ADAPTERS.md` was bypassed.** Telegram (PR #15) + the `channel_listener` loop (PR #19) work, but as a *direct task-creator*: no `JiggaEvent` normalizer, no policy/identity layer beyond an allowlist, no activation modes, no `ChannelAdapter` contract, and **not integrated with the supervisor** (so bots only poll while `jigga channels listen` runs manually). Milestone B below rebuilds this to spec.
+
 | Domain | Has | Missing |
 |---|---|---|
-| CLI channel | direct CLI calls work | Channel-normalized event flow (so CLI/Slack/email take the same path) |
-| Local webhook | not started | HTTP endpoint that supervisor watches; auth |
-| Slack / Discord | not started | OAuth + DM/mention routing + outbound reply |
-| Email-as-inbox | not started | Watcher pulls actionable email and creates tasks |
-| Mobile push | not started | Push action → event payload |
+| Telegram | ✅ poll + reply + allowlist (ad-hoc, via `channel_listener`) | Refactor onto the `ChannelAdapter` contract + normalized events |
+| Normalized event flow | ❌ messages → tasks directly | `JiggaEvent` (actor/conversation/target) + gateway normalizer + policy/identity check |
+| Always-on polling | ❌ manual `channels listen` | **Supervisor-owned** channel polling (poll on the heartbeat) |
+| Channel onboarding | ❌ manual config | `jigga channels setup` wizard (pick channel → guided auth → enable), pluggable registry |
+| Activation modes | ❌ `enabled` + allowlist only | `always` / `mention` / `direct_message_only` / `disabled` |
+| CLI channel | direct CLI calls work | Formalize through the normalizer (same path as the rest) |
+| Local webhook | not started | HTTP endpoint the supervisor watches; auth |
+| Slack / Discord | not started | OAuth + DM/mention routing + outbound reply (the doc's named third-party channel) |
+| Approval queue via channel | not started | `needs_approval` routes back to the user's channel to approve |
+| Email-as-inbox / Mobile push / SMS bridge (iMessage) | not started | Per the channel doc; iMessage is macOS-only |
 
 ### Observability
 
@@ -134,16 +151,19 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 
 **Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification. Currently ~80% there (Google Calendar + notifications + filesystem are real; email is the gating item).
 
-### Milestone B — Channels (how invocations reach the runtime)
-*Goal: JIGGA responds to events that didn't come from a CLI.*
+### Milestone B — Channels (how invocations reach the runtime) — **NEXT, IN PROGRESS**
+*Goal: JIGGA responds to events that didn't come from a CLI — through a single normalized gateway, always on.*
 
-- Channel-normalized event flow: every external invocation goes through the same `JiggaEvent` shape.
-- **Local webhook adapter** — minimal HTTP server the supervisor watches; auth via shared secret.
-- **CLI channel** formalized through the normalizer (refactor, not new behavior).
-- **One real third-party channel** — Slack DM/mention is the natural pick. OAuth, mention/DM routing, outbound reply via the notification router.
-- Approval queue UI through the active channel — so when an action is `needs_approval`, the user sees it on their preferred channel and can approve from there.
+Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds the **gateway architecture** from `docs/tools/CHANNEL_GATEWAY_MESSAGE_ADAPTERS.md` that the ad-hoc path skipped, and folds in the user's asks (always-poll, onboarding wizard, more channels). Sequenced slices:
 
-**Exit:** "Hey JIGGA, summarize my day" from Slack returns the morning briefing; an approval-required step routes back to Slack with an inline approve button.
+- **B1 — Normalized gateway + `ChannelAdapter` contract.** Define the `JiggaEvent` shape (actor / conversation / message / target), a gateway normalizer, and a `ChannelAdapter` interface (`start/stop/send/normalize`). Refactor Telegram onto it (no behavior change). Add the **policy/identity check** layer (allowlist becomes one identity rule).
+- **B2 — Supervisor-owned polling ("always poll").** Enabled channels are polled on the supervisor heartbeat — enabling a bot means it always responds whenever the supervisor runs, no manual `channels listen`. (Pairs with the supervisor-as-service work in Milestone F.)
+- **B3 — Activation modes.** `always` / `mention` / `direct_message_only` / `disabled` per channel; public/group → restricted memory by default (prompt-injection safety).
+- **B4 — Channel onboarding wizard.** `jigga channels setup` (mirrors `jigga model setup`): pick a channel → guided auth/credentials → allowlist + default_agent → enable. Pluggable channel registry so new adapters slot in.
+- **B5 — Second third-party channel: Slack** (the doc's named pick). OAuth + DM/mention routing + outbound reply via the adapter `send`. (iMessage = a later SMS-bridge adapter, **macOS-only**; Discord/webhook/email-inbox follow the same contract.)
+- **B6 — Approval queue through the channel.** A `needs_approval` action routes back to the user's channel; they approve from there.
+
+**Exit:** "Hey JIGGA, summarize my day" from Slack *or* Telegram returns the briefing through the normalized gateway, with the bot polling automatically (supervisor) and an approval-required step routing back to the channel.
 
 ### Milestone C — Observability & ops (in parallel with A/B)
 *Goal: when something goes wrong in production, you can tell what happened.*
@@ -209,17 +229,13 @@ These choices will compound through the milestones; worth deciding before A.
 2. **Cross-platform now or Linux-only first?** macOS + Linux for v1 is realistic; Windows can lag a release if the secrets broker / sandbox / autostart take longer there.
 3. **GUI or pure CLI for v1.0?** Headless-first is the spec's instinct, but a read-only dashboard significantly broadens who can adopt. My lean: pure CLI for the alpha/private beta; ship a minimal dashboard at v1.0.
 4. **Telemetry default.** Even opt-in telemetry is a brand-shaping decision. My lean: ship v1.0 without telemetry; add opt-in in v1.1 once there's a clear question telemetry would answer.
-5. **Model-provider posture.** Today: dry_run default, OpenAI-compatible fallback. For v1.0 it's worth deciding whether you ship with first-class Anthropic + OpenAI clients or stay generic. The model router seam already supports both; the question is which the install-default points at.
+5. **Model-provider posture.** ✅ **Resolved (2026-05-31).** Ships with three provider kinds: `dry_run` (default), `openai_compatible` (API key), and **`chatgpt_oauth`** (run on a ChatGPT Plus/Pro subscription, no API key — the install-default for users who already pay for ChatGPT). `jigga model setup` lets a new install choose. A first-class Anthropic-native client remains an easy future add (the router seam supports it). See `docs/CHATGPT_OAUTH_PROVIDER.md`.
 
 ---
 
 ## Recommended next concrete PR
 
-If you want the smallest unit of forward motion that compounds:
-
-**Notification adapter (Milestone A first slice).** ~300 LOC, ~10 tests. Replaces the dry-run `notifications.send` handler with a real cross-platform sender. Zero new architectural decisions. Lets the morning briefing demo actually feel like a personal AI worker.
-
-After that, the natural next two PRs are (i) project-local capability discovery + filesystem capabilities (still Milestone A), and (ii) the audit-log CLI surface (Milestone C, small) — which together unlock the connectors workstream and give you operational visibility for everything that follows.
+Milestones A and C are done; the off-sequence model-provider + workflow work shipped. **The next concrete PR is Milestone B, slice B1:** define the `JiggaEvent` shape + `ChannelAdapter` contract + gateway normalizer, and refactor the existing Telegram path onto it (no behavior change) with the allowlist becoming an identity rule. That unblocks B2 (supervisor-owned "always poll"), B4 (the `jigga channels setup` wizard), and B5 (Slack) — each a small PR on the same contract.
 
 ---
 
