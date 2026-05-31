@@ -221,6 +221,20 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "risk_level": "low",
         "handler": "dry_run.generic",
     },
+    {
+        "name": "text-generation",
+        "version": "0.1.0",
+        "summary": "Generate or transform text with the executing agent's configured model. "
+                   "Unlike content-drafting (dry-run stubs), this makes a real model call, so a "
+                   "workflow step can think — the step's input is the brief, prior step outputs "
+                   "ride along as context.",
+        "actions": ["draft_with_model"],
+        # No special permissions: a model call isn't gated by a resource policy
+        # (same as skill_pack capabilities and the agent loop). The agent must
+        # simply have a model configured.
+        "risk_level": "low",
+        "handler": "runtime.draft_with_model",
+    },
 ]
 
 
