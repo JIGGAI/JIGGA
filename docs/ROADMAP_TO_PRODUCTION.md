@@ -151,17 +151,19 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 
 **Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification. Currently ~80% there (Google Calendar + notifications + filesystem are real; email is the gating item).
 
-### Milestone B — Channels (how invocations reach the runtime) — **NEXT, IN PROGRESS**
+### Milestone B — Channels (how invocations reach the runtime) — **DONE ENOUGH** (B5/Slack deferred)
 *Goal: JIGGA responds to events that didn't come from a CLI — through a single normalized gateway, always on.*
 
 Telegram already works ad-hoc (poll + reply + allowlist). This milestone builds the **gateway architecture** from `docs/tools/CHANNEL_GATEWAY_MESSAGE_ADAPTERS.md` that the ad-hoc path skipped, and folds in the user's asks (always-poll, onboarding wizard, more channels). Sequenced slices:
 
-- **B1 — Normalized gateway + `ChannelAdapter` contract.** Define the `JiggaEvent` shape (actor / conversation / message / target), a gateway normalizer, and a `ChannelAdapter` interface (`start/stop/send/normalize`). Refactor Telegram onto it (no behavior change). Add the **policy/identity check** layer (allowlist becomes one identity rule).
-- **B2 — Supervisor-owned polling ("always poll").** Enabled channels are polled on the supervisor heartbeat — enabling a bot means it always responds whenever the supervisor runs, no manual `channels listen`. (Pairs with the supervisor-as-service work in Milestone F.)
-- **B3 — Activation modes.** `always` / `mention` / `direct_message_only` / `disabled` per channel; public/group → restricted memory by default (prompt-injection safety).
-- **B4 — Channel onboarding wizard.** `jigga channels setup` (mirrors `jigga model setup`): pick a channel → guided auth/credentials → allowlist + default_agent → enable. Pluggable channel registry so new adapters slot in.
-- **B5 — Second third-party channel: Slack** (the doc's named pick). OAuth + DM/mention routing + outbound reply via the adapter `send`. (iMessage = a later SMS-bridge adapter, **macOS-only**; Discord/webhook/email-inbox follow the same contract.)
-- **B6 — Approval queue through the channel.** A `needs_approval` action routes back to the user's channel; they approve from there.
+- ✅ **B1 — Normalized gateway + `ChannelAdapter` contract** (PR #32). `JiggaEvent` (actor/conversation/message/target) + gateway normalizer + `ChannelAdapter` (poll/send); Telegram refactored onto it; identity/policy layer (allowlist as an identity rule).
+- ✅ **B2 — Supervisor-owned polling ("always poll")** (PR #34). Enabled channels poll on the heartbeat; faults contained.
+- ✅ **B3 — Activation modes** (PR #35). `always`/`mention`/`direct_message_only`/`disabled`; group messages tagged `restricted_memory` (scope-enforcement is a follow-up with the Memory/Workspaces work).
+- ✅ **B4 — Channel onboarding wizard** (PR #36). `jigga channels setup` — pick a channel → guided auth → activation → enable; pluggable catalog.
+- ⏭️ **B5 — Slack adapter** — DEFERRED until a Slack app exists. iMessage = later SMS-bridge adapter (macOS-only); Discord/webhook/email-inbox follow the same contract.
+- ✅ **B6 — Approval queue through the channel** (PR #37). `needs_approval` parks a code-gated approval and asks on the channel; `approve <code>`/`deny <code>` resumes the held task; `jigga approvals` CLI.
+
+**Status: done enough.** The channel story is complete end-to-end on Telegram (gateway, always-poll, activation, onboarding, approvals). B5 (Slack) is a drop-in second adapter whenever a Slack app is created.
 
 **Exit:** "Hey JIGGA, summarize my day" from Slack *or* Telegram returns the briefing through the normalized gateway, with the bot polling automatically (supervisor) and an approval-required step routing back to the channel.
 
@@ -194,7 +196,7 @@ ClawRecipes-parity map — where each feature lands in the JIGGA milestone proce
 | **Channel approval-code flow** (Telegram `approve <code>`) | **Milestone B6** | already planned |
 | **ClawKitchen UI** (reads workspace files + shells the CLI, no cache) | **Milestone F dashboard** | the blueprint for JIGGA's dashboard |
 
-Slices: **W1** per-team workspace + shared-context curator model (smallest, most aligned — start here); **W2** team/role memory layers; **W3** ticket lanes + handoff; **W4** recipes + `jigga teams scaffold`. Re-scope at the time — pull each in "when it makes sense" rather than all at once.
+Slices: ✅ **W1** per-team workspace + shared-context curator model (PR pending) — `~/.jigga/workspaces/<team>/` with `notes/plan.md`+`shared-context/priorities.md` (lead-curated, create-only), append-only `agent-outputs/`+`feedback/`, per-member `roles/`; `runtime/workspaces.py` + `jigga team init|workspace`; curator guard (`CuratorError` for non-lead writes to curated files). **W2** team/role memory layers (folds into Milestone D); **W3** ticket lanes + handoff; **W4** recipes + `jigga teams scaffold`. Next: **W1.5 — bind agents to their team workspace in the run loop** (read plan/priorities, append outputs) so the team actually coordinates through it. Re-scope at the time — pull each in "when it makes sense" rather than all at once.
 
 **Exit:** a JIGGA team has a real shared workspace — lead curates `plan.md`/`priorities.md`, roles append outputs, work moves through lanes — matching how ClawRecipes teams operate.
 
