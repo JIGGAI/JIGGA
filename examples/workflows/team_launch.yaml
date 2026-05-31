@@ -1,0 +1,39 @@
+id: team_launch
+name: Team Launch
+purpose: Lead -> copywriter -> SEO editor, each step thinking on the model (draft_with_model).
+status: draft
+trigger:
+  manual: true
+# Each step makes a real model call via the `draft_with_model` capability and the
+# prose is chained forward by named outputs. Edit the product in the first step.
+steps:
+  - id: core_message
+    agent: marketing_lead
+    action: draft_with_model
+    input:
+      prompt: >-
+        Product: a local-first OS for personal AI workers that run on your own
+        machine. Distill the core launch message and the single sharpest angle in
+        2-3 sentences.
+    output: core_message.md
+    approval: not_required
+  - id: copy
+    agent: copywriter
+    action: draft_with_model
+    input:
+      prompt: "Write (a) one launch tweet under 200 characters and (b) a 3-sentence LinkedIn post."
+      core_message: core_message.md
+    output: copy.md
+    approval: not_required
+  - id: review
+    agent: seo_editor
+    action: draft_with_model
+    input:
+      prompt: "Give 3 short bullet notes on clarity, accuracy of claims, and keyword coverage."
+      copy: copy.md
+    output: review.md
+    approval: not_required
+outputs:
+  - core_message.md
+  - copy.md
+  - review.md

@@ -91,6 +91,11 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
         for source, target in [
             (ex / "agents" / "daily_briefing_agent.yaml", paths.agents / "daily_briefing_agent.yaml"),
             (ex / "agents" / "content_strategist.yaml", paths.agents / "content_strategist.yaml"),
+            (ex / "agents" / "marketing_lead.yaml", paths.agents / "marketing_lead.yaml"),
+            (ex / "agents" / "copywriter.yaml", paths.agents / "copywriter.yaml"),
+            (ex / "agents" / "seo_editor.yaml", paths.agents / "seo_editor.yaml"),
+            (ex / "teams" / "marketing_team.yaml", paths.teams / "marketing_team.yaml"),
+            (ex / "workflows" / "team_launch.yaml", paths.workflows / "team_launch.yaml"),
             (ex / "teams" / "personal_admin_team.yaml", paths.teams / "personal_admin_team.yaml"),
             (ex / "teams" / "social_content_team.yaml", paths.teams / "social_content_team.yaml"),
             (ex / "workflows" / "morning_day_summary.yaml", paths.workflows / "morning_day_summary.yaml"),

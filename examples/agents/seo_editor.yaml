@@ -1,0 +1,12 @@
+id: seo_editor
+name: SEO Editor
+role: Reviews copy for clarity, accuracy of claims, and keyword coverage.
+description: Review agent for the marketing team example.
+memory_scope: task_only
+model: profile:default
+tools: []
+permissions:
+  network:
+    mode: ask
+  shell:
+    mode: deny

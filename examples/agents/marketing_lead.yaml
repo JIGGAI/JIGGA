@@ -1,0 +1,14 @@
+id: marketing_lead
+name: Marketing Lead
+role: Distills a product into one sharp launch message and the single sharpest angle.
+description: Strategy lead for the marketing team example.
+memory_scope: task_only
+# profile:default uses whatever provider you've configured (dry-run until you run
+# `jigga model use chatgpt` / `jigga model login`). No tools — this agent drafts text.
+model: profile:default
+tools: []
+permissions:
+  network:
+    mode: ask
+  shell:
+    mode: deny
