@@ -8,7 +8,7 @@ import pytest
 from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_teams
-from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_team
+from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
 
 RECIPE = """---
 id: marketing-team
@@ -102,3 +102,100 @@ def test_scaffold_team_rejects_agent_kind(tmp_path: Path) -> None:
     path.write_text("---\nid: solo\nname: Solo\nkind: agent\n---\n", encoding="utf-8")
     with pytest.raises(ValueError):
         scaffold_team(tmp_path, load_recipe(path))
+
+
+# --- W4 follow-ups: cronJobs + kind: agent ---------------------------------
+
+CRON_RECIPE = """---
+id: ops-team
+name: Ops Team
+kind: team
+routing: {lead: lead}
+agents:
+  - role: lead
+    name: Lead
+    tools: [draft_with_model]
+    cronJobs:
+      - id: triage
+        schedule: "*/30 7-23 * * 1-5"
+        enabledByDefault: true
+        message: "Triage {{teamId}} work."
+      - id: nightly
+        schedule: "0 2 * * *"
+        enabledByDefault: false
+        message: "off by default"
+---
+"""
+
+AGENT_RECIPE = """---
+id: researcher
+name: Researcher
+kind: agent
+model: profile:default
+tools: [summarize_relevant_context]
+cronJobs:
+  - id: morning
+    schedule: "0 8 * * 1-5"
+    enabledByDefault: true
+    message: "Do the morning briefing."
+---
+"""
+
+
+def test_cronjobs_become_wake_schedules(tmp_path: Path) -> None:
+    from jigga.core.config import load_agents
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "ops.md"
+    recipe_path.write_text(CRON_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path), team_id="ops",
+                  agents_dir=paths.agents, teams_dir=paths.teams)
+    lead = load_agents(paths.agents)["ops-lead"]
+    schedules = lead.wake.get("schedules", [])
+    assert len(schedules) == 1                                  # disabled one skipped (safe-idle)
+    assert schedules[0]["cron"] == "*/30 7-23 * * 1-5"
+    assert schedules[0]["message"] == "Triage ops work."        # {{teamId}} templated
+
+
+def test_scaffold_agent_kind(tmp_path: Path) -> None:
+    from jigga.core.config import load_agents
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "r.md"
+    recipe_path.write_text(AGENT_RECIPE, encoding="utf-8")
+    summary = scaffold_agent(paths.home, load_recipe(recipe_path), agent_id="rsx", agents_dir=paths.agents)
+    assert summary["kind"] == "agent" and summary["scheduled"] is True
+    agent = load_agents(paths.agents)["rsx"]
+    assert agent.tools == ["summarize_relevant_context"]
+    assert agent.wake["schedules"][0]["message"] == "Do the morning briefing."
+
+
+def test_cli_scaffold_kind_agent(tmp_path: Path, capsys) -> None:
+    from jigga.core.config import load_agents
+    init_runtime(tmp_path)  # bundled researcher.md recipe
+    assert main(["--home", str(tmp_path), "team", "scaffold", "researcher", "--team-id", "rr", "--json"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["kind"] == "agent" and summary["agent_id"] == "rr"
+    assert "rr" in load_agents((tmp_path / "agents"))
+
+
+def test_scheduled_workloop_message_becomes_task_description(tmp_path: Path) -> None:
+    """End-to-end: a cron-due agent → supervisor creates a task whose body is the
+    cronJob message."""
+    from unittest.mock import patch
+    from jigga.core.io import write_yaml
+    from jigga.runtime.model_router import ModelCallResult
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
+
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.agents / "looper.yaml", {
+        "id": "looper", "name": "Looper", "role": "x", "memory_scope": "task_only", "tools": [],
+        "permissions": {}, "wake": {"schedules": [{"cron": "* * * * *", "event": "loop",
+                                    "message": "do the loop work"}]}})
+
+    def _noop_model(home, logs_dir, request):  # cron "* * * * *" is always due
+        return ModelCallResult(status="ok", provider="dry_run", model="m", content="ok", dry_run=True, tool_calls=[])
+
+    with patch("jigga.runtime.agent.call_model", _noop_model):
+        supervisor_tick(paths.home)
+    looper_tasks = [t for t in list_tasks(paths.tasks) if t.assignee == "looper"]
+    assert looper_tasks and looper_tasks[0].description == "do the loop work"

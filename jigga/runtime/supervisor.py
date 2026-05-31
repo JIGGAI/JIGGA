@@ -86,6 +86,9 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
                 create_task(
                     paths.tasks,
                     title=f"Scheduled wake: {event.payload.get('schedule', event.id)}",
+                    # A recipe cronJob's `message` (the work-loop instruction)
+                    # becomes the task body so the agent knows what to do.
+                    description=event.payload.get("message"),
                     assignee=agent_id,
                     metadata={"event": event_dict},
                 )

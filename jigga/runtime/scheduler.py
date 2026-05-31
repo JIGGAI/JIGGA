@@ -108,6 +108,7 @@ def due_events(agents_dir: Path, workflows_dir: Path, now: datetime | None = Non
                         targets=[agent.id],
                         schedule=schedule.get("event", cron),
                         cron=cron,
+                        message=schedule.get("message"),
                     )
                 )
 

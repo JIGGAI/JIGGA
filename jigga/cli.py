@@ -58,7 +58,7 @@ from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.team import run_team
-from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_team
+from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import default_permission_mode, load_agents, load_teams, load_workflows
@@ -859,7 +859,18 @@ def main(argv: list[str] | None = None) -> int:
                 if recipe_path is None:
                     print(f"Recipe not found: {args.recipe!r}. List options with: jigga team recipes")
                     return 1
-                summary = scaffold_team(paths.home, load_recipe(recipe_path), team_id=args.team_id,
+                recipe = load_recipe(recipe_path)
+                if recipe.kind == "agent":
+                    summary = scaffold_agent(paths.home, recipe, agent_id=args.team_id,
+                                             overwrite=args.overwrite, agents_dir=paths.agents)
+                    if args.json_output:
+                        print_json(summary)
+                    else:
+                        print(f"Scaffolded agent {summary['agent_id']!r}"
+                              + ("" if summary["written"] else "  (exists, skipped)")
+                              + ("  [scheduled]" if summary["scheduled"] else ""))
+                    return 0
+                summary = scaffold_team(paths.home, recipe, team_id=args.team_id,
                                         overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
                 if args.json_output:
                     print_json(summary)
