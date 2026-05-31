@@ -7,7 +7,9 @@ from typing import Any
 from jigga.core.config import default_permission_mode, load_agents, load_runtime_config
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
+from jigga.runtime.approvals import consume_if_approved, request_approval
 from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
+from jigga.runtime.channels import ADAPTERS
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.dispatcher import (
     RuntimeContext,
@@ -106,6 +108,28 @@ def _gate_tool_call(
     return ("allow", None)
 
 
+def _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action: str, reason: str | None) -> None:
+    """Park a pending approval and, if the task came from a channel, ask there
+    (B6). The user replies `approve <code>` / `deny <code>` to resume."""
+    metadata = task.metadata or {}
+    channel = metadata.get("channel")
+    conversation_id = metadata.get("chat_id")
+    record = request_approval(
+        approvals_dir, agent_id=agent.id, task_id=task.id, action=action, reason=reason,
+        channel=channel, conversation_id=conversation_id,
+    )
+    append_event(logs_dir, "approval.requested", status="ask", agent=agent.id, task_id=task.id,
+                 action=action, code=record["code"], channel=channel)
+    adapter = ADAPTERS.get(channel) if channel else None
+    if adapter is not None and conversation_id is not None:
+        text = (f"Approval needed to run {action}.\nReason: {reason}\n\n"
+                f"Reply: approve {record['code']}   or   deny {record['code']}")
+        try:
+            adapter.send(home, conversation_id=conversation_id, text=text)
+        except Exception as exc:  # noqa: BLE001 — a notify failure must not break the run
+            append_event(logs_dir, "approval.notify_failed", status="error", code=record["code"], error=str(exc))
+
+
 # --- the per-task tool-use loop --------------------------------------------
 
 
@@ -137,6 +161,7 @@ def _run_task_loop(
     tool_actions = _resolve_agent_actions(agent, registry)
     name_map = {_to_tool_name(a): a for a in tool_actions}
     tools = _build_tool_schemas(tool_actions, registry) or None
+    approvals_dir = home / "approvals"
 
     task_dict = task.to_dict()
     body = task_dict.get("description") or task_dict.get("title") or "No task description."
@@ -192,9 +217,16 @@ def _run_task_loop(
 
             capability = registry.resolve_action(action)
             verdict, reason = _gate_tool_call(capability, agent, effective_mode)
+            # A human may have approved this exact action via a channel (B6) — if
+            # so, consume the approval (once) and let it through.
+            if verdict == "needs_approval" and consume_if_approved(approvals_dir, task_id=task.id, action=action):
+                append_event(logs_dir, "agent.tool_call.approved", agent=agent.id, run_id=run_id,
+                             task_id=task.id, action=action)
+                verdict = "allow"
             if verdict == "needs_approval":
                 append_event(logs_dir, "agent.tool_call.needs_approval", status="ask", agent=agent.id,
                              run_id=run_id, task_id=task.id, action=action, reason=reason)
+                _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action, reason)
                 halted = {"action": action, "reason": reason}
                 break
             if verdict == "deny":

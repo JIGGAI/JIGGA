@@ -24,6 +24,7 @@ from jigga.runtime.audit_query import trace as trace_events
 from jigga.runtime.cost import budget_status, cost_summary
 from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.capability_scanner import scan_capability
+from jigga.runtime.approvals import pending_approvals, resolve_and_requeue
 from jigga.runtime.channel_listener import channel_listen, enabled_channels
 from jigga.runtime.gog import (
     DEFAULT_SERVICES,
@@ -297,6 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     channels_sub = channels.add_subparsers(dest="channels_command", required=True)
     channels_sub.add_parser("status", help="List enabled channels and their config")
     channels_sub.add_parser("setup", help="Interactive: pick a channel, authenticate, set activation, enable")
+
+    approvals = sub.add_parser("approvals", help="Review and resolve pending action approvals")
+    approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
+    approvals_list = approvals_sub.add_parser("list", help="List pending approvals")
+    approvals_list.add_argument("--json", action="store_true", dest="json_output")
+    approve_cmd = approvals_sub.add_parser("approve", help="Approve a pending action by code")
+    approve_cmd.add_argument("code")
+    deny_cmd = approvals_sub.add_parser("deny", help="Deny a pending action by code")
+    deny_cmd.add_argument("code")
     channels_listen = channels_sub.add_parser("listen", help="Run the long-poll channel listener")
     channels_listen.add_argument("--long-poll-seconds", type=int, default=30)
     channels_listen.add_argument("--max-cycles", type=int, default=None, help="Stop after N cycles (tests/demos)")
@@ -663,6 +673,29 @@ def main(argv: list[str] | None = None) -> int:
             if args.channels_command == "setup":
                 _channels_setup(paths)
                 return 0
+            return 0
+
+        if args.command == "approvals":
+            paths = get_paths(args.home)
+            if args.approvals_command == "list":
+                pend = pending_approvals(paths.approvals)
+                if args.json_output:
+                    print_json(pend)
+                elif not pend:
+                    print("No pending approvals.")
+                else:
+                    for a in pend:
+                        print(f"{a['code']}  {a['action']:24} agent={a['agent_id']} task={a['task_id']} "
+                              f"reason={a.get('reason') or ''}")
+                return 0
+            approved = args.approvals_command == "approve"
+            record = resolve_and_requeue(paths.approvals, paths.tasks, args.code, approved=approved)
+            if record is None:
+                print(f"No pending approval with code {args.code!r}.")
+                return 1
+            print(f"{'Approved' if approved else 'Denied'} {args.code}."
+                  + (" Task re-queued — the agent will retry the action." if approved else ""))
+            return 0
             if args.channels_command == "listen":
                 result = channel_listen(
                     paths.home,
