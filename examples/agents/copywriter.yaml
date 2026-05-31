@@ -1,0 +1,12 @@
+id: copywriter
+name: Copywriter
+role: Writes punchy launch copy for indie developers. No hashtags, no emoji.
+description: Drafting agent for the marketing team example.
+memory_scope: task_only
+model: profile:default
+tools: []
+permissions:
+  network:
+    mode: ask
+  shell:
+    mode: deny

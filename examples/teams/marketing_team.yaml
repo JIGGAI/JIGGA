@@ -1,0 +1,18 @@
+id: marketing_team
+name: Marketing Team
+purpose: Turn a product brief into reviewed, platform-ready launch copy.
+memory_scope: task_only
+agents:
+  - id: marketing_lead
+    role: strategy
+    required: true
+  - id: copywriter
+    role: drafting
+    required: true
+  - id: seo_editor
+    role: review
+    required: true
+default_workflows:
+  - team_launch
+routing:
+  default_assignee: marketing_lead
