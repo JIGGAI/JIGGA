@@ -58,6 +58,19 @@ class JiggaEvent:
     def actor_name(self) -> str:
         return str(self.actor.get("name") or "unknown")
 
+    @property
+    def conversation_type(self) -> str | None:
+        return self.conversation.get("type")
+
+    @property
+    def is_direct(self) -> bool:
+        """A 1:1 / DM conversation (vs a group/channel)."""
+        return self.conversation.get("type") == "private"
+
+    @property
+    def mentions_bot(self) -> bool:
+        return bool(self.message.get("mentions_bot"))
+
 
 @runtime_checkable
 class ChannelAdapter(Protocol):
@@ -93,8 +106,9 @@ class TelegramAdapter:
         return JiggaEvent(
             source="telegram",
             actor={"type": "user", "id": message.get("sender_id"), "name": message.get("sender")},
-            conversation={"id": message.get("chat_id")},
-            message={"text": message.get("text") or "", "attachments": []},
+            conversation={"id": message.get("chat_id"), "type": message.get("chat_type")},
+            message={"text": message.get("text") or "", "attachments": [],
+                     "mentions_bot": bool(message.get("mentions_bot"))},
             raw=message,
         )
 
@@ -119,3 +133,33 @@ def identity_allowed(event: JiggaEvent, cfg: dict[str, Any]) -> bool:
     if not allow:
         return True
     return str(event.conversation_id) in allow or str(event.actor_id) in allow
+
+
+def activation_allows(event: JiggaEvent, cfg: dict[str, Any]) -> bool:
+    """Should this event wake the agent, given the channel's activation mode?
+
+    - `always` (default): every message acts.
+    - `direct_message_only`: only 1:1 / DM conversations.
+    - `mention`: DMs always; in groups/channels only when the bot is addressed.
+    - `disabled`: never (polled but inert).
+
+    An unknown mode is permissive (we don't silently drop on a typo).
+    """
+    mode = str(cfg.get("activation") or "always").lower()
+    if mode == "disabled":
+        return False
+    if mode == "always":
+        return True
+    if mode == "direct_message_only":
+        return event.is_direct
+    if mode == "mention":
+        return event.is_direct or event.mentions_bot
+    return True
+
+
+def from_public_conversation(event: JiggaEvent) -> bool:
+    """True for group/channel (non-DM) conversations — these should run with
+    restricted memory (prompt-injection safety). The conversation type is
+    recorded on the task; enforcing the restricted scope in the agent loop is a
+    follow-up (needs per-task memory scoping)."""
+    return event.conversation_type not in (None, "private")
