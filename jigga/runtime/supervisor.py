@@ -8,6 +8,7 @@ from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.channel_listener import enabled_channels, ingest_once
 from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.loop_guard import (
     cron_already_fired,
@@ -22,6 +23,20 @@ from jigga.runtime.state import read_state, write_state
 from jigga.runtime.scheduler import due_events
 from jigga.runtime.tasks import create_task, list_tasks
 from jigga.runtime.workflow import run_workflow
+
+
+def _poll_channels(paths: Any) -> None:
+    """Poll enabled channels into tasks on the heartbeat (B2). No-op when no
+    channel is enabled. Creates tasks only (process_agents=False) — the tick's
+    agent-waking loop runs them. Errors are contained so a flaky network or
+    channel can't take the supervisor down."""
+    if not enabled_channels(paths.home):
+        return
+    try:
+        ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
+                    long_poll_seconds=0, process_agents=False)
+    except Exception as exc:  # noqa: BLE001 — the supervisor must survive any channel fault
+        append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc))
 
 
 def supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
@@ -41,6 +56,12 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     if rotation["rotated"] or rotation["pruned"]:
         append_event(paths.logs, "logs.rotated", archived=rotation["rotated"],
                      pruned=rotation["pruned"])
+    # Channels poll on the heartbeat (B2): enabled bots always respond whenever
+    # the supervisor runs — no separate `jigga channels listen`. We short-poll
+    # (long_poll_seconds=0) and only create tasks here; the tick's own
+    # agent-waking loop below runs them, so there's one execution path. Any
+    # channel/network error is contained so it can't break the tick.
+    _poll_channels(paths)
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows)
