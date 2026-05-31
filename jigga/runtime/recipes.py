@@ -50,6 +50,7 @@ class Recipe:
     routing: dict[str, Any] = field(default_factory=dict)
     body: str = ""
     source: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)  # full frontmatter (for kind: agent fields, cronJobs, ...)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -75,7 +76,7 @@ def load_recipe(path: Path) -> Recipe:
         id=str(meta["id"]), name=str(meta["name"]), kind=str(meta.get("kind", "team")),
         agents=list(meta.get("agents") or []), purpose=meta.get("purpose"),
         description=meta.get("description"), version=meta.get("version"),
-        routing=dict(meta.get("routing") or {}), body=body, source=str(path),
+        routing=dict(meta.get("routing") or {}), body=body, source=str(path), meta=meta,
     )
 
 
@@ -123,6 +124,73 @@ def _template(value: Any, ctx: dict[str, str]) -> Any:
     return value
 
 
+def _wake_from_cronjobs(cronjobs: Any, ctx: dict[str, str]) -> dict[str, Any]:
+    """Map a recipe's `cronJobs` to a JIGGA agent `wake.schedules`. Each entry's
+    `schedule` (5-field cron) → `cron`; `message` (the work-loop instruction) is
+    carried so the supervisor uses it as the scheduled task. `enabledByDefault:
+    false` loops are skipped (safe-idle: don't auto-schedule them)."""
+    schedules: list[dict[str, Any]] = []
+    for job in cronjobs or []:
+        if not isinstance(job, dict) or job.get("enabledByDefault") is False:
+            continue
+        cron = job.get("schedule") or job.get("cron")
+        if not cron:
+            continue
+        entry: dict[str, Any] = {
+            "cron": _template(str(cron), ctx),
+            "event": _template(str(job.get("id") or job.get("event") or "work-loop"), ctx),
+        }
+        if job.get("message"):
+            entry["message"] = _template(str(job["message"]), ctx)
+        schedules.append(entry)
+    return {"schedules": schedules} if schedules else {}
+
+
+def _agent_doc(*, agent_id: str, name: str, role: str, tools: Any, model: Any,
+               permissions: Any, cronjobs: Any, ctx: dict[str, str]) -> dict[str, Any]:
+    doc = {
+        "id": agent_id,
+        "name": _template(name, ctx),
+        "role": _template(role, ctx),
+        "memory_scope": "task_only",
+        "model": model or "profile:default",
+        "tools": _template(list(tools or []), ctx),
+        "permissions": dict(permissions or {"network": {"mode": "ask"}, "shell": {"mode": "deny"}}),
+    }
+    wake = _wake_from_cronjobs(cronjobs, ctx)
+    if wake:
+        doc["wake"] = wake
+    return doc
+
+
+def scaffold_agent(
+    home: Path, recipe: Recipe, *, agent_id: str | None = None, overwrite: bool = False,
+    agents_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Scaffold a single agent from a `kind: agent` recipe (its top-level
+    frontmatter defines the agent). Create-only unless `overwrite`."""
+    if recipe.kind != "agent":
+        raise ValueError(f"scaffold_agent requires kind: agent (got {recipe.kind!r})")
+    home = Path(home)
+    agent_id = agent_id or recipe.id
+    agents_dir = agents_dir or home / "agents"
+    ensure_dir(agents_dir)
+    ctx = {"agentId": agent_id, "agentName": recipe.name, "teamId": agent_id, "teamName": recipe.name}
+    meta = recipe.meta
+    doc = _agent_doc(
+        agent_id=agent_id, name=recipe.name,
+        role=meta.get("description") or recipe.description or recipe.name,
+        tools=meta.get("tools"), model=meta.get("model"), permissions=meta.get("permissions"),
+        cronjobs=meta.get("cronJobs"), ctx=ctx,
+    )
+    path = agents_dir / f"{agent_id}.yaml"
+    written = overwrite or not path.exists()
+    if written:
+        write_yaml(path, doc)
+    return {"kind": "agent", "agent_id": agent_id, "agent_file": str(path), "written": written,
+            "scheduled": bool(doc.get("wake"))}
+
+
 def scaffold_team(
     home: Path, recipe: Recipe, *, team_id: str | None = None, overwrite: bool = False,
     agents_dir: Path | None = None, teams_dir: Path | None = None,
@@ -146,15 +214,12 @@ def scaffold_team(
     for spec in recipe.agents:
         role = str(spec.get("role") or spec.get("id"))
         agent_id = f"{team_id}-{role}"
-        agent_doc = {
-            "id": agent_id,
-            "name": _template(spec.get("name") or role.title(), ctx),
-            "role": _template(spec.get("description") or spec.get("role") or role, ctx),
-            "memory_scope": "task_only",
-            "model": spec.get("model") or "profile:default",
-            "tools": _template(list(spec.get("tools") or []), ctx),
-            "permissions": dict(spec.get("permissions") or {"network": {"mode": "ask"}, "shell": {"mode": "deny"}}),
-        }
+        agent_doc = _agent_doc(
+            agent_id=agent_id, name=spec.get("name") or role.title(),
+            role=spec.get("description") or spec.get("role") or role,
+            tools=spec.get("tools"), model=spec.get("model"), permissions=spec.get("permissions"),
+            cronjobs=spec.get("cronJobs"), ctx=ctx,
+        )
         path = agents_dir / f"{agent_id}.yaml"
         if path.exists() and not overwrite:
             skipped.append(agent_id)
