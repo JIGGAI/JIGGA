@@ -299,11 +299,17 @@ def _maybe_fire_handoffs(home: Path, logs_dir: Path, tasks_dir: Path, task: Any,
     team_id = meta.get("team_id")
     if not team_id:
         return
-    fire_handoffs(
-        home, logs_dir, tasks_dir, home / "teams",
-        team_id=team_id, from_member=agent_id,
-        hops=int(meta.get("handoff_hops") or 0),
-    )
+    # Contain any handoff fault (e.g. malformed routing) so it can't break the
+    # agent run / supervisor tick — the task is already completed at this point.
+    try:
+        fire_handoffs(
+            home, logs_dir, tasks_dir, home / "teams",
+            team_id=team_id, from_member=agent_id,
+            hops=int(meta.get("handoff_hops") or 0),
+        )
+    except Exception as exc:  # noqa: BLE001 — handoff is best-effort, never fatal
+        append_event(logs_dir, "team.handoff_error", status="error",
+                     team=team_id, from_member=agent_id, error=str(exc))
 
 
 def run_agent(
