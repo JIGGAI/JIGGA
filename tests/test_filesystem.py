@@ -384,7 +384,7 @@ def test_workflow_round_trip_write_then_read(tmp_path: Path) -> None:
         },
     )
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "rw"
+        paths, "rw"
     )
     assert result["status"] == "completed"
     assert result["outputs"]["read"]["content"] == "ready"
@@ -414,7 +414,7 @@ def test_workflow_filesystem_denied_path_blocks_at_runtime(tmp_path: Path) -> No
     # could catch this and mark the step needs_approval instead.
     with pytest.raises(FilesystemPolicyError):
         run_workflow(
-            paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "rogue"
+            paths, "rogue"
         )
 
 

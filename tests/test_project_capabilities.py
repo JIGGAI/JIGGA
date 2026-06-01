@@ -220,11 +220,7 @@ def test_cli_workflow_run_uses_project_capability(tmp_path: Path) -> None:
     )
     project_cap_path = project_root / ".jigga" / "capabilities"
     result = run_workflow(
-        paths.home,
-        paths.logs,
-        paths.workflows,
-        paths.agents,
-        paths.memory,
+        paths,
         "proj_wf",
         project_capabilities=project_cap_path,
     )
@@ -240,6 +236,6 @@ def test_cli_project_flag_default_is_none_so_existing_runs_unchanged(tmp_path: P
     paths = init_runtime(tmp_path, examples=True)
     # Run a bundled workflow without specifying --project; should still work.
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary"
+        paths, "morning_day_summary"
     )
     assert result["status"] == "completed"

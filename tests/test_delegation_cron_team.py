@@ -28,7 +28,7 @@ def test_supervisor_creates_scheduled_tasks_and_runs_pending_tasks(tmp_path) -> 
 
 def test_team_runtime_creates_coordination_task_and_runs_defaults(tmp_path) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    result = run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, "personal_admin_team")
+    result = run_team(paths, "personal_admin_team")
     assert result["team_id"] == "personal_admin_team"
     assert result["created_tasks"]
     assert result["workflow_runs"]

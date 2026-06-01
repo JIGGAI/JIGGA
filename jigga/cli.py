@@ -544,11 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.workflow_command == "run":
                 print_json(
                     run_workflow(
-                        paths.home,
-                        paths.logs,
-                        paths.workflows,
-                        paths.agents,
-                        paths.memory,
+                        paths,
                         args.workflow_id,
                         project_capabilities=project_capabilities_dir(
                             resolve_project_root(args.project)
@@ -880,7 +876,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "team":
             paths = get_paths(args.home)
             if args.team_command == "run":
-                print_json(run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, args.team_id))
+                print_json(run_team(paths, args.team_id))
                 return 0
             if args.team_command == "init":
                 teams = load_teams(paths.teams)

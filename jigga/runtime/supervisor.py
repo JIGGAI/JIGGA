@@ -113,7 +113,7 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
             record_cron_fire(loop_state, cron_key, event.payload.get("schedule", ""), now)
             append_event(paths.logs, "event.created", **event_dict)
             if workflow_id in workflows:
-                run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, workflow_id)
+                run_workflow(paths, workflow_id)
             deduped_events.append(event_dict)
         else:
             append_event(paths.logs, "event.created", **event_dict)

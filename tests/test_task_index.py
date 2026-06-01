@@ -12,7 +12,6 @@ from jigga.runtime.tasks import (
     rebuild_index,
     set_task_state,
     tasks_for_agent,
-    write_task,
 )
 
 

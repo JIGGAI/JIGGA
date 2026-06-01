@@ -173,7 +173,7 @@ def test_send_notification_routes_by_platform(monkeypatch) -> None:
 def test_workflow_notify_step_emits_audit_and_real_handler_output(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary"
+        paths, "morning_day_summary"
     )
     assert result["status"] == "completed"
 
@@ -222,7 +222,7 @@ def test_workflow_notify_step_uses_explicit_title_when_supplied(tmp_path: Path) 
         },
     )
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "explicit_notify"
+        paths, "explicit_notify"
     )
     assert result["status"] == "completed"
     notify = result["outputs"]["notify"]

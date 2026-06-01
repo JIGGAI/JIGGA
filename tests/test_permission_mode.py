@@ -72,7 +72,7 @@ def test_workflow_run_returns_needs_approval_when_locked_down(tmp_path: Path) ->
         encoding="utf-8",
     )
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary"
+        paths, "morning_day_summary"
     )
     # `deny` decisions surface as "blocked", which yields a top-level blocked status
     assert result["status"] == "blocked"

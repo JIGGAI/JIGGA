@@ -106,7 +106,7 @@ def test_workflow_chains_model_backed_steps(tmp_path: Path) -> None:
         ],
     })
     with patch.object(dispatcher, "call_model", _echo_user):
-        result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "two_step")
+        result = run_workflow(paths, "two_step")
 
     assert result["status"] == "completed"
     run_dir = Path(result["run_dir"])

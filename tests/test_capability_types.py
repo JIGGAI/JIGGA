@@ -105,7 +105,7 @@ def test_skill_pack_dispatches_through_model_router(tmp_path: Path) -> None:
     )
 
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "outline"
+        paths, "outline"
     )
     assert result["status"] == "completed"
     output = result["outputs"]["draft"]
@@ -142,7 +142,7 @@ def test_skill_pack_missing_instructions_file_errors(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="missing instructions"):
         run_workflow(
-            paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "broken"
+            paths, "broken"
         )
 
 
@@ -191,7 +191,7 @@ def test_mcp_server_dispatches_against_demo_server(tmp_path: Path) -> None:
     )
 
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "mcp_echo"
+        paths, "mcp_echo"
     )
     assert result["status"] == "completed", f"workflow did not complete: {result!r}"
 

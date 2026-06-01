@@ -35,7 +35,7 @@ def test_workflow_plan_and_run(tmp_path: Path) -> None:
     assert plan["can_run"] is True
     assert len(plan["steps"]) == 4
 
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    result = run_workflow(paths, "morning_day_summary")
     assert result["status"] == "completed"
     assert Path(result["run_dir"], "run.json").exists()
     assert result["memory_artifact"] is not None
