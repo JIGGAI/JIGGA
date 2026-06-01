@@ -59,3 +59,42 @@ def test_rolling_window_drops_old_entries(tmp_path: Path) -> None:
     assert window_spend(paths.home, paths.logs, "alpha", window="30d") == 1.0
     # a separate agent on an "all" window counts both
     assert window_spend(paths.home, paths.logs, "beta", window="all") == 6.0
+
+
+def test_rebuild_after_rotation_keeps_archived_spend(tmp_path: Path) -> None:
+    """Rotation self-heal: spend recorded before a log rotation must still count
+    after it (the rebuild reads archives + active, not just the active file)."""
+    paths = init_runtime(tmp_path)
+    (paths.logs / "events.jsonl").write_text("", encoding="utf-8")
+    _seed(paths.logs, "alpha", 0.40)
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.40
+
+    # rotate: move the active log into a dated archive, start a fresh smaller active
+    active = paths.logs / "events.jsonl"
+    (paths.logs / "events-2020-01-01.jsonl").write_text(active.read_text(), encoding="utf-8")
+    active.write_text("", encoding="utf-8")  # smaller than the recorded offset → forces rebuild
+
+    # the archived 0.40 must survive the rebuild
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.40
+
+
+def test_incremental_tail_does_not_reread_consumed_bytes(tmp_path: Path) -> None:
+    """The ledger must fold only bytes appended past its offset. We corrupt the
+    already-consumed prefix in place (same length) and append a fresh event: an
+    incremental tail keeps the cached prior spend + the new event; a full re-read
+    would skip the corrupted prefix and lose the prior spend."""
+    paths = init_runtime(tmp_path)
+    active = paths.logs / "events.jsonl"
+    active.write_text("", encoding="utf-8")
+    _seed(paths.logs, "alpha", 0.10)
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.10
+    size1 = active.stat().st_size
+
+    # garble the consumed prefix, preserving its byte length so the offset stays valid
+    text = active.read_text(encoding="utf-8")
+    active.write_text("x" * (len(text) - 1) + "\n", encoding="utf-8")
+    assert active.stat().st_size == size1
+    _seed(paths.logs, "alpha", 0.25)  # appended past the offset
+
+    # cached 0.10 + new 0.25; a re-read of the corrupted prefix would yield only 0.25
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.35

@@ -93,3 +93,25 @@ def test_cli_memory_compact(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "memory", "compact", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["raw_archived"] == ["old.json"]
+
+
+def test_compaction_prunes_archived_task_from_index(tmp_path: Path) -> None:
+    """End-to-end: a task created through the normal path (so the index exists)
+    that ages to completed is removed from the index when compaction archives it."""
+    from datetime import datetime, timedelta, timezone
+    from jigga.core.io import read_json
+    from jigga.runtime.tasks import _index_path, create_task, find_task, set_task_state
+
+    paths = init_runtime(tmp_path)
+    t = create_task(paths.tasks, "old", assignee="alpha")
+    set_task_state(paths.tasks, t.id, "completed")
+    # backdate updated_at so it's past the retention cutoff
+    task_file = paths.tasks / f"{t.id}.json"
+    data = read_json(task_file)
+    data["updated_at"] = (datetime.now(timezone.utc) - timedelta(days=999)).isoformat()
+    (task_file).write_text(json.dumps(data), encoding="utf-8")
+
+    assert t.id in read_json(_index_path(paths.tasks))      # indexed before compaction
+    compact_memory(paths.home)
+    assert t.id not in read_json(_index_path(paths.tasks))  # pruned from the index
+    assert find_task(paths.tasks, t.id) is None             # and no longer findable
