@@ -59,6 +59,27 @@ def _iter_documents(memory_dir: Path) -> Iterator[tuple[str, Path, str]]:
                     yield (layer, path, path.read_text(encoding="utf-8"))
                 except OSError:
                     continue
+    # Per-team / per-role memory lives in the team workspaces (D2). Indexed with
+    # a `team:<id>` / `role:<member>` layer so search can be scoped to one team.
+    workspaces = memory_dir.parent / "workspaces"
+    if workspaces.exists():
+        for team_dir in sorted(p for p in workspaces.iterdir() if p.is_dir()):
+            for fname in ("team.jsonl", "pinned.jsonl"):
+                path = team_dir / "shared-context" / "memory" / fname
+                if path.is_file():
+                    try:
+                        yield (f"team:{team_dir.name}", path, path.read_text(encoding="utf-8"))
+                    except OSError:
+                        continue
+            roles = team_dir / "roles"
+            if roles.exists():
+                for role_dir in sorted(p for p in roles.iterdir() if p.is_dir()):
+                    path = role_dir / "MEMORY.md"
+                    if path.is_file():
+                        try:
+                            yield (f"role:{role_dir.name}", path, path.read_text(encoding="utf-8"))
+                        except OSError:
+                            continue
 
 
 def fts_available() -> bool:
@@ -121,7 +142,15 @@ def _in_scope(path: str, roots: list[Path]) -> bool:
     return any(resolved == root or root in resolved.parents for root in roots)
 
 
-def _scan_search(memory_dir: Path, query: str, *, scope: str | None, limit: int) -> list[dict[str, Any]]:
+_GLOBAL_LAYERS = ("raw", "structured", "summaries")
+
+
+def _team_visible(layer: str, team: str) -> bool:
+    """Global memory is visible to everyone; team/role memory only to its team."""
+    return layer in _GLOBAL_LAYERS or layer == f"team:{team}" or layer.startswith(f"role:{team}")
+
+
+def _scan_search(memory_dir: Path, query: str, *, scope: str | None, team: str | None, limit: int) -> list[dict[str, Any]]:
     """FTS5-free fallback: rank by how many query terms a doc contains."""
     tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_]+", query or "")]
     if not tokens:
@@ -129,6 +158,8 @@ def _scan_search(memory_dir: Path, query: str, *, scope: str | None, limit: int)
     roots = _scope_roots(memory_dir, scope) if scope else None
     scored: list[dict[str, Any]] = []
     for layer, path, text in _iter_documents(memory_dir):
+        if team is not None and not _team_visible(layer, team):
+            continue
         if roots is not None and not _in_scope(str(path), roots):
             continue
         lowered = text.lower()
@@ -140,20 +171,22 @@ def _scan_search(memory_dir: Path, query: str, *, scope: str | None, limit: int)
 
 
 def search_memory(
-    memory_dir: Path, query: str, *, scope: str | None = None, limit: int = 10, rebuild: bool = False
+    memory_dir: Path, query: str, *, scope: str | None = None, team: str | None = None,
+    limit: int = 10, rebuild: bool = False,
 ) -> list[dict[str, Any]]:
     """Ranked keyword search over memory. `scope` restricts to that scope's
-    `includes`. Returns [{layer, path, snippet, score}] (lower score = better)."""
+    `includes`; `team` restricts to global memory + that team's/roles' memory.
+    Returns [{layer, path, snippet, score}] (lower score = better)."""
     memory_dir = Path(memory_dir)
     if not fts_available():
-        return _scan_search(memory_dir, query, scope=scope, limit=max(1, limit))
+        return _scan_search(memory_dir, query, scope=scope, team=team, limit=max(1, limit))
     fts = _fts_query(query)
     if not fts:
         return []
     if rebuild or _is_stale(memory_dir):
         rebuild_index(memory_dir)
-    # Over-fetch when scoping so the post-filter still returns `limit`.
-    fetch = max(1, limit) * (5 if scope else 1)
+    # Over-fetch when filtering so the post-filter still returns `limit`.
+    fetch = max(1, limit) * (5 if (scope or team) else 1)
     conn = sqlite3.connect(index_path(memory_dir))
     try:
         rows = conn.execute(
@@ -166,6 +199,8 @@ def search_memory(
     finally:
         conn.close()
     results = [{"layer": r[0], "path": r[1], "snippet": r[2], "score": r[3]} for r in rows]
+    if team is not None:
+        results = [r for r in results if _team_visible(r["layer"], team)]
     if scope is not None:
         roots = _scope_roots(memory_dir, scope) or []
         results = [r for r in results if _in_scope(r["path"], roots)]

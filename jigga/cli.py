@@ -211,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
     memory_search = memory_sub.add_parser("search", help="Keyword search over memory (scope-aware)")
     memory_search.add_argument("query")
     memory_search.add_argument("--scope")
+    memory_search.add_argument("--team", help="Restrict to global memory + this team's/roles' memory")
     memory_search.add_argument("--limit", type=int, default=10)
     memory_search.add_argument("--rebuild", action="store_true", help="Force a fresh index first")
     memory_search.add_argument("--json", action="store_true", dest="json_output")
@@ -456,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.memory_command == "inspect":
                 print_json(inspect_memory(paths.memory))
             elif args.memory_command == "search":
-                results = search_memory(paths.memory, args.query, scope=args.scope,
+                results = search_memory(paths.memory, args.query, scope=args.scope, team=args.team,
                                         limit=args.limit, rebuild=args.rebuild)
                 if args.json_output:
                     print_json(results)
