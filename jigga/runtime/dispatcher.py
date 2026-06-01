@@ -298,6 +298,27 @@ def _generic_handler(
     }
 
 
+def _search_memory_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Keyword search over the agent's memory (`memory.search`). Input is a query
+    string, or `{query, scope?, limit?}`."""
+    from jigga.runtime.memory_index import search_memory
+
+    if isinstance(resolved_input, dict):
+        query = str(resolved_input.get("query") or resolved_input.get("q") or "")
+        scope = resolved_input.get("scope")
+        limit = int(resolved_input.get("limit") or 10)
+    else:
+        query, scope, limit = str(resolved_input or ""), None, 10
+    results = search_memory(runtime.home / "memory", query, scope=scope, limit=limit)
+    return {"source": "capability.memory_search", "query": query, "scope": scope, "results": results}
+
+
 def _draft_prompt(agent: AgentConfig, resolved_input: Any) -> tuple[str, str]:
     """Build (system, user) prompt text for a draft_with_model step.
 
@@ -506,6 +527,7 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,
     "runtime.draft_with_model": _draft_with_model_handler,
+    "runtime.search_memory": _search_memory_handler,
     "runtime.filesystem": filesystem_handler,
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,

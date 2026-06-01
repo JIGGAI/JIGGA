@@ -89,8 +89,8 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 | Domain | Has | Missing |
 |---|---|---|
 | Raw / structured / summary layers | folder shape exists | Real write pipelines beyond the workflow-end raw dump |
-| Indexes | folder exists, empty | Keyword index (sqlite FTS5 or whoosh-style); optional vector index behind feature flag |
-| Retrieval | scope-based file inclusion | Actual `search_memory(query, scope)` capability |
+| Indexes | ✅ sqlite FTS5 keyword index (`memory/indexes/`, rebuild-on-stale; scan fallback) | optional vector index behind a feature flag |
+| Retrieval | ✅ `memory.search` capability + `jigga memory search` (scope-aware, ranked) | — |
 | Compaction | not started | Summarize completed tasks, archive old raw logs, mark stale facts |
 | Memory write proposals | writes happen synchronously | Proposal queue with approval for sensitive types |
 
@@ -208,10 +208,10 @@ Pull remaining items in "when it makes sense" rather than all at once.
 
 **Exit (mostly met):** a JIGGA team has a real shared workspace it coordinates through — lead curates `plan.md`/`priorities.md`, members append outputs (read→act→write), and teams are scaffolded from recipes. Ticket lanes (W3, deferred) and the memory layers (Milestone D) extend it later.
 
-### Milestone D — Memory at scale
+### Milestone D — Memory at scale — **IN PROGRESS**
 *Goal: long-running agents don't drown.*
 
-- Keyword index (sqlite FTS5) over raw memory; `search_memory(query, scope)` capability.
+- ✅ **D1 — Keyword index (sqlite FTS5) + `memory.search` capability** (PR pending). Indexes `raw/` + `structured/`/`summaries/` into `memory/indexes/`, rebuilds when stale, scope-aware ranked snippets; falls back to a tokenized scan if FTS5 is absent. `jigga memory search`/`reindex`; the `memory.search` capability (now resolves for agents like `content_strategist`).
 - Optional vector index behind a feature flag — embed via model router or local model.
 - Compaction pipeline: summarize completed tasks weekly, archive raw logs older than N days, mark stale facts.
 - Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.

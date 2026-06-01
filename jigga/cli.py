@@ -49,6 +49,7 @@ from jigga.runtime.google_calendar import (
 )
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
+from jigga.runtime.memory_index import rebuild_index, search_memory
 from jigga.runtime.model_router import build_task_model_request, call_model, load_model_config
 from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
@@ -207,6 +208,13 @@ def build_parser() -> argparse.ArgumentParser:
     memory = sub.add_parser("memory", help="Inspect memory scopes and layers")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
     memory_sub.add_parser("inspect", help="Inspect configured memory scopes")
+    memory_search = memory_sub.add_parser("search", help="Keyword search over memory (scope-aware)")
+    memory_search.add_argument("query")
+    memory_search.add_argument("--scope")
+    memory_search.add_argument("--limit", type=int, default=10)
+    memory_search.add_argument("--rebuild", action="store_true", help="Force a fresh index first")
+    memory_search.add_argument("--json", action="store_true", dest="json_output")
+    memory_sub.add_parser("reindex", help="Rebuild the memory search index")
 
     workflow = sub.add_parser("workflow", help="Plan and run workflows")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
@@ -447,6 +455,20 @@ def main(argv: list[str] | None = None) -> int:
             paths = get_paths(args.home)
             if args.memory_command == "inspect":
                 print_json(inspect_memory(paths.memory))
+            elif args.memory_command == "search":
+                results = search_memory(paths.memory, args.query, scope=args.scope,
+                                        limit=args.limit, rebuild=args.rebuild)
+                if args.json_output:
+                    print_json(results)
+                elif not results:
+                    print("No matches.")
+                else:
+                    for r in results:
+                        print(f"[{r['layer']}] {r['path']}")
+                        print(f"    {r['snippet']}")
+            elif args.memory_command == "reindex":
+                count = rebuild_index(paths.memory)
+                print(f"Indexed {count} memory document(s).")
             return 0
 
         if args.command == "workflow":

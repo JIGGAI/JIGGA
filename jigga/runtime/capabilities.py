@@ -222,6 +222,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "dry_run.generic",
     },
     {
+        "name": "memory-search",
+        "version": "0.1.0",
+        "summary": "Search memory (raw entries + structured/summaries) by keyword, scope-aware. "
+                   "Returns ranked snippets; backed by a sqlite FTS5 index that scales as memory grows.",
+        "actions": ["memory.search"],
+        "risk_level": "low",
+        "handler": "runtime.search_memory",
+    },
+    {
         "name": "text-generation",
         "version": "0.1.0",
         "summary": "Generate or transform text with the executing agent's configured model. "
