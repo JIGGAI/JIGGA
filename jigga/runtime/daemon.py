@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import signal
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from jigga.runtime.audit import append_event
 from jigga.runtime.supervisor import supervisor_tick
+
+# An always-on supervisor runs indefinitely; keep only the most recent tick
+# summaries in memory (the audit log holds the durable, full record).
+_TICK_HISTORY = 100
 
 
 def supervisor_loop(
@@ -29,7 +34,7 @@ def supervisor_loop(
     except (ValueError, OSError):
         pass
 
-    ticks: list[dict[str, Any]] = []
+    ticks: deque[dict[str, Any]] = deque(maxlen=_TICK_HISTORY)
     count = 0
     try:
         while not stopped["flag"] and (max_ticks is None or count < max_ticks):
@@ -57,7 +62,7 @@ def supervisor_loop(
         "status": "interrupted" if stopped["flag"] else "stopped",
         "stopped_by_signal": stopped["signal"],
         "tick_count": count,
-        "ticks": ticks,
+        "ticks": list(ticks),
     }
 
 

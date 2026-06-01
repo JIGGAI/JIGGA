@@ -93,11 +93,25 @@ def _friendly_schedule_due(schedule: str, now: datetime) -> bool:
     return now.hour == hour and now.minute == minute
 
 
-def due_events(agents_dir: Path, workflows_dir: Path, now: datetime | None = None) -> list[JiggaEvent]:
+def due_events(
+    agents_dir: Path,
+    workflows_dir: Path,
+    now: datetime | None = None,
+    *,
+    agents: dict | None = None,
+    workflows: dict | None = None,
+) -> list[JiggaEvent]:
+    """Cron/schedule-due events for agents and workflows. `agents`/`workflows`
+    may be passed pre-loaded (the supervisor already holds them) to avoid
+    re-scanning and re-parsing those config dirs a second time per tick."""
     current = now or datetime.now()
     events: list[JiggaEvent] = []
+    if agents is None:
+        agents = load_agents(agents_dir)
+    if workflows is None:
+        workflows = load_workflows(workflows_dir)
 
-    for agent in load_agents(agents_dir).values():
+    for agent in agents.values():
         for schedule in agent.wake.get("schedules", []):
             cron = schedule.get("cron")
             if cron and _cron_due(cron, current):
@@ -112,7 +126,7 @@ def due_events(agents_dir: Path, workflows_dir: Path, now: datetime | None = Non
                     )
                 )
 
-    for workflow in load_workflows(workflows_dir).values():
+    for workflow in workflows.values():
         schedule = workflow.trigger.get("schedule")
         if isinstance(schedule, str) and _friendly_schedule_due(schedule, current):
             events.append(

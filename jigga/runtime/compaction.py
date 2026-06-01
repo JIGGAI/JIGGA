@@ -33,6 +33,7 @@ from typing import Any
 from jigga.core.config import load_runtime_config
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import now_iso
+from jigga.runtime.tasks import forget_tasks
 
 _MARKER = ".compaction.json"
 _DEFAULTS = {"enabled": True, "interval_hours": 24, "raw_retention_days": 30,
@@ -124,6 +125,9 @@ def compact_memory(home: Path, *, now: datetime | None = None, dry_run: bool = F
     raw_archived = _archive_raw(home / "memory", now - timedelta(days=int(cfg["raw_retention_days"])), dry_run)
     facts_archived = _archive_team_facts(home, now - timedelta(days=int(cfg["fact_stale_days"])), dry_run)
     tasks_archived = _archive_tasks(home / "tasks", now - timedelta(days=int(cfg["task_retention_days"])), dry_run)
+    if tasks_archived and not dry_run:
+        # archived task files move out of the store — drop them from the index
+        forget_tasks(home / "tasks", tasks_archived)
     return {"dry_run": dry_run, "raw_archived": raw_archived,
             "facts_archived": facts_archived, "tasks_archived": tasks_archived}
 

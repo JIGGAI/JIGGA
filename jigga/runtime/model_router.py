@@ -14,11 +14,11 @@ from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.cost import (
     WARN_FRACTION,
     agent_budget,
-    agent_spend,
     estimate_tokens,
     load_pricing,
     price_call,
 )
+from jigga.runtime.spend_ledger import window_spend
 
 
 @dataclass(frozen=True)
@@ -475,12 +475,13 @@ def _provider_order(profile: ModelProfileConfig) -> list[str]:
     return [profile.primary, *profile.fallback]
 
 
-def _budget_spent_before(logs_dir: Path, agent_id: str, budget: dict[str, Any] | None) -> float:
+def _budget_spent_before(home: Path, logs_dir: Path, agent_id: str, budget: dict[str, Any] | None) -> float:
     if not budget:
         return 0.0
-    window = budget.get("window")
-    since = None if window in (None, "", "all", "0") else window
-    return agent_spend(logs_dir, agent_id, since=since)
+    # Read from the derived ledger (incremental tail over the audit log) instead
+    # of re-scanning the whole log on every call. The ledger self-heals from the
+    # log, which stays the source of truth.
+    return window_spend(home, logs_dir, agent_id, window=budget.get("window"))
 
 
 def _budget_hard_stop(
@@ -546,7 +547,7 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
     profile = profiles.get(request.model_profile or "default") or profiles["default"]
     pricing = load_pricing(home)
     budget = agent_budget(home, request.agent_id)
-    spent_before = _budget_spent_before(logs_dir, request.agent_id, budget)
+    spent_before = _budget_spent_before(home, logs_dir, request.agent_id, budget)
 
     denied = _budget_hard_stop(logs_dir, request, profile, budget, spent_before)
     if denied is not None:
