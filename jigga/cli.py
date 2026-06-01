@@ -869,6 +869,8 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Scaffolded agent {summary['agent_id']!r}"
                               + ("" if summary["written"] else "  (exists, skipped)")
                               + ("  [scheduled]" if summary["scheduled"] else ""))
+                        if summary.get("files_written"):
+                            print(f"  files:     {', '.join(summary['files_written'])}")
                     return 0
                 summary = scaffold_team(paths.home, recipe, team_id=args.team_id,
                                         overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
@@ -880,6 +882,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
                           + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
                     print(f"  workspace: {summary['workspace']}")
+                    if summary.get("files_written"):
+                        print(f"  files:     {', '.join(summary['files_written'])}")
                     print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
                 return 0
             return 0
