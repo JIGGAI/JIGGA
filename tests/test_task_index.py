@@ -94,3 +94,19 @@ def test_find_task_prefix_tie_breaks_on_created_at(tmp_path: Path) -> None:
     write_task(tasks, Task(id="task_dup_early", title="early", created_at="2020-01-01T00:00:00+00:00"))
     found = find_task(tasks, "task_dup")                    # shared prefix → earliest created wins
     assert found is not None and found.id == "task_dup_early"
+
+
+def test_corrupt_index_self_heals_from_disk(tmp_path: Path) -> None:
+    """A corrupt/wrong-shape index.json must be rebuilt from the task files
+    rather than crash the supervisor's per-tick lookups."""
+    from jigga.core.io import write_json
+    tasks = tmp_path / "tasks"
+    a = create_task(tasks, "a", assignee="alpha")
+    for junk in ("{ not json", "[]", '"a string"'):
+        _index_path(tasks).write_text(junk, encoding="utf-8")
+        targets, count = pending_summary(tasks)        # must not raise
+        assert targets == ["alpha"] and count == 1
+        assert find_task(tasks, a.id) is not None
+    # valid-but-empty index is also rebuilt (entry recovered from disk)
+    write_json(_index_path(tasks), {})
+    assert pending_summary(tasks) == ([], 0)            # {} is a valid dict → trusted as-is

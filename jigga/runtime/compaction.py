@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_runtime_config
-from jigga.core.io import ensure_dir, write_json
+from jigga.core.io import append_jsonl, ensure_dir, read_jsonl, rewrite_jsonl, write_json
 from jigga.core.models import now_iso
 from jigga.runtime.tasks import forget_tasks
 
@@ -84,7 +84,9 @@ def _archive_team_facts(home: Path, cutoff: datetime, dry_run: bool) -> int:
         live = team_dir / "shared-context" / "memory" / "team.jsonl"
         if not live.exists():
             continue
-        entries = [json.loads(line) for line in live.read_text(encoding="utf-8").splitlines() if line.strip()]
+        # Tolerant read: one corrupt/half-written line must not crash the whole
+        # compaction pass (which runs on the supervisor heartbeat).
+        entries = read_jsonl(live)
         keep = [e for e in entries if not _older(e.get("time"), cutoff)]
         stale = [e for e in entries if _older(e.get("time"), cutoff)]
         if not stale:
@@ -92,10 +94,9 @@ def _archive_team_facts(home: Path, cutoff: datetime, dry_run: bool) -> int:
         archived += len(stale)
         if not dry_run:
             archive = team_dir / "shared-context" / "memory" / "team.archive.jsonl"
-            with archive.open("a", encoding="utf-8") as handle:
-                for entry in stale:
-                    handle.write(json.dumps(entry, default=str) + "\n")
-            live.write_text("".join(json.dumps(e, default=str) + "\n" for e in keep), encoding="utf-8")
+            for entry in stale:
+                append_jsonl(archive, entry)
+            rewrite_jsonl(live, keep)
     return archived
 
 

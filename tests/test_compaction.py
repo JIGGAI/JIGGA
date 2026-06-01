@@ -115,3 +115,20 @@ def test_compaction_prunes_archived_task_from_index(tmp_path: Path) -> None:
     compact_memory(paths.home)
     assert t.id not in read_json(_index_path(paths.tasks))  # pruned from the index
     assert find_task(paths.tasks, t.id) is None             # and no longer findable
+
+
+def test_compaction_tolerates_corrupt_team_memory_line(tmp_path: Path) -> None:
+    """One corrupt line in a team's team.jsonl must not crash the whole
+    compaction pass (it runs on the supervisor heartbeat)."""
+    from jigga.core.models import TeamConfig
+    from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
+    paths = init_runtime(tmp_path)
+    team = TeamConfig(id="t", name="t", agents=[{"id": "t-lead"}])
+    scaffold_workspace(paths.home, team)
+    mem = workspace_dir(paths.home, "t") / "shared-context" / "memory" / "team.jsonl"
+    mem.parent.mkdir(parents=True, exist_ok=True)
+    mem.write_text(
+        json.dumps({"time": "2999-01-01T00:00:00+00:00", "text": "fresh"}) + "\n"
+        + "{ half-written line after a crash\n", encoding="utf-8")
+    summary = compact_memory(paths.home)            # must not raise
+    assert "facts_archived" in summary

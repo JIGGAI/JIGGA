@@ -354,6 +354,15 @@ def _build_responses_payload(request: ModelCallRequest, model: str) -> dict[str,
     return payload
 
 
+def _int_or_zero(value: Any) -> int:
+    """Token counts from a provider may be missing/malformed; coerce to int, 0 on
+    failure — usage parsing must not crash the call."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def parse_responses_stream(lines: Any) -> dict[str, Any]:
     """Parse a Responses-API SSE byte/line stream into a normalized result.
 
@@ -378,23 +387,28 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
             continue
         etype = event.get("type")
         if etype == "response.output_item.done":
-            item = event.get("item") or {}
+            item = event.get("item")
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == "message":
-                for part in item.get("content") or []:
-                    if part.get("type") in ("output_text", "text") and part.get("text"):
+                content = item.get("content")
+                for part in content if isinstance(content, list) else []:
+                    if isinstance(part, dict) and part.get("type") in ("output_text", "text") and part.get("text"):
                         content_parts.append(part["text"])
             elif item.get("type") == "function_call":
                 try:
                     arguments = json.loads(item.get("arguments") or "{}")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, TypeError):
                     arguments = {"_raw": item.get("arguments")}
                 tool_calls.append(ModelToolCall(
                     id=str(item.get("call_id") or item.get("id") or item.get("name")),
                     name=str(item.get("name")), arguments=arguments))
         elif etype in ("response.completed", "response.done"):
-            usage = (event.get("response") or {}).get("usage") or {}
-            input_tokens = int(usage.get("input_tokens") or 0)
-            output_tokens = int(usage.get("output_tokens") or 0)
+            response = event.get("response")
+            usage = response.get("usage") if isinstance(response, dict) else None
+            usage = usage if isinstance(usage, dict) else {}
+            input_tokens = _int_or_zero(usage.get("input_tokens"))
+            output_tokens = _int_or_zero(usage.get("output_tokens"))
     return {"content": "".join(content_parts), "tool_calls": tool_calls,
             "input_tokens": input_tokens, "output_tokens": output_tokens}
 
@@ -455,7 +469,11 @@ def _parse_tool_calls(raw: Any) -> list[ModelToolCall]:
         return []
     calls: list[ModelToolCall] = []
     for item in raw:
-        function = (item or {}).get("function") or {}
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            continue
         name = function.get("name")
         if not name:
             continue
