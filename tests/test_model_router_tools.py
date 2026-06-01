@@ -251,3 +251,23 @@ def test_provider_fallback_used_when_primary_fails(tmp_path: Path, monkeypatch) 
     assert result.status == "ok"
     assert result.content == "from secondary"
     assert result.fallback_used is True
+
+
+def test_parse_responses_stream_tolerates_malformed_items() -> None:
+    """Hostile/malformed provider output must not crash the parser (non-list
+    content, non-dict item, non-dict usage)."""
+    from jigga.runtime.model_router import parse_responses_stream
+    lines = [
+        'data: {"type":"response.output_item.done","item":{"type":"message","content":"not-a-list"}}',
+        'data: {"type":"response.output_item.done","item":"not-a-dict"}',
+        'data: {"type":"response.completed","response":{"usage":"not-a-dict"}}',
+    ]
+    out = parse_responses_stream(lines)
+    assert out == {"content": "", "tool_calls": [], "input_tokens": 0, "output_tokens": 0}
+
+
+def test_parse_tool_calls_tolerates_malformed_entries() -> None:
+    from jigga.runtime.model_router import _parse_tool_calls
+    calls = _parse_tool_calls(["junk", {"function": "not-a-dict"}, 5,
+                               {"function": {"name": "a.b", "arguments": "{}"}}])
+    assert [c.name for c in calls] == ["a.b"]   # only the valid one survives, no crash

@@ -27,7 +27,9 @@ ledger won't retroactively recover already-pruned spend for; rebuild by clearing
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 from datetime import datetime
 from pathlib import Path
@@ -49,15 +51,43 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
 
 def _ledger_path(home: Path, agent_id: str) -> Path:
     safe = _SAFE_NAME.sub("_", agent_id) or "_"
+    # Sanitizing distinct ids (e.g. "a/b" and "a_b") can collide on one file,
+    # which would let one agent's ledger mask another's spend. Disambiguate with
+    # a hash of the original id whenever sanitization changed anything.
+    if safe != agent_id:
+        safe = f"{safe}.{hashlib.sha1(agent_id.encode('utf-8')).hexdigest()[:10]}"
     return Path(home) / "state" / "spend" / f"{safe}.json"
 
 
 def _empty() -> dict[str, Any]:
-    return {"offset": 0, "carried": 0.0, "entries": []}
+    return {"offset": 0, "head": "", "carried": 0.0, "entries": []}
+
+
+def _num(value: Any) -> float:
+    """Coerce a cost to a finite float; malformed / NaN / inf → 0.0. A corrupt
+    cost_usd in the log must not crash budget enforcement or poison the sum."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return n if math.isfinite(n) else 0.0
 
 
 def _cutoff(window: str | None, now: datetime | None) -> datetime | None:
     return None if window in _ALL_WINDOW else parse_since(window, now=now)
+
+
+def _active_head(active: Path) -> str:
+    """First line of the active log — a cheap signature of the file's identity.
+    If it changes, the file was rotated/replaced and the stored byte offset is
+    no longer valid for it."""
+    if not active.exists():
+        return ""
+    try:
+        with active.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.readline(256)
+    except OSError:
+        return ""
 
 
 def _cost_for(line: str, agent_id: str) -> tuple[str, float] | None:
@@ -75,7 +105,7 @@ def _cost_for(line: str, agent_id: str) -> tuple[str, float] | None:
     details = event.get("details") or {}
     if "cost_usd" not in details or str(details.get("agent_id")) != agent_id:
         return None
-    return str(event.get("time", "")), float(details.get("cost_usd") or 0.0)
+    return str(event.get("time", "")), _num(details.get("cost_usd"))
 
 
 def _rebuild(home: Path, logs_dir: Path, agent_id: str) -> dict[str, Any]:
@@ -88,27 +118,57 @@ def _rebuild(home: Path, logs_dir: Path, agent_id: str) -> dict[str, Any]:
         details = event.get("details") or {}
         if "cost_usd" not in details or str(details.get("agent_id")) != agent_id:
             continue
-        data["entries"].append([str(event.get("time", "")), float(details.get("cost_usd") or 0.0)])
+        data["entries"].append([str(event.get("time", "")), _num(details.get("cost_usd"))])
     active = events_path(logs_dir)
     data["offset"] = active.stat().st_size if active.exists() else 0
+    data["head"] = _active_head(active)
     return data
 
 
 def _tail(data: dict[str, Any], home: Path, logs_dir: Path, agent_id: str) -> dict[str, Any]:
-    """Fold any audit lines appended past the recorded offset into the ledger.
-    Rebuilds from scratch if the active log shrank (unlink / truncate / rotate)."""
+    """Fold audit lines appended past the recorded offset into the ledger. Falls
+    back to a full rebuild when the active log shrank OR its head line changed —
+    both mean rotation/truncation, after which the stored offset points into the
+    wrong file (which would silently drop or double-count spend)."""
     active = events_path(logs_dir)
     size = active.stat().st_size if active.exists() else 0
-    if size < data.get("offset", 0):
+    offset = data.get("offset", 0)
+    head = _active_head(active)
+    if size < offset or (offset > 0 and head != data.get("head", "")):
         return _rebuild(home, logs_dir, agent_id)
-    if size > data.get("offset", 0):
+    if size > offset:
         with active.open("r", encoding="utf-8") as handle:
-            handle.seek(data["offset"])
+            handle.seek(offset)
             for line in handle:
                 hit = _cost_for(line, agent_id)
                 if hit is not None:
                     data["entries"].append([hit[0], hit[1]])
         data["offset"] = size
+    data["head"] = head
+    return data
+
+
+def _load_ledger(path: Path) -> dict[str, Any] | None:
+    """Load a valid ledger, or None if it's missing/corrupt/wrong-shape (the
+    caller then does a full rebuild — so a clobbered ledger self-heals rather
+    than crashing or silently under-counting)."""
+    if not path.exists():
+        return None
+    try:
+        data = read_json(path)
+    except (ValueError, OSError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        return None
+    try:
+        offset = int(data.get("offset", 0))
+    except (TypeError, ValueError):
+        return None
+    if offset < 0:
+        return None
+    data["offset"] = offset
+    data["carried"] = _num(data.get("carried", 0.0))
+    data["head"] = str(data.get("head", ""))
     return data
 
 
@@ -116,7 +176,7 @@ def _prune(data: dict[str, Any], cutoff: datetime | None) -> None:
     """Drop entries outside the rolling window. With no window (count-all), fold
     entries into a running `carried` total so the on-disk list stays bounded."""
     if cutoff is None:
-        data["carried"] = round(data.get("carried", 0.0) + sum(c for _, c in data["entries"]), 6)
+        data["carried"] = round(data.get("carried", 0.0) + sum(_num(c) for _, c in data["entries"]), 6)
         data["entries"] = []
         return
     kept: list[list[Any]] = []
@@ -138,8 +198,10 @@ def window_spend(
     """Agent's spend within `window`, read from the derived ledger (tailing the
     audit log incrementally rather than re-scanning it whole)."""
     path = _ledger_path(home, agent_id)
-    data = read_json(path) if path.exists() else _empty()
-    data = _tail(data, home, logs_dir, agent_id)
+    data = _load_ledger(path)
+    # Missing or corrupt ledger → full rebuild from the audit log (archives +
+    # active), not a tail-from-zero (which would miss already-rotated spend).
+    data = _rebuild(home, logs_dir, agent_id) if data is None else _tail(data, home, logs_dir, agent_id)
     _prune(data, _cutoff(window, now))
     write_json(path, data)
-    return round(data.get("carried", 0.0) + sum(c for _, c in data["entries"]), 6)
+    return round(data.get("carried", 0.0) + sum(_num(c) for _, c in data["entries"]), 6)

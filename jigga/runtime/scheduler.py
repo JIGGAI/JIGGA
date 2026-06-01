@@ -22,18 +22,24 @@ _TIME_PATTERN = re.compile(r"(\d{1,2}):(\d{2})\s*(am|pm)?|(\d{1,2})\s*(am|pm)", 
 
 
 def _cron_due(cron: str, now: datetime) -> bool:
-    parts = cron.split()
+    parts = str(cron).split()
     if len(parts) != 5:
         return False
     minute, hour, day_of_month, month, day_of_week = parts
-    checks = [
-        _field_matches(minute, now.minute),
-        _field_matches(hour, now.hour),
-        _field_matches(day_of_month, now.day),
-        _field_matches(month, now.month),
-        _weekday_matches(day_of_week, now.weekday()),
-    ]
-    return all(checks)
+    # A malformed cron field (e.g. "x * * * *" or "*/0 * * * *") must make the
+    # schedule simply never fire — never raise. The scheduler runs at the top of
+    # every supervisor tick, so an unparseable schedule on one agent would
+    # otherwise take down the whole heartbeat.
+    try:
+        return all([
+            _field_matches(minute, now.minute),
+            _field_matches(hour, now.hour),
+            _field_matches(day_of_month, now.day),
+            _field_matches(month, now.month),
+            _weekday_matches(day_of_week, now.weekday()),
+        ])
+    except (ValueError, ZeroDivisionError):
+        return False
 
 
 def _field_matches(field: str, value: int) -> bool:

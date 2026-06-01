@@ -25,6 +25,7 @@ local filesystem, gated by the policy layer.
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,9 @@ def _require_path(input_value: Any, action: str) -> str:
     raw = input_value.get("path")
     if not raw or not isinstance(raw, str):
         raise ValueError(f"{action} requires non-empty 'path' string in input")
-    return str(Path(raw).expanduser())
+    # Canonicalize `..`/`.` so the path that's policy-checked is the same one
+    # that's read/written (no traversal between the gate and the IO).
+    return os.path.normpath(str(Path(raw).expanduser()))
 
 
 def _check_policy(runtime, path: str, operation: str, action: str) -> None:

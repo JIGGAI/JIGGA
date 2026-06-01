@@ -23,6 +23,7 @@ Pricing and budgets are config, not code:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -35,6 +36,16 @@ WARN_FRACTION = 0.8
 
 # Windows that mean "no time filter — count everything".
 _ALL_WINDOW = {None, "", "all", "0"}
+
+
+def _coerce_cost(value: Any) -> float:
+    """A cost from the log coerced to a finite float; malformed / NaN / inf → 0.0
+    so a single corrupt `cost_usd` line can't crash a rollup or poison the sum."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return n if math.isfinite(n) else 0.0
 
 
 def estimate_tokens(text: str) -> int:
@@ -102,7 +113,7 @@ def agent_spend(
     total = 0.0
     for details in _cost_events(logs_dir, since=since, now=now):
         if str(details.get("agent_id")) == agent_id:
-            total += float(details.get("cost_usd") or 0.0)
+            total += _coerce_cost(details.get("cost_usd"))
     return round(total, 6)
 
 
@@ -120,7 +131,7 @@ def cost_summary(
         row["calls"] += 1
         row["input_tokens"] += int(details.get("input_tokens") or 0)
         row["output_tokens"] += int(details.get("output_tokens") or 0)
-        row["cost_usd"] = round(row["cost_usd"] + float(details.get("cost_usd") or 0.0), 6)
+        row["cost_usd"] = round(row["cost_usd"] + _coerce_cost(details.get("cost_usd")), 6)
     agents = sorted(rows.values(), key=lambda r: r["cost_usd"], reverse=True)
     total = {
         "calls": sum(r["calls"] for r in agents),

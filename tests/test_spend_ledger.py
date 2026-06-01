@@ -79,22 +79,74 @@ def test_rebuild_after_rotation_keeps_archived_spend(tmp_path: Path) -> None:
 
 
 def test_incremental_tail_does_not_reread_consumed_bytes(tmp_path: Path) -> None:
-    """The ledger must fold only bytes appended past its offset. We corrupt the
-    already-consumed prefix in place (same length) and append a fresh event: an
-    incremental tail keeps the cached prior spend + the new event; a full re-read
-    would skip the corrupted prefix and lose the prior spend."""
+    """The ledger must fold only bytes appended past its offset (not re-scan the
+    whole file each call). We corrupt an already-consumed line *other than the
+    first* (so the head signature is unchanged and rotation-detection doesn't
+    fire), keeping its byte length, then append a fresh event: an incremental
+    tail keeps the cached prior spend; a full re-read would lose the corrupted
+    line's spend."""
     paths = init_runtime(tmp_path)
     active = paths.logs / "events.jsonl"
     active.write_text("", encoding="utf-8")
-    _seed(paths.logs, "alpha", 0.10)
-    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.10
-    size1 = active.stat().st_size
+    _seed(paths.logs, "alpha", 0.10)   # line 1 (the head — must stay intact)
+    _seed(paths.logs, "alpha", 0.05)   # line 2 (will be corrupted post-consumption)
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.15
 
-    # garble the consumed prefix, preserving its byte length so the offset stays valid
-    text = active.read_text(encoding="utf-8")
-    active.write_text("x" * (len(text) - 1) + "\n", encoding="utf-8")
-    assert active.stat().st_size == size1
-    _seed(paths.logs, "alpha", 0.25)  # appended past the offset
+    lines = active.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines[1] = "x" * (len(lines[1]) - 1) + "\n"   # garble line 2, same length, head unchanged
+    active.write_text("".join(lines), encoding="utf-8")
+    _seed(paths.logs, "alpha", 0.25)              # appended past the offset
 
-    # cached 0.10 + new 0.25; a re-read of the corrupted prefix would yield only 0.25
-    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.35
+    # cached 0.15 + new 0.25 = 0.40; a full re-read would drop the corrupted
+    # 0.05 line and yield only 0.35
+    assert window_spend(paths.home, paths.logs, "alpha", window="all") == 0.40
+
+
+def test_rotation_then_growth_does_not_lose_spend(tmp_path: Path) -> None:
+    """The real-world rotation bug: after rotation the new active grows PAST the
+    old recorded offset before the next ledger read. A size-only check misses
+    this (size > offset) and seeks into the wrong file; the head-signature check
+    catches it. Ledger must equal the full-scan truth."""
+    paths = init_runtime(tmp_path)
+    active = paths.logs / "events.jsonl"
+    active.write_text("", encoding="utf-8")
+    _seed(paths.logs, "a", 3.00)
+    assert window_spend(paths.home, paths.logs, "a", window="all") == 3.00
+
+    (paths.logs / "events-2020-01-01.jsonl").write_text(active.read_text(), encoding="utf-8")
+    active.write_text("", encoding="utf-8")
+    _seed(paths.logs, "a", 2.50)
+    _seed(paths.logs, "a", 2.50)   # new active now larger than the pre-rotation offset
+    assert window_spend(paths.home, paths.logs, "a", window="all") == agent_spend(paths.logs, "a") == 8.00
+
+
+def test_distinct_agent_ids_do_not_share_a_ledger_file(tmp_path: Path) -> None:
+    """Ids that sanitize to the same filename (e.g. 'a/b' and 'a_b') must not
+    collide onto one ledger — that would let one agent mask another's spend."""
+    from jigga.runtime.spend_ledger import _ledger_path
+    assert _ledger_path(tmp_path, "a/b") != _ledger_path(tmp_path, "a_b")
+
+
+def test_malformed_cost_does_not_crash_or_overcount(tmp_path: Path) -> None:
+    """A corrupt cost_usd (string / NaN / inf) must coerce to 0, not crash
+    enforcement (window_spend is called on every model call)."""
+    paths = init_runtime(tmp_path)
+    (paths.logs / "events.jsonl").write_text("", encoding="utf-8")
+    _seed(paths.logs, "a", 1.0)
+    from jigga.runtime.audit import append_event
+    for bad in ("oops", float("nan"), float("inf"), [1, 2]):
+        append_event(paths.logs, "model.call", agent_id="a", provider="p",
+                     model="m", dry_run=True, cost_usd=bad)
+    assert window_spend(paths.home, paths.logs, "a", window="all") == 1.0
+
+
+def test_corrupt_ledger_file_self_heals(tmp_path: Path) -> None:
+    from jigga.runtime.spend_ledger import _ledger_path
+    paths = init_runtime(tmp_path)
+    (paths.logs / "events.jsonl").write_text("", encoding="utf-8")
+    _seed(paths.logs, "a", 2.0)
+    assert window_spend(paths.home, paths.logs, "a", window="all") == 2.0
+    for junk in ("{ not json", '{"entries": "notalist"}', '{"offset": -5, "entries": []}', "[]"):
+        _ledger_path(paths.home, "a").write_text(junk, encoding="utf-8")
+        # rebuilds from the audit log rather than crashing or under-counting
+        assert window_spend(paths.home, paths.logs, "a", window="all") == 2.0

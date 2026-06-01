@@ -156,5 +156,13 @@ def rebuild_index(tasks_dir: Path) -> dict:
 def _ensure_index(tasks_dir: Path) -> dict:
     path = _index_path(tasks_dir)
     if path.exists():
-        return read_json(path)
+        try:
+            index = read_json(path)
+        except (ValueError, OSError):
+            index = None
+        if isinstance(index, dict):
+            return index
+        # corrupt/wrong-shape index → rebuild from the task files (source of
+        # truth) rather than crash the supervisor's per-tick lookups
+        return rebuild_index(tasks_dir)
     return rebuild_index(tasks_dir)

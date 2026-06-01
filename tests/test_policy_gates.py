@@ -10,6 +10,7 @@ import pytest
 
 from jigga.core.models import AgentConfig
 from jigga.runtime.policy import (
+    evaluate_filesystem,
     evaluate_network,
     evaluate_resource_permission,
     evaluate_shell,
@@ -84,3 +85,18 @@ def test_shell_restricted_allowlist_hit_and_miss() -> None:
 def test_shell_dangerous_pattern_denied_even_when_allowed() -> None:
     # a dangerous command is denied regardless of an otherwise-permissive mode
     assert evaluate_shell(_agent({"shell": {"mode": "allow"}}), "rm -rf /").status == "deny"
+
+
+# --- filesystem path-traversal (security regression) -----------------------
+
+
+def test_filesystem_blocks_dotdot_traversal_out_of_allowlist() -> None:
+    """A model-supplied path that escapes the allowlist via `..` must NOT be
+    allowed just because it lexically starts under an allowed prefix."""
+    agent = _agent({"filesystem": {"allow": ["/workspace/**"], "deny": ["/workspace/secrets/**"]}})
+    assert evaluate_filesystem(agent, "/workspace/a/b.txt").status == "allow"      # legit
+    assert evaluate_filesystem(agent, "/workspace/x/./y.txt").status == "allow"    # `.` is fine
+    # `..` escaping the allow prefix → not allowed
+    assert evaluate_filesystem(agent, "/workspace/../etc/passwd").status != "allow"
+    # `..` re-entering a denied subtree → denied
+    assert evaluate_filesystem(agent, "/workspace/pub/../secrets/key").status == "deny"

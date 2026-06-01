@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -49,7 +50,11 @@ def _mode(config: dict[str, Any] | None, default: str = "deny") -> str:
 
 
 def _matches_any(value: str, patterns: list[str]) -> bool:
-    raw = str(Path(value).expanduser())
+    # Canonicalize `..`/`.` segments before matching. Without this a model-supplied
+    # path like `<allowed>/../../etc/passwd` matches an allow rule lexically while
+    # actually resolving outside it — a permission-gate bypass (both allow escape
+    # and deny evasion). normpath is lexical (no FS access, works on missing paths).
+    raw = os.path.normpath(str(Path(value).expanduser()))
     raw_parts = Path(raw).parts
     return any(_path_matches(raw, raw_parts, pattern) for pattern in patterns)
 

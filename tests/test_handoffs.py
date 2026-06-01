@@ -161,3 +161,22 @@ def test_cli_team_handoff_and_decisions(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "team", "decisions", "ct", "--json"]) == 0
     log = json.loads(capsys.readouterr().out)
     assert log and log[0]["from"] == "strategist" and log[0]["to"] == "writer"
+
+
+def test_malformed_routing_does_not_crash(tmp_path: Path) -> None:
+    """A bad team YAML (handoffs not a list, non-dict entries, routing not a
+    dict) must not crash fire_handoffs — it runs on the supervisor tick path."""
+    from jigga.core.models import TeamConfig
+    from jigga.runtime.handoffs import eligible_handoffs
+    for routing in ({"handoffs": {"oops": "x"}}, {"handoffs": ["junk", 5]},
+                    {"handoffs": None}, "not-a-dict"):
+        team = TeamConfig(id="t", name="t")
+        team.routing = routing
+        assert eligible_handoffs(team, "a", None) == []
+
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.teams / "bad.yaml", {"id": "bad", "name": "bad",
+               "agents": [{"id": "a"}], "routing": {"handoffs": ["junk"]}})
+    # must return [] rather than raise
+    assert fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
+                         team_id="bad", from_member="a") == []

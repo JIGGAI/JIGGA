@@ -50,9 +50,17 @@ def eligible_handoffs(team: TeamConfig, from_member: str, signal: str | None) ->
     """Handoff rules that should fire for `from_member`. With no `signal`, every
     outgoing handoff from the member is eligible; with a signal, only rules whose
     `when` matches it."""
-    rules = (team.routing or {}).get("handoffs") or []
+    routing = team.routing if isinstance(team.routing, dict) else {}
+    rules = routing.get("handoffs")
+    # Tolerate malformed config: handoffs not a list, or entries that aren't
+    # dicts. This runs on the agent-completion path inside the supervisor tick,
+    # so a bad team YAML must not be able to crash the heartbeat.
+    if not isinstance(rules, list):
+        return []
     out: list[dict[str, Any]] = []
     for rule in rules:
+        if not isinstance(rule, dict):
+            continue
         if rule.get("from") != from_member or not rule.get("to"):
             continue
         if signal is not None and rule.get("when") != signal:
