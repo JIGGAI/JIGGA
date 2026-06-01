@@ -18,12 +18,11 @@ Config:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_runtime_config
-from jigga.core.io import ensure_dir
+from jigga.core.io import read_jsonl, rewrite_jsonl
 from jigga.core.models import now_iso
 from jigga.runtime.audit import new_id
 from jigga.runtime.team_memory import append_team_memory
@@ -44,31 +43,12 @@ def sensitive_requires_approval(home: Path, mem_type: str) -> bool:
     return mem_type in set(sensitive)
 
 
-def _read(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    out: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return out
-
-
-def _write(path: Path, entries: list[dict[str, Any]]) -> None:
-    ensure_dir(path.parent)
-    path.write_text("".join(json.dumps(e, default=str) + "\n" for e in entries), encoding="utf-8")
-
-
 def propose(home: Path, team_id: str, *, text: str, type: str = "fact",
             tags: list[str] | None = None, source: dict[str, Any] | None = None) -> dict[str, Any]:
     entry = {"id": new_id("prop"), "time": now_iso(), "type": type, "text": text,
              "tags": list(tags or []), "source": source or {}, "status": "pending"}
     path = proposals_path(home, team_id)
-    _write(path, [*_read(path), entry])
+    rewrite_jsonl(path, [*read_jsonl(path), entry])
     return entry
 
 
@@ -82,7 +62,7 @@ def _team_ids(home: Path, team_id: str | None) -> list[str]:
 def list_proposals(home: Path, team_id: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tid in _team_ids(home, team_id):
-        for entry in _read(proposals_path(home, tid)):
+        for entry in read_jsonl(proposals_path(home, tid)):
             if entry.get("status") == "pending":
                 out.append({**entry, "team": tid})
     return out
@@ -93,13 +73,13 @@ def apply_proposal(home: Path, proposal_id: str, *, approve: bool, team_id: str 
     or prefix. Removes it from the pending queue. Returns the resolved entry."""
     for tid in _team_ids(home, team_id):
         path = proposals_path(home, tid)
-        pending = _read(path)
+        pending = read_jsonl(path)
         match = next((e for e in pending
                       if e.get("status") == "pending"
                       and (str(e.get("id", "")) == proposal_id or str(e.get("id", "")).startswith(proposal_id))), None)
         if match is None:
             continue
-        _write(path, [e for e in pending if e is not match])
+        rewrite_jsonl(path, [e for e in pending if e is not match])
         if approve:
             committed = append_team_memory(home, tid, text=match["text"], type=match.get("type", "fact"),
                                            tags=match.get("tags"), source=match.get("source"))

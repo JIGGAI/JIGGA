@@ -14,11 +14,12 @@ id when you want to follow a single run.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from jigga.core.io import read_jsonl
 
 _DURATION = re.compile(r"^(\d+)\s*([smhdw])$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -40,16 +41,10 @@ def _log_files(logs_dir: Path) -> list[Path]:
 
 
 def read_events(logs_dir: Path) -> list[dict[str, Any]]:
+    """All audit events across rotated archives + the active log, oldest first."""
     events: list[dict[str, Any]] = []
     for path in _log_files(logs_dir):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+        events.extend(read_jsonl(path))
     return events
 
 
