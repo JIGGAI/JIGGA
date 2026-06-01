@@ -9,6 +9,7 @@ from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
 from jigga.runtime.channel_listener import enabled_channels, ingest_once
+from jigga.runtime.compaction import maybe_compact
 from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.loop_guard import (
     cron_already_fired,
@@ -56,6 +57,16 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     if rotation["rotated"] or rotation["pruned"]:
         append_event(paths.logs, "logs.rotated", archived=rotation["rotated"],
                      pruned=rotation["pruned"])
+    # Compact memory at most once/day (D3) so it stays bounded — archive old raw
+    # entries, stale team facts, and finished tasks. Contained so a fault can't
+    # break the tick.
+    try:
+        compacted = maybe_compact(paths.home)
+        if compacted:
+            append_event(paths.logs, "memory.compacted", raw_archived=len(compacted["raw_archived"]),
+                         facts_archived=compacted["facts_archived"], tasks_archived=len(compacted["tasks_archived"]))
+    except Exception as exc:  # noqa: BLE001 — compaction must not break the tick
+        append_event(paths.logs, "memory.compact_error", status="error", error=str(exc))
     # Channels poll on the heartbeat (B2): enabled bots always respond whenever
     # the supervisor runs — no separate `jigga channels listen`. We short-poll
     # (long_poll_seconds=0) and only create tasks here; the tick's own

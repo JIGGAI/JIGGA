@@ -50,6 +50,7 @@ from jigga.runtime.google_calendar import (
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
 from jigga.runtime.memory_index import rebuild_index, search_memory
+from jigga.runtime.compaction import compact_memory
 from jigga.runtime.model_router import build_task_model_request, call_model, load_model_config
 from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
@@ -216,6 +217,9 @@ def build_parser() -> argparse.ArgumentParser:
     memory_search.add_argument("--rebuild", action="store_true", help="Force a fresh index first")
     memory_search.add_argument("--json", action="store_true", dest="json_output")
     memory_sub.add_parser("reindex", help="Rebuild the memory search index")
+    memory_compact = memory_sub.add_parser("compact", help="Compact memory now (archive old raw / stale facts / finished tasks)")
+    memory_compact.add_argument("--dry-run", action="store_true", dest="dry_run")
+    memory_compact.add_argument("--json", action="store_true", dest="json_output")
 
     workflow = sub.add_parser("workflow", help="Plan and run workflows")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
@@ -470,6 +474,15 @@ def main(argv: list[str] | None = None) -> int:
             elif args.memory_command == "reindex":
                 count = rebuild_index(paths.memory)
                 print(f"Indexed {count} memory document(s).")
+            elif args.memory_command == "compact":
+                summary = compact_memory(paths.home, dry_run=args.dry_run)
+                if args.json_output:
+                    print_json(summary)
+                else:
+                    verb = "Would archive" if summary["dry_run"] else "Archived"
+                    print(f"{verb}: {len(summary['raw_archived'])} raw entr(ies), "
+                          f"{summary['facts_archived']} stale fact(s), "
+                          f"{len(summary['tasks_archived'])} finished task(s).")
             return 0
 
         if args.command == "workflow":
