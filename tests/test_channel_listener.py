@@ -194,3 +194,22 @@ def test_channel_listen_handles_sigterm(tmp_path: Path) -> None:
     payload = json.loads(stdout)
     assert payload["status"] == "interrupted"
     assert payload["sig"] == int(signal.SIGTERM)
+
+
+# --- H0 regression: `channels listen` CLI routing -------------------------
+
+
+def test_cli_channels_listen_reaches_listener(tmp_path: Path) -> None:
+    """Regression guard: `jigga channels listen` must actually invoke
+    channel_listen. It previously fell through to a no-op `return 0` because the
+    handler was orphaned after a `return` in the approvals block."""
+    from jigga.cli import main
+
+    init_runtime(tmp_path)
+    with patch("jigga.cli.channel_listen", return_value={
+        "status": "ok", "cycles": 1, "stopped_by_signal": None,
+    }) as fake:
+        rc = main(["--home", str(tmp_path), "channels", "listen",
+                   "--max-cycles", "1", "--no-process"])
+    assert rc == 0
+    assert fake.called, "channels listen did not reach channel_listen"

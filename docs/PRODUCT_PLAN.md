@@ -180,9 +180,9 @@ Policies govern:
 - schedule creation
 - workflow activation
 
-### 10. Terraform-Style Planning
+### 10. Agents-as-Code & Config Diff
 
-Before enabling a new agent, team, workflow, or permission change, JIGGA should show a diff/plan.
+"Terraform-style" here means **agents and teams are code** — declarative, version-controllable definitions authored directly or generated from recipes (the ClawRecipes model), not a literal Terraform reconcile engine. The companion safety layer is a config diff: before enabling a new agent, team, workflow, or permission change, JIGGA shows a plan (`jigga plan`) of what will change and gates permission-affecting changes for explicit approval before `jigga apply`.
 
 Example:
 
