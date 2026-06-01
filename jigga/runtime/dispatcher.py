@@ -355,6 +355,16 @@ def _remember_handler(
     if not text.strip():
         raise ValueError("memory.remember needs `text` to remember")
     team_id = ensure_agent_workspace(runtime.home, runtime.home / "teams", runtime.agent)
+    # D4: when approval is required, sensitive types are parked for review instead
+    # of written silently. Opt-in via `memory.require_approval` (off by default).
+    from jigga.runtime.memory_proposals import propose, sensitive_requires_approval
+    if sensitive_requires_approval(runtime.home, mem_type):
+        prop = propose(runtime.home, team_id, text=text, type=mem_type, tags=tags,
+                       source={"agent": runtime.agent.id})
+        append_event(runtime.logs_dir, "memory.proposed", status="ask", agent=runtime.agent.id,
+                     team=team_id, proposal=prop["id"], memory_type=mem_type)
+        return {"source": "capability.memory_remember", "team": team_id, "proposed": prop["id"],
+                "status": "pending_approval", "text": text}
     entry = append_team_memory(runtime.home, team_id, text=text, type=mem_type, tags=tags,
                                source={"agent": runtime.agent.id})
     return {"source": "capability.memory_remember", "team": team_id, "remembered": entry["id"], "text": text}

@@ -92,7 +92,7 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 | Indexes | ✅ sqlite FTS5 keyword index (`memory/indexes/`, rebuild-on-stale; scan fallback) | optional vector index behind a feature flag |
 | Retrieval | ✅ `memory.search` capability + `jigga memory search` (scope-aware, ranked) | — |
 | Compaction | ✅ daily (supervisor) + `jigga memory compact`: archive old raw, stale team facts → `team.archive.jsonl`, finished tasks | model-backed task *summaries* (today archives, doesn't summarize) |
-| Memory write proposals | writes happen synchronously | Proposal queue with approval for sensitive types |
+| Memory write proposals | ✅ opt-in `memory.require_approval`: sensitive types park as proposals → `jigga memory proposals`/`approve`/`reject` | — |
 
 ### Sessions
 
@@ -208,17 +208,17 @@ Pull remaining items in "when it makes sense" rather than all at once.
 
 **Exit (mostly met):** a JIGGA team has a real shared workspace it coordinates through — lead curates `plan.md`/`priorities.md`, members append outputs (read→act→write), and teams are scaffolded from recipes. Ticket lanes (W3, deferred) and the memory layers (Milestone D) extend it later.
 
-### Milestone D — Memory at scale — **IN PROGRESS**
+### Milestone D — Memory at scale — **COMPLETE**
 *Goal: long-running agents don't drown.*
 
 - ✅ **D1 — Keyword index (sqlite FTS5) + `memory.search` capability** (PR pending). Indexes `raw/` + `structured/`/`summaries/` into `memory/indexes/`, rebuilds when stale, scope-aware ranked snippets; falls back to a tokenized scan if FTS5 is absent. `jigga memory search`/`reindex`; the `memory.search` capability (now resolves for agents like `content_strategist`).
 - ✅ **D2 — team/role memory write pipelines** (PR pending). `runtime/team_memory.py` writes durable knowledge to a team's `shared-context/memory/team.jsonl` (+ `pinned.jsonl`) and per-role `MEMORY.md`; the `memory.remember` capability lets agents persist facts mid-run; the FTS index covers team/role memory with a `team:`/`role:` layer so `memory.search`/`jigga memory search --team` is team-scoped (no cross-team leakage).
 - Optional vector index behind a feature flag — embed via model router or local model.
 - ✅ **D3 — compaction** (PR pending). `runtime/compaction.py`: archive `memory/raw/*.json` past `raw_retention_days`, stale `team.jsonl` facts → `team.archive.jsonl` (dropped from search), and finished tasks past `task_retention_days`. Runs on the supervisor heartbeat at most once/`interval_hours` (marker-guarded) + `jigga memory compact [--dry-run]`. (Follow-up: model-backed task *summaries* — today it archives rather than summarizes.)
-- Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.
+- ✅ **D4 — write-proposal queue** (PR pending). Opt-in `memory.require_approval`: `memory.remember` of a sensitive type (`fact`/`preference`/`relationship`, configurable) parks a proposal in `shared-context/memory/proposals.jsonl` instead of writing silently; `jigga memory proposals` / `approve <id>` / `reject <id>` reviews them (approve commits to `team.jsonl`). Off by default (direct write).
 - **Team/role memory** is owned here (not in the Teams & Workspaces workstream): the per-team workspace just provides the on-disk locations (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`); this milestone adds writing, indexing, compaction, and `search_memory` over them.
 
-**Exit:** memory size is bounded and retrieval gets faster as it grows.
+**Exit:** ✅ **Milestone D complete.** Memory is searchable (D1 FTS5), agents write durable team/role knowledge (D2), it stays bounded via compaction (D3), and sensitive writes can be gated behind approval (D4). Optional follow-ups (don't block): vector index behind a flag; model-backed task *summaries* in compaction (today it archives).
 
 ### Milestone E — Real isolation
 *Goal: a misbehaving capability can't ruin your day.*
