@@ -91,6 +91,19 @@ def scaffold_workspace(home: Path, team: TeamConfig) -> dict[str, Any]:
             f"# Priorities — {team.name}\n\n_Lead-curated ({lead or 'unassigned'})._\n"
         ),
     }
+    # Per-member SOUL.md starter (authored persona — the agent's voice/principles,
+    # injected into its context pack). create-only; edit to give each member a
+    # distinct persona. AGENTS.md / TOOLS.md are generated at run time instead.
+    roles = {str(a.get("id")): a.get("role") for a in team.agents if isinstance(a, dict) and a.get("id")}
+    for member in member_ids:
+        role = roles.get(member) or "team member"
+        starters[f"roles/{member}/SOUL.md"] = (
+            f"# SOUL — {member}\n"
+            f"You are the {role} of {team.name}. Be concise, accurate, and grounded in the "
+            "team's plan and priorities. Prefer evidence over assertion and say when you're "
+            "unsure. Write so a teammate can act on your output without asking you to clarify.\n\n"
+            "_(Edit this to give the agent a distinct voice, beliefs, and a decision framework.)_\n"
+        )
     created = [rel for rel, content in starters.items() if _write_if_absent(root / rel, content)]
     return {"workspace": str(root), "members": member_ids, "lead": lead, "created": created}
 
@@ -115,6 +128,20 @@ def append_agent_output(home: Path, team_id: str, member: str, text: str) -> Pat
     ensure_dir(path.parent)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"\n## {now_iso()}\n{text}\n")
+    return path
+
+
+def append_daily_memory(home: Path, team_id: str, member: str, text: str) -> Path:
+    """Append a dated breadcrumb to the member's daily memory log
+    (`roles/<member>/memory/YYYY-MM-DD.md`). Read back into the agent's context
+    on its next run as "recent daily log" — the file-first continuity the
+    OpenClaw model uses so an agent isn't a per-task amnesiac."""
+    stamp = now_iso()
+    day = stamp[:10]  # YYYY-MM-DD
+    path = workspace_dir(home, team_id) / "roles" / member / "memory" / f"{day}.md"
+    ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n- {stamp} {text}")
     return path
 
 
