@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,7 @@ from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
+from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
 from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
@@ -379,9 +381,18 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_due = scheduler_sub.add_parser("due", help="List due events for the current time")
     scheduler_due.add_argument("--at", help="Evaluate due events at an ISO timestamp")
 
-    team = sub.add_parser("team", help="Run team runtime skeleton")
+    team = sub.add_parser("team", help="Run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
     team_run = team_sub.add_parser("run")
+    team_handoff = team_sub.add_parser("handoff", help="Fire a team's handoffs from a member (file-first)")
+    team_handoff.add_argument("team_id")
+    team_handoff.add_argument("--from", dest="from_member", required=True, help="Member completing/handing off")
+    team_handoff.add_argument("--signal", help="Only fire handoffs whose `when` matches this signal")
+    team_handoff.add_argument("--evidence", help="Path/reference to the work product being handed off")
+    team_handoff.add_argument("--json", action="store_true", dest="json_output")
+    team_decisions = team_sub.add_parser("decisions", help="Show a team's handoff decision log")
+    team_decisions.add_argument("team_id")
+    team_decisions.add_argument("--json", action="store_true", dest="json_output")
     team_init = team_sub.add_parser("init", help="Scaffold a team's shared workspace (notes/ + shared-context/ + roles/)")
     team_init.add_argument("team_id")
     team_init.add_argument("--json", action="store_true", dest="json_output")
@@ -440,581 +451,659 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "init":
-            paths = init_runtime(args.home, examples=args.examples)
-            print(f"Initialized JIGGA home: {paths.home}")
-            if args.examples:
-                print("Copied example agents and teams.")
-            interactive = (not args.no_prompt) and sys.stdin.isatty() and sys.stdout.isatty()
-            maybe_prompt_after_init(paths, interactive=interactive)
-            return 0
+def _cmd_init(args: argparse.Namespace) -> int:
+    paths = init_runtime(args.home, examples=args.examples)
+    print(f"Initialized JIGGA home: {paths.home}")
+    if args.examples:
+        print("Copied example agents and teams.")
+    interactive = (not args.no_prompt) and sys.stdin.isatty() and sys.stdout.isatty()
+    maybe_prompt_after_init(paths, interactive=interactive)
+    return 0
 
-        if args.command == "state":
-            result = inspect_state(args.home)
-            if args.json_output:
-                print_json(result)
-            else:
-                print(f"JIGGA home: {result['home']}")
-                print(f"Agents: {', '.join(result['agents']) if result['agents'] else 'none'}")
-                print(f"Teams: {', '.join(result['teams']) if result['teams'] else 'none'}")
-                print(f"Workflows: {', '.join(result['workflows']) if result['workflows'] else 'none'}")
-                print(f"Memory scopes: {', '.join(result['memory_scopes']) if result['memory_scopes'] else 'none'}")
-                print(f"Tasks: {len(result['tasks'])}")
-            return 0
 
-        if args.command == "memory":
-            paths = get_paths(args.home)
-            if args.memory_command == "inspect":
-                print_json(inspect_memory(paths.memory))
-            elif args.memory_command == "search":
-                results = search_memory(paths.memory, args.query, scope=args.scope, team=args.team,
-                                        limit=args.limit, rebuild=args.rebuild)
-                if args.json_output:
-                    print_json(results)
-                elif not results:
-                    print("No matches.")
-                else:
-                    for r in results:
-                        print(f"[{r['layer']}] {r['path']}")
-                        print(f"    {r['snippet']}")
-            elif args.memory_command == "reindex":
-                count = rebuild_index(paths.memory)
-                print(f"Indexed {count} memory document(s).")
-            elif args.memory_command == "compact":
-                summary = compact_memory(paths.home, dry_run=args.dry_run)
-                if args.json_output:
-                    print_json(summary)
-                else:
-                    verb = "Would archive" if summary["dry_run"] else "Archived"
-                    print(f"{verb}: {len(summary['raw_archived'])} raw entr(ies), "
-                          f"{summary['facts_archived']} stale fact(s), "
-                          f"{len(summary['tasks_archived'])} finished task(s).")
-            elif args.memory_command == "proposals":
-                pending = list_proposals(paths.memory.parent, args.team)
-                if args.json_output:
-                    print_json(pending)
-                elif not pending:
-                    print("No pending memory proposals.")
-                else:
-                    for p in pending:
-                        print(f"{p['id']}  [{p['team']}/{p.get('type')}]  {p['text']}")
-            elif args.memory_command in ("approve", "reject"):
-                resolved = apply_proposal(paths.memory.parent, args.proposal_id,
-                                          approve=args.memory_command == "approve", team_id=args.team)
-                if resolved is None:
-                    print(f"No pending proposal with id {args.proposal_id!r}.")
-                    return 1
-                print(f"{resolved['status'].title()} {args.proposal_id}"
-                      + (f" → committed as {resolved['memory_id']}" if resolved.get("memory_id") else ""))
-            return 0
+def _cmd_state(args: argparse.Namespace) -> int:
+    result = inspect_state(args.home)
+    if args.json_output:
+        print_json(result)
+    else:
+        print(f"JIGGA home: {result['home']}")
+        print(f"Agents: {', '.join(result['agents']) if result['agents'] else 'none'}")
+        print(f"Teams: {', '.join(result['teams']) if result['teams'] else 'none'}")
+        print(f"Workflows: {', '.join(result['workflows']) if result['workflows'] else 'none'}")
+        print(f"Memory scopes: {', '.join(result['memory_scopes']) if result['memory_scopes'] else 'none'}")
+        print(f"Tasks: {len(result['tasks'])}")
+    return 0
 
-        if args.command == "workflow":
-            paths = get_paths(args.home)
-            if args.workflow_command == "plan":
-                workflows = load_workflows(paths.workflows)
-                workflow = workflows.get(args.workflow_id)
-                if workflow is None:
-                    raise ValueError(f"Workflow not found: {args.workflow_id}")
-                plan = plan_workflow(
-                    workflow,
-                    load_agents(paths.agents),
-                    default_mode=default_permission_mode(paths.home),
-                    registry=CapabilityRegistry.load(
-                        user_capabilities=paths.capabilities,
-                        project_capabilities=project_capabilities_dir(
-                            resolve_project_root(args.project)
-                        ),
-                        approvals_dir=paths.policies,
-                    ),
-                )
-                if args.json_output:
-                    print_json(plan)
-                else:
-                    print(f"Workflow: {workflow.id} — {workflow.name}")
-                    print(f"Status: {workflow.status}")
-                    print(f"Permissions: {', '.join(plan['permissions']) if plan['permissions'] else 'none declared'}")
-                    for step in plan["steps"]:
-                        reason = f": {step['policy']['reason']}" if step["policy"].get("reason") else ""
-                        print(f"- {step['id']}: {step['action']} [{step['policy']['status']}{reason}]")
-                    print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
-            elif args.workflow_command == "run":
-                print_json(
-                    run_workflow(
-                        paths.home,
-                        paths.logs,
-                        paths.workflows,
-                        paths.agents,
-                        paths.memory,
-                        args.workflow_id,
-                        project_capabilities=project_capabilities_dir(
-                            resolve_project_root(args.project)
-                        ),
-                    )
-                )
-            elif args.workflow_command == "suggest":
-                print_json(suggest_workflows(paths.logs, min_count=args.min_count))
-            elif args.workflow_command == "apply":
-                print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs, approve=args.approve))
-            return 0
 
-        if args.command == "plan":
-            result = plan_runtime(get_paths(args.home))
-            if args.json_output:
-                print_json(result)
-            else:
-                print(f"Plan: {result['status']}")
-                for change in result["changes"]:
-                    approval = f" requires {change['requires_approval']}" if change.get("requires_approval") else ""
-                    print(f"- {change['change']} {change['path']}{approval}")
-            return 0
+def _cmd_memory(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.memory_command == "inspect":
+        print_json(inspect_memory(paths.memory))
+    elif args.memory_command == "search":
+        results = search_memory(paths.memory, args.query, scope=args.scope, team=args.team,
+                                limit=args.limit, rebuild=args.rebuild)
+        if args.json_output:
+            print_json(results)
+        elif not results:
+            print("No matches.")
+        else:
+            for r in results:
+                print(f"[{r['layer']}] {r['path']}")
+                print(f"    {r['snippet']}")
+    elif args.memory_command == "reindex":
+        count = rebuild_index(paths.memory)
+        print(f"Indexed {count} memory document(s).")
+    elif args.memory_command == "compact":
+        summary = compact_memory(paths.home, dry_run=args.dry_run)
+        if args.json_output:
+            print_json(summary)
+        else:
+            verb = "Would archive" if summary["dry_run"] else "Archived"
+            print(f"{verb}: {len(summary['raw_archived'])} raw entr(ies), "
+                  f"{summary['facts_archived']} stale fact(s), "
+                  f"{len(summary['tasks_archived'])} finished task(s).")
+    elif args.memory_command == "proposals":
+        pending = list_proposals(paths.memory.parent, args.team)
+        if args.json_output:
+            print_json(pending)
+        elif not pending:
+            print("No pending memory proposals.")
+        else:
+            for p in pending:
+                print(f"{p['id']}  [{p['team']}/{p.get('type')}]  {p['text']}")
+    elif args.memory_command in ("approve", "reject"):
+        resolved = apply_proposal(paths.memory.parent, args.proposal_id,
+                                  approve=args.memory_command == "approve", team_id=args.team)
+        if resolved is None:
+            print(f"No pending proposal with id {args.proposal_id!r}.")
+            return 1
+        print(f"{resolved['status'].title()} {args.proposal_id}"
+              + (f" → committed as {resolved['memory_id']}" if resolved.get("memory_id") else ""))
+    return 0
 
-        if args.command == "apply":
-            print_json(apply_runtime(get_paths(args.home), approve=args.approve))
-            return 0
 
-        if args.command == "validate":
-            result = validate_runtime_configs(get_paths(args.home))
-            if args.json_output:
-                print_json(result)
-            else:
-                for kind, values in result.items():
-                    print(f"{kind}: {', '.join(values) if values else 'none'}")
-            return 0
-
-        if args.command == "capabilities":
-            paths = get_paths(args.home)
-            registry = CapabilityRegistry.load(
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.workflow_command == "plan":
+        workflows = load_workflows(paths.workflows)
+        workflow = workflows.get(args.workflow_id)
+        if workflow is None:
+            raise ValueError(f"Workflow not found: {args.workflow_id}")
+        plan = plan_workflow(
+            workflow,
+            load_agents(paths.agents),
+            default_mode=default_permission_mode(paths.home),
+            registry=CapabilityRegistry.load(
                 user_capabilities=paths.capabilities,
                 project_capabilities=project_capabilities_dir(
                     resolve_project_root(args.project)
                 ),
                 approvals_dir=paths.policies,
+            ),
+        )
+        if args.json_output:
+            print_json(plan)
+        else:
+            print(f"Workflow: {workflow.id} — {workflow.name}")
+            print(f"Status: {workflow.status}")
+            print(f"Permissions: {', '.join(plan['permissions']) if plan['permissions'] else 'none declared'}")
+            for step in plan["steps"]:
+                reason = f": {step['policy']['reason']}" if step["policy"].get("reason") else ""
+                print(f"- {step['id']}: {step['action']} [{step['policy']['status']}{reason}]")
+            print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
+    elif args.workflow_command == "run":
+        print_json(
+            run_workflow(
+                paths,
+                args.workflow_id,
+                project_capabilities=project_capabilities_dir(
+                    resolve_project_root(args.project)
+                ),
             )
-            if args.capabilities_command == "list":
-                print_json(registry.to_index())
-            elif args.capabilities_command == "pending":
-                print_json([cap.to_dict() for cap in registry.list_pending()])
-            elif args.capabilities_command == "inspect":
-                capability = registry.get(args.name)
-                if capability is None:
-                    raise ValueError(f"Capability not found: {args.name}")
-                print_json(capability.to_dict())
-            elif args.capabilities_command == "validate":
-                capability = load_capability_manifest(args.path)
-                report = scan_capability(capability, pack_dir=args.path.parent)
-                print_json(
-                    {
-                        "status": "valid",
-                        "capability": capability.to_dict(),
-                        "scan": report.to_dict(),
-                    }
-                )
-            elif args.capabilities_command == "approve":
-                capability = load_capability_manifest(args.path)
-                report = scan_capability(capability, pack_dir=args.path.parent)
-                if not args.confirm:
-                    print_json(
-                        {
-                            "status": "needs_approval",
-                            "capability": capability.to_dict(),
-                            "scan": report.to_dict(),
-                            "hint": "Re-run with --approve to record the approval. Review the scan findings first.",
-                        }
-                    )
-                    return 0
-                entry = record_approval(paths.policies, capability)
-                print_json(
-                    {
-                        "status": "approved",
-                        "capability": capability.name,
-                        "approval": entry,
-                        "scan": report.to_dict(),
-                    }
-                )
-            elif args.capabilities_command == "install":
-                return install_capability(paths, name=args.name)
-            elif args.capabilities_command == "uninstall":
-                return uninstall_capability(paths, name=args.name)
-            elif args.capabilities_command == "list-available":
-                return list_available_capabilities()
-            return 0
+        )
+    elif args.workflow_command == "suggest":
+        print_json(suggest_workflows(paths.logs, min_count=args.min_count))
+    elif args.workflow_command == "apply":
+        print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs, approve=args.approve))
+    return 0
 
-        if args.command == "auth":
-            if args.auth_command == "status":
-                print_json([status.to_dict() for status in auth_status()])
-            elif args.auth_command == "login":
-                exit_code = run_external_login(args.backend)
-                return exit_code
-            return 0
 
-        if args.command == "calendar":
-            paths = get_paths(args.home)
-            if args.calendar_command == "status":
-                client = load_client_config(paths.secrets)
-                tokens = load_tokens(paths.secrets)
-                payload = {
-                    "client_config_present": client is not None,
-                    "client_config_path": str(client_config_path(paths.secrets)),
-                    "tokens_present": tokens is not None,
-                    "tokens_path": str(tokens_path(paths.secrets)),
-                    "token_expired": tokens.is_expired() if tokens else None,
-                    "scope": tokens.scope if tokens else None,
-                    "expires_at": tokens.expires_at if tokens else None,
+def _cmd_plan(args: argparse.Namespace) -> int:
+    result = plan_runtime(get_paths(args.home))
+    if args.json_output:
+        print_json(result)
+    else:
+        print(f"Plan: {result['status']}")
+        for change in result["changes"]:
+            approval = f" requires {change['requires_approval']}" if change.get("requires_approval") else ""
+            print(f"- {change['change']} {change['path']}{approval}")
+    return 0
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    print_json(apply_runtime(get_paths(args.home), approve=args.approve))
+    return 0
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
+    result = validate_runtime_configs(get_paths(args.home))
+    if args.json_output:
+        print_json(result)
+    else:
+        for kind, values in result.items():
+            print(f"{kind}: {', '.join(values) if values else 'none'}")
+    return 0
+
+
+def _cmd_capabilities(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    registry = CapabilityRegistry.load(
+        user_capabilities=paths.capabilities,
+        project_capabilities=project_capabilities_dir(
+            resolve_project_root(args.project)
+        ),
+        approvals_dir=paths.policies,
+    )
+    if args.capabilities_command == "list":
+        print_json(registry.to_index())
+    elif args.capabilities_command == "pending":
+        print_json([cap.to_dict() for cap in registry.list_pending()])
+    elif args.capabilities_command == "inspect":
+        capability = registry.get(args.name)
+        if capability is None:
+            raise ValueError(f"Capability not found: {args.name}")
+        print_json(capability.to_dict())
+    elif args.capabilities_command == "validate":
+        capability = load_capability_manifest(args.path)
+        report = scan_capability(capability, pack_dir=args.path.parent)
+        print_json(
+            {
+                "status": "valid",
+                "capability": capability.to_dict(),
+                "scan": report.to_dict(),
+            }
+        )
+    elif args.capabilities_command == "approve":
+        capability = load_capability_manifest(args.path)
+        report = scan_capability(capability, pack_dir=args.path.parent)
+        if not args.confirm:
+            print_json(
+                {
+                    "status": "needs_approval",
+                    "capability": capability.to_dict(),
+                    "scan": report.to_dict(),
+                    "hint": "Re-run with --approve to record the approval. Review the scan findings first.",
                 }
-                print_json(payload)
-                return 0
-            if args.calendar_command == "login":
-                if load_client_config(paths.secrets) is None:
-                    print(
-                        "No Google OAuth client config found. Run "
-                        "`jigga capabilities install google-calendar` first.",
-                        file=sys.stderr,
-                    )
-                    return 1
-                run_oauth_flow(paths.secrets)
-                print("Login successful. Tokens stored.")
-                return 0
-            if args.calendar_command == "logout":
-                removed = delete_tokens(paths.secrets)
-                print("Tokens removed." if removed else "No tokens to remove.")
-                return 0
-            return 0
-
-        if args.command == "gog":
-            paths = get_paths(args.home)
-            if args.gog_command == "status":
-                print_json(gog_auth_status(paths.secrets))
-                return 0
-            if args.gog_command == "login":
-                services = args.services or ",".join(DEFAULT_SERVICES)
-                exit_code = run_gog_interactive(
-                    paths.secrets, ["auth", "add", args.email, "--services", services]
-                )
-                if exit_code == 0:
-                    print("gog login complete.")
-                else:
-                    print(f"gog login failed (exit {exit_code}).", file=sys.stderr)
-                return exit_code
-            if args.gog_command == "logout":
-                pw_path = keyring_password_path(paths.secrets)
-                if pw_path.exists():
-                    pw_path.unlink()
-                    print(
-                        "Removed JIGGA's stored gog keyring password. "
-                        "This does NOT revoke Google access — run `gog auth remove` "
-                        "or revoke in your Google account to fully disconnect."
-                    )
-                else:
-                    print("No stored gog keyring password to remove.")
-                return 0
-            return 0
-
-        if args.command == "telegram":
-            paths = get_paths(args.home)
-            if args.telegram_command == "status":
-                token = telegram_load_bot_token(paths.secrets)
-                print_json(
-                    {
-                        "token_present": token is not None,
-                        "token_path": str(telegram_bot_token_path(paths.secrets)),
-                        "allowed_chat_ids": sorted(telegram_allowed_chat_ids(paths.home)),
-                        "offset": telegram_load_offset(paths.home),
-                    }
-                )
-                return 0
-            if args.telegram_command == "discover":
-                result = telegram_poll_messages(paths.home, discover=True)
-                print_json(result)
-                return 0
-            if args.telegram_command == "logout":
-                token_path = telegram_bot_token_path(paths.secrets)
-                if token_path.exists():
-                    token_path.unlink()
-                    print("Removed stored Telegram bot token.")
-                else:
-                    print("No stored Telegram bot token to remove.")
-                return 0
-            return 0
-
-        if args.command == "channels":
-            paths = get_paths(args.home)
-            if args.channels_command == "status":
-                print_json(
-                    [{"channel": name, "config": cfg} for name, cfg in enabled_channels(paths.home)]
-                )
-                return 0
-            if args.channels_command == "setup":
-                _channels_setup(paths)
-                return 0
-            if args.channels_command == "listen":
-                result = channel_listen(
-                    paths.home,
-                    paths.logs,
-                    paths.tasks,
-                    paths.agents,
-                    long_poll_seconds=args.long_poll_seconds,
-                    max_cycles=args.max_cycles,
-                    process_agents=not args.no_process,
-                )
-                print_json(
-                    {
-                        "status": result["status"],
-                        "cycles": result["cycles"],
-                        "stopped_by_signal": result["stopped_by_signal"],
-                    }
-                )
-                return 0
-            return 0
-
-        if args.command == "approvals":
-            paths = get_paths(args.home)
-            if args.approvals_command == "list":
-                pend = pending_approvals(paths.approvals)
-                if args.json_output:
-                    print_json(pend)
-                elif not pend:
-                    print("No pending approvals.")
-                else:
-                    for a in pend:
-                        print(f"{a['code']}  {a['action']:24} agent={a['agent_id']} task={a['task_id']} "
-                              f"reason={a.get('reason') or ''}")
-                return 0
-            approved = args.approvals_command == "approve"
-            record = resolve_and_requeue(paths.approvals, paths.tasks, args.code, approved=approved)
-            if record is None:
-                print(f"No pending approval with code {args.code!r}.")
-                return 1
-            print(f"{'Approved' if approved else 'Denied'} {args.code}."
-                  + (" Task re-queued — the agent will retry the action." if approved else ""))
-            return 0
-
-        if args.command == "logs":
-            paths = get_paths(args.home)
-            if args.logs_command == "tail":
-                events = tail_events(paths.logs, args.count)
-                if args.json_output:
-                    print_json(events)
-                else:
-                    for event in events:
-                        print(format_event(event))
-            elif args.logs_command == "rotate":
-                result = rotate_logs(paths.home, paths.logs)
-                if args.json_output:
-                    print_json(result)
-                elif result["rotated"] or result["pruned"]:
-                    print(f"rotated: {result['rotated'] or '(none)'}; pruned: {', '.join(result['pruned']) or '(none)'}")
-                else:
-                    print("Nothing to rotate.")
-            return 0
-
-        if args.command == "audit":
-            paths = get_paths(args.home)
-            events = query_events(
-                paths.logs,
-                agent=args.agent,
-                type_filter=args.type_filter,
-                since=args.since,
-                status=args.status,
-                limit=args.count,
             )
+            return 0
+        entry = record_approval(paths.policies, capability)
+        print_json(
+            {
+                "status": "approved",
+                "capability": capability.name,
+                "approval": entry,
+                "scan": report.to_dict(),
+            }
+        )
+    elif args.capabilities_command == "install":
+        return install_capability(paths, name=args.name)
+    elif args.capabilities_command == "uninstall":
+        return uninstall_capability(paths, name=args.name)
+    elif args.capabilities_command == "list-available":
+        return list_available_capabilities()
+    return 0
+
+
+def _cmd_auth(args: argparse.Namespace) -> int:
+    if args.auth_command == "status":
+        print_json([status.to_dict() for status in auth_status()])
+    elif args.auth_command == "login":
+        exit_code = run_external_login(args.backend)
+        return exit_code
+    return 0
+
+
+def _cmd_calendar(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.calendar_command == "status":
+        client = load_client_config(paths.secrets)
+        tokens = load_tokens(paths.secrets)
+        payload = {
+            "client_config_present": client is not None,
+            "client_config_path": str(client_config_path(paths.secrets)),
+            "tokens_present": tokens is not None,
+            "tokens_path": str(tokens_path(paths.secrets)),
+            "token_expired": tokens.is_expired() if tokens else None,
+            "scope": tokens.scope if tokens else None,
+            "expires_at": tokens.expires_at if tokens else None,
+        }
+        print_json(payload)
+        return 0
+    if args.calendar_command == "login":
+        if load_client_config(paths.secrets) is None:
+            print(
+                "No Google OAuth client config found. Run "
+                "`jigga capabilities install google-calendar` first.",
+                file=sys.stderr,
+            )
+            return 1
+        run_oauth_flow(paths.secrets)
+        print("Login successful. Tokens stored.")
+        return 0
+    if args.calendar_command == "logout":
+        removed = delete_tokens(paths.secrets)
+        print("Tokens removed." if removed else "No tokens to remove.")
+        return 0
+    return 0
+
+
+def _cmd_gog(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.gog_command == "status":
+        print_json(gog_auth_status(paths.secrets))
+        return 0
+    if args.gog_command == "login":
+        services = args.services or ",".join(DEFAULT_SERVICES)
+        exit_code = run_gog_interactive(
+            paths.secrets, ["auth", "add", args.email, "--services", services]
+        )
+        if exit_code == 0:
+            print("gog login complete.")
+        else:
+            print(f"gog login failed (exit {exit_code}).", file=sys.stderr)
+        return exit_code
+    if args.gog_command == "logout":
+        pw_path = keyring_password_path(paths.secrets)
+        if pw_path.exists():
+            pw_path.unlink()
+            print(
+                "Removed JIGGA's stored gog keyring password. "
+                "This does NOT revoke Google access — run `gog auth remove` "
+                "or revoke in your Google account to fully disconnect."
+            )
+        else:
+            print("No stored gog keyring password to remove.")
+        return 0
+    return 0
+
+
+def _cmd_telegram(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.telegram_command == "status":
+        token = telegram_load_bot_token(paths.secrets)
+        print_json(
+            {
+                "token_present": token is not None,
+                "token_path": str(telegram_bot_token_path(paths.secrets)),
+                "allowed_chat_ids": sorted(telegram_allowed_chat_ids(paths.home)),
+                "offset": telegram_load_offset(paths.home),
+            }
+        )
+        return 0
+    if args.telegram_command == "discover":
+        result = telegram_poll_messages(paths.home, discover=True)
+        print_json(result)
+        return 0
+    if args.telegram_command == "logout":
+        token_path = telegram_bot_token_path(paths.secrets)
+        if token_path.exists():
+            token_path.unlink()
+            print("Removed stored Telegram bot token.")
+        else:
+            print("No stored Telegram bot token to remove.")
+        return 0
+    return 0
+
+
+def _cmd_channels(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.channels_command == "status":
+        print_json(
+            [{"channel": name, "config": cfg} for name, cfg in enabled_channels(paths.home)]
+        )
+        return 0
+    if args.channels_command == "setup":
+        _channels_setup(paths)
+        return 0
+    if args.channels_command == "listen":
+        result = channel_listen(
+            paths.home,
+            paths.logs,
+            paths.tasks,
+            paths.agents,
+            long_poll_seconds=args.long_poll_seconds,
+            max_cycles=args.max_cycles,
+            process_agents=not args.no_process,
+        )
+        print_json(
+            {
+                "status": result["status"],
+                "cycles": result["cycles"],
+                "stopped_by_signal": result["stopped_by_signal"],
+            }
+        )
+        return 0
+    return 0
+
+
+def _cmd_approvals(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.approvals_command == "list":
+        pend = pending_approvals(paths.approvals)
+        if args.json_output:
+            print_json(pend)
+        elif not pend:
+            print("No pending approvals.")
+        else:
+            for a in pend:
+                print(f"{a['code']}  {a['action']:24} agent={a['agent_id']} task={a['task_id']} "
+                      f"reason={a.get('reason') or ''}")
+        return 0
+    approved = args.approvals_command == "approve"
+    record = resolve_and_requeue(paths.approvals, paths.tasks, args.code, approved=approved)
+    if record is None:
+        print(f"No pending approval with code {args.code!r}.")
+        return 1
+    print(f"{'Approved' if approved else 'Denied'} {args.code}."
+          + (" Task re-queued — the agent will retry the action." if approved else ""))
+    return 0
+
+
+def _cmd_logs(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.logs_command == "tail":
+        events = tail_events(paths.logs, args.count)
+        if args.json_output:
+            print_json(events)
+        else:
+            for event in events:
+                print(format_event(event))
+    elif args.logs_command == "rotate":
+        result = rotate_logs(paths.home, paths.logs)
+        if args.json_output:
+            print_json(result)
+        elif result["rotated"] or result["pruned"]:
+            print(f"rotated: {result['rotated'] or '(none)'}; pruned: {', '.join(result['pruned']) or '(none)'}")
+        else:
+            print("Nothing to rotate.")
+    return 0
+
+
+def _cmd_audit(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    events = query_events(
+        paths.logs,
+        agent=args.agent,
+        type_filter=args.type_filter,
+        since=args.since,
+        status=args.status,
+        limit=args.count,
+    )
+    if args.json_output:
+        print_json(events)
+    else:
+        for event in events:
+            print(format_event(event))
+    return 0
+
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    events = trace_events(paths.logs, args.identifier)
+    if args.json_output:
+        print_json(events)
+    else:
+        for event in events:
+            print(format_event(event))
+    return 0
+
+
+def _cmd_cost(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    summary = cost_summary(paths.logs, since=args.since)
+    rows = summary["agents"]
+    if args.agent:
+        rows = [row for row in rows if row["agent"] == args.agent]
+    budgets = {}
+    for row in rows:
+        status = budget_status(paths.home, paths.logs, row["agent"])
+        if status is not None:
+            budgets[row["agent"]] = status
+    if args.json_output:
+        print_json({"agents": rows, "total": summary["total"], "budgets": budgets})
+    else:
+        _print_cost(rows, summary["total"], budgets)
+    return 0
+
+
+def _cmd_sessions(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.sessions_command == "list":
+        sessions = [session.to_dict() for session in list_sessions(paths.sessions)]
+        if args.json_output:
+            print_json(sessions)
+        else:
+            for session in sessions:
+                print(f"{session['id']}\t{session['status']}\t{session['backend']}\t{session['parent_agent_id']}\t{session['work_order'].get('goal')}")
+    elif args.sessions_command == "inspect":
+        print_json(read_session(paths.sessions, args.session_id).to_dict())
+    elif args.sessions_command == "cancel":
+        print_json(cancel_session(paths.sessions, args.session_id).to_dict())
+    return 0
+
+
+def _cmd_scheduler(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.scheduler_command == "due":
+        at = datetime.fromisoformat(args.at) if args.at else None
+        print_json(serialize_events(due_events(paths.agents, paths.workflows, now=at)))
+    return 0
+
+
+def _cmd_team(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.team_command == "run":
+        print_json(run_team(paths, args.team_id))
+        return 0
+    if args.team_command == "handoff":
+        created = fire_handoffs(
+            paths.home, paths.logs, paths.tasks, paths.teams,
+            team_id=args.team_id, from_member=args.from_member,
+            signal=args.signal, evidence=args.evidence,
+        )
+        if args.json_output:
+            print_json(created)
+        elif not created:
+            print(f"No handoffs fired from {args.from_member!r} in team {args.team_id!r}.")
+        else:
+            for task in created:
+                print(f"→ {task['assignee']}  (task {task['id']})  {task['title']}")
+        return 0
+    if args.team_command == "decisions":
+        log = read_decision_log(paths.home, args.team_id)
+        if args.json_output:
+            print_json(log)
+        elif not log:
+            print(f"No handoffs recorded for team {args.team_id!r}.")
+        else:
+            for entry in log:
+                when = f" on '{entry['when']}'" if entry.get("when") else ""
+                print(f"{entry['time'][:19]}  {entry['from']} → {entry['to']}{when}  (task {entry['task_id']})")
+        return 0
+    if args.team_command == "init":
+        teams = load_teams(paths.teams)
+        team = teams.get(args.team_id)
+        if team is None:
+            raise ValueError(f"Team not found: {args.team_id}")
+        summary = scaffold_workspace(paths.home, team)
+        if args.json_output:
+            print_json(summary)
+        else:
+            print(f"Workspace: {summary['workspace']}")
+            print(f"Lead/curator: {summary['lead']}")
+            print(f"Members: {', '.join(summary['members']) or '(none)'}")
+            print(f"Created: {', '.join(summary['created']) or '(already scaffolded)'}")
+        return 0
+    if args.team_command == "workspace":
+        root = workspace_dir(paths.home, args.team_id)
+        if not root.exists():
+            print(f"No workspace for {args.team_id!r}. Run: jigga team init {args.team_id}")
+            return 1
+        print(str(root))
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                print(f"  {path.relative_to(root)}")
+        return 0
+    if args.team_command == "recipes":
+        recipes = list_recipes(paths.home)
+        if args.json_output:
+            print_json(recipes)
+        elif not recipes:
+            print("No recipes found.")
+        else:
+            for r in recipes:
+                print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
+        return 0
+    if args.team_command == "scaffold":
+        recipe_path = find_recipe(paths.home, args.recipe)
+        if recipe_path is None:
+            print(f"Recipe not found: {args.recipe!r}. List options with: jigga team recipes")
+            return 1
+        recipe = load_recipe(recipe_path)
+        if recipe.kind == "agent":
+            summary = scaffold_agent(paths.home, recipe, agent_id=args.team_id,
+                                     overwrite=args.overwrite, agents_dir=paths.agents)
             if args.json_output:
-                print_json(events)
+                print_json(summary)
             else:
-                for event in events:
-                    print(format_event(event))
+                print(f"Scaffolded agent {summary['agent_id']!r}"
+                      + ("" if summary["written"] else "  (exists, skipped)")
+                      + ("  [scheduled]" if summary["scheduled"] else ""))
+                if summary.get("files_written"):
+                    print(f"  files:     {', '.join(summary['files_written'])}")
             return 0
+        summary = scaffold_team(paths.home, recipe, team_id=args.team_id,
+                                overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
+        if args.json_output:
+            print_json(summary)
+        else:
+            print(f"Scaffolded team {summary['team_id']!r} (lead: {summary['lead']})")
+            print(f"  team:      {summary['team_file']}{'' if summary['team_written'] else '  (exists, skipped)'}")
+            print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
+                  + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
+            print(f"  workspace: {summary['workspace']}")
+            if summary.get("files_written"):
+                print(f"  files:     {', '.join(summary['files_written'])}")
+            print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
+        return 0
+    return 0
 
-        if args.command == "trace":
-            paths = get_paths(args.home)
-            events = trace_events(paths.logs, args.identifier)
-            if args.json_output:
-                print_json(events)
-            else:
-                for event in events:
-                    print(format_event(event))
-            return 0
 
-        if args.command == "cost":
-            paths = get_paths(args.home)
-            summary = cost_summary(paths.logs, since=args.since)
-            rows = summary["agents"]
-            if args.agent:
-                rows = [row for row in rows if row["agent"] == args.agent]
-            budgets = {}
-            for row in rows:
-                status = budget_status(paths.home, paths.logs, row["agent"])
-                if status is not None:
-                    budgets[row["agent"]] = status
-            if args.json_output:
-                print_json({"agents": rows, "total": summary["total"], "budgets": budgets})
-            else:
-                _print_cost(rows, summary["total"], budgets)
-            return 0
+def _cmd_model(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.model_command == "test":
+        agents = load_agents(paths.agents)
+        agent = agents.get(args.agent_id)
+        if agent is None:
+            raise ValueError(f"Agent not found: {args.agent_id}")
+        task = {"id": "model_test", "title": "Model test", "description": args.prompt}
+        request = build_task_model_request(agent, task, dry_run=args.dry_run)
+        print_json(call_model(paths.home, paths.logs, request).to_dict())
+    elif args.model_command == "login":
+        from jigga.runtime.chatgpt_login import browser_login, device_login
+        result = device_login(paths.home) if args.device_code else browser_login(paths.home)
+        print(f"\n✓ Logged in to ChatGPT subscription (account {result.get('account_id') or 'unknown'}).")
+        print("  Set it as your provider with: jigga model use chatgpt")
+    elif args.model_command == "status":
+        from jigga.runtime.chatgpt_auth import login_state
+        config = load_model_config(paths.home)
+        print_json({
+            "default_provider": (config.get("defaults") or {}).get("provider"),
+            "providers": sorted((config.get("providers") or {}).keys()),
+            "chatgpt_login": login_state(paths.home),
+        })
+    elif args.model_command == "use":
+        _set_model_provider(paths, args.provider, args.model)
+        print(f"Default model provider set to {args.provider!r}.")
+        if args.provider == "chatgpt":
+            print("If not logged in yet: jigga model login  (or --device-code)")
+    elif args.model_command == "setup":
+        _model_setup(paths)
+    return 0
 
-        if args.command == "sessions":
-            paths = get_paths(args.home)
-            if args.sessions_command == "list":
-                sessions = [session.to_dict() for session in list_sessions(paths.sessions)]
-                if args.json_output:
-                    print_json(sessions)
-                else:
-                    for session in sessions:
-                        print(f"{session['id']}\t{session['status']}\t{session['backend']}\t{session['parent_agent_id']}\t{session['work_order'].get('goal')}")
-            elif args.sessions_command == "inspect":
-                print_json(read_session(paths.sessions, args.session_id).to_dict())
-            elif args.sessions_command == "cancel":
-                print_json(cancel_session(paths.sessions, args.session_id).to_dict())
-            return 0
 
-        if args.command == "scheduler":
-            paths = get_paths(args.home)
-            if args.scheduler_command == "due":
-                at = datetime.fromisoformat(args.at) if args.at else None
-                print_json(serialize_events(due_events(paths.agents, paths.workflows, now=at)))
-            return 0
+def _cmd_run(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id, dry_run_model=args.dry_run_model))
+    return 0
 
-        if args.command == "team":
-            paths = get_paths(args.home)
-            if args.team_command == "run":
-                print_json(run_team(paths.home, paths.logs, paths.tasks, paths.teams, paths.workflows, paths.agents, paths.memory, args.team_id))
-                return 0
-            if args.team_command == "init":
-                teams = load_teams(paths.teams)
-                team = teams.get(args.team_id)
-                if team is None:
-                    raise ValueError(f"Team not found: {args.team_id}")
-                summary = scaffold_workspace(paths.home, team)
-                if args.json_output:
-                    print_json(summary)
-                else:
-                    print(f"Workspace: {summary['workspace']}")
-                    print(f"Lead/curator: {summary['lead']}")
-                    print(f"Members: {', '.join(summary['members']) or '(none)'}")
-                    print(f"Created: {', '.join(summary['created']) or '(already scaffolded)'}")
-                return 0
-            if args.team_command == "workspace":
-                root = workspace_dir(paths.home, args.team_id)
-                if not root.exists():
-                    print(f"No workspace for {args.team_id!r}. Run: jigga team init {args.team_id}")
-                    return 1
-                print(str(root))
-                for path in sorted(root.rglob("*")):
-                    if path.is_file():
-                        print(f"  {path.relative_to(root)}")
-                return 0
-            if args.team_command == "recipes":
-                recipes = list_recipes(paths.home)
-                if args.json_output:
-                    print_json(recipes)
-                elif not recipes:
-                    print("No recipes found.")
-                else:
-                    for r in recipes:
-                        print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
-                return 0
-            if args.team_command == "scaffold":
-                recipe_path = find_recipe(paths.home, args.recipe)
-                if recipe_path is None:
-                    print(f"Recipe not found: {args.recipe!r}. List options with: jigga team recipes")
-                    return 1
-                recipe = load_recipe(recipe_path)
-                if recipe.kind == "agent":
-                    summary = scaffold_agent(paths.home, recipe, agent_id=args.team_id,
-                                             overwrite=args.overwrite, agents_dir=paths.agents)
-                    if args.json_output:
-                        print_json(summary)
-                    else:
-                        print(f"Scaffolded agent {summary['agent_id']!r}"
-                              + ("" if summary["written"] else "  (exists, skipped)")
-                              + ("  [scheduled]" if summary["scheduled"] else ""))
-                        if summary.get("files_written"):
-                            print(f"  files:     {', '.join(summary['files_written'])}")
-                    return 0
-                summary = scaffold_team(paths.home, recipe, team_id=args.team_id,
-                                        overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
-                if args.json_output:
-                    print_json(summary)
-                else:
-                    print(f"Scaffolded team {summary['team_id']!r} (lead: {summary['lead']})")
-                    print(f"  team:      {summary['team_file']}{'' if summary['team_written'] else '  (exists, skipped)'}")
-                    print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
-                          + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
-                    print(f"  workspace: {summary['workspace']}")
-                    if summary.get("files_written"):
-                        print(f"  files:     {', '.join(summary['files_written'])}")
-                    print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
-                return 0
-            return 0
 
-        if args.command == "model":
-            paths = get_paths(args.home)
-            if args.model_command == "test":
-                agents = load_agents(paths.agents)
-                agent = agents.get(args.agent_id)
-                if agent is None:
-                    raise ValueError(f"Agent not found: {args.agent_id}")
-                task = {"id": "model_test", "title": "Model test", "description": args.prompt}
-                request = build_task_model_request(agent, task, dry_run=args.dry_run)
-                print_json(call_model(paths.home, paths.logs, request).to_dict())
-            elif args.model_command == "login":
-                from jigga.runtime.chatgpt_login import browser_login, device_login
-                result = device_login(paths.home) if args.device_code else browser_login(paths.home)
-                print(f"\n✓ Logged in to ChatGPT subscription (account {result.get('account_id') or 'unknown'}).")
-                print("  Set it as your provider with: jigga model use chatgpt")
-            elif args.model_command == "status":
-                from jigga.runtime.chatgpt_auth import login_state
-                config = load_model_config(paths.home)
-                print_json({
-                    "default_provider": (config.get("defaults") or {}).get("provider"),
-                    "providers": sorted((config.get("providers") or {}).keys()),
-                    "chatgpt_login": login_state(paths.home),
-                })
-            elif args.model_command == "use":
-                _set_model_provider(paths, args.provider, args.model)
-                print(f"Default model provider set to {args.provider!r}.")
-                if args.provider == "chatgpt":
-                    print("If not logged in yet: jigga model login  (or --device-code)")
-            elif args.model_command == "setup":
-                _model_setup(paths)
-            return 0
+def _cmd_supervisor(args: argparse.Namespace) -> int:
+    if args.supervisor_command == "tick":
+        print_json(supervisor_tick(args.home))
+    elif args.supervisor_command == "start":
+        paths = get_paths(args.home)
+        record_supervisor_start(paths.logs, args.interval_seconds, args.max_ticks)
+        print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks))
+    return 0
 
-        if args.command == "run":
-            paths = get_paths(args.home)
-            print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id, dry_run_model=args.dry_run_model))
-            return 0
 
-        if args.command == "supervisor":
-            if args.supervisor_command == "tick":
-                print_json(supervisor_tick(args.home))
-            elif args.supervisor_command == "start":
-                paths = get_paths(args.home)
-                record_supervisor_start(paths.logs, args.interval_seconds, args.max_ticks)
-                print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks))
-            return 0
+def _cmd_task(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.task_command == "create":
+        task = create_task(paths.tasks, args.title, args.description, args.assignee, args.workflow_id)
+        print_json(task.to_dict())
+    elif args.task_command == "list":
+        tasks = [task.to_dict() for task in list_tasks(paths.tasks)]
+        if args.json_output:
+            print_json(tasks)
+        else:
+            for task in tasks:
+                print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}\t{task['title']}")
+    elif args.task_command == "set-state":
+        print_json(set_task_state(paths.tasks, args.task_id, args.state).to_dict())
+    return 0
 
-        if args.command == "task":
-            paths = get_paths(args.home)
-            if args.task_command == "create":
-                task = create_task(paths.tasks, args.title, args.description, args.assignee, args.workflow_id)
-                print_json(task.to_dict())
-            elif args.task_command == "list":
-                tasks = [task.to_dict() for task in list_tasks(paths.tasks)]
-                if args.json_output:
-                    print_json(tasks)
-                else:
-                    for task in tasks:
-                        print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}\t{task['title']}")
-            elif args.task_command == "set-state":
-                print_json(set_task_state(paths.tasks, args.task_id, args.state).to_dict())
-            return 0
 
+_COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "init": _cmd_init,
+    "state": _cmd_state,
+    "memory": _cmd_memory,
+    "workflow": _cmd_workflow,
+    "plan": _cmd_plan,
+    "apply": _cmd_apply,
+    "validate": _cmd_validate,
+    "capabilities": _cmd_capabilities,
+    "auth": _cmd_auth,
+    "calendar": _cmd_calendar,
+    "gog": _cmd_gog,
+    "telegram": _cmd_telegram,
+    "channels": _cmd_channels,
+    "approvals": _cmd_approvals,
+    "logs": _cmd_logs,
+    "audit": _cmd_audit,
+    "trace": _cmd_trace,
+    "cost": _cmd_cost,
+    "sessions": _cmd_sessions,
+    "scheduler": _cmd_scheduler,
+    "team": _cmd_team,
+    "model": _cmd_model,
+    "run": _cmd_run,
+    "supervisor": _cmd_supervisor,
+    "task": _cmd_task,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    handler = _COMMANDS.get(args.command)
+    if handler is None:
         parser.print_help()
         return 2
-    except Exception as exc:
+    try:
+        return handler(args)
+    except Exception as exc:  # noqa: BLE001 — top-level CLI error boundary
         print(str(exc), file=sys.stderr)
         return 1
 

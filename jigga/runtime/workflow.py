@@ -6,6 +6,7 @@ from typing import Any
 from jigga.core.config import default_permission_mode, load_agents, load_workflows
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
+from jigga.core.paths import JiggaPaths
 from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
@@ -100,30 +101,23 @@ def plan_workflow(
 
 
 def run_workflow(
-    home: Path,
-    logs_dir: Path,
-    workflows_dir: Path,
-    agents_dir: Path,
-    memory_dir: Path,
+    paths: JiggaPaths,
     workflow_id: str,
     project_capabilities: Path | None = None,
 ) -> dict[str, Any]:
     # Inherits the supervisor trace when scheduled; mints its own on CLI apply.
     with trace_context():
-        return _run_workflow(
-            home, logs_dir, workflows_dir, agents_dir, memory_dir, workflow_id, project_capabilities
-        )
+        return _run_workflow(paths, workflow_id, project_capabilities)
 
 
 def _run_workflow(
-    home: Path,
-    logs_dir: Path,
-    workflows_dir: Path,
-    agents_dir: Path,
-    memory_dir: Path,
+    paths: JiggaPaths,
     workflow_id: str,
     project_capabilities: Path | None = None,
 ) -> dict[str, Any]:
+    home, logs_dir, workflows_dir, agents_dir, memory_dir = (
+        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory,
+    )
     agents = load_agents(agents_dir)
     workflows = load_workflows(workflows_dir)
     registry = CapabilityRegistry.load(

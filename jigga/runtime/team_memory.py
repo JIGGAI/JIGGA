@@ -13,11 +13,10 @@ indexes it so it's retrievable. Mirrors the ClawRecipes layered memory model.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from jigga.core.io import ensure_dir
+from jigga.core.io import append_jsonl, ensure_dir, read_jsonl
 from jigga.core.models import now_iso
 from jigga.runtime.audit import new_id
 from jigga.runtime.workspaces import workspace_dir
@@ -35,26 +34,6 @@ def role_memory_path(home: Path, team_id: str, member: str) -> Path:
     return workspace_dir(home, team_id) / "roles" / member / "MEMORY.md"
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return entries
-
-
-def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
-    ensure_dir(path.parent)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, default=str) + "\n")
-
-
 def append_team_memory(
     home: Path, team_id: str, *, text: str, type: str = "fact",
     tags: list[str] | None = None, source: dict[str, Any] | None = None,
@@ -62,16 +41,16 @@ def append_team_memory(
     """Append a durable knowledge entry to the team's `team.jsonl`."""
     entry = {"id": new_id("mem"), "time": now_iso(), "type": type, "text": text,
              "tags": list(tags or []), "source": source or {}}
-    _append_jsonl(team_memory_path(home, team_id), entry)
+    append_jsonl(team_memory_path(home, team_id), entry)
     return entry
 
 
 def read_team_memory(home: Path, team_id: str) -> list[dict[str, Any]]:
-    return _read_jsonl(team_memory_path(home, team_id))
+    return read_jsonl(team_memory_path(home, team_id))
 
 
 def read_pinned(home: Path, team_id: str) -> list[dict[str, Any]]:
-    return _read_jsonl(pinned_path(home, team_id))
+    return read_jsonl(pinned_path(home, team_id))
 
 
 def pin_entry(home: Path, team_id: str, entry_id: str) -> dict[str, Any] | None:
@@ -80,7 +59,7 @@ def pin_entry(home: Path, team_id: str, entry_id: str) -> dict[str, Any] | None:
     for entry in read_team_memory(home, team_id):
         eid = str(entry.get("id", ""))
         if eid == entry_id or eid.startswith(entry_id):
-            _append_jsonl(pinned_path(home, team_id), {**entry, "pinned_at": now_iso()})
+            append_jsonl(pinned_path(home, team_id), {**entry, "pinned_at": now_iso()})
             return entry
     return None
 

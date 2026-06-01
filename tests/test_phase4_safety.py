@@ -36,7 +36,7 @@ def test_workflow_required_approval_returns_needs_approval(tmp_path: Path) -> No
     plan = plan_workflow(workflow, load_agents(paths.agents))
     assert plan["can_run"] is False
     assert any(step["policy"]["status"] == "needs_approval" for step in plan["steps"])
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "social_content_syndication")
+    result = run_workflow(paths, "social_content_syndication")
     assert result["status"] == "needs_approval"
 
 

@@ -9,7 +9,7 @@ from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents
 from jigga.core.io import write_yaml
 from jigga.core.models import WorkflowStep
-from jigga.runtime import dispatcher
+from jigga.runtime import handlers
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.dispatcher import RuntimeContext, _draft_prompt, _draft_with_model_handler
 from jigga.runtime.model_router import ModelCallResult
@@ -74,7 +74,7 @@ def test_handler_returns_model_text(tmp_path: Path) -> None:
     agent = load_agents(paths.agents)["writer"]
     runtime = RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs, sessions_dir=paths.home / "sessions")
     step = WorkflowStep(id="s1", action="draft_with_model", input="Write a tagline")
-    with patch.object(dispatcher, "call_model", lambda h, lg, r: _result("A bold tagline.")):
+    with patch.object(handlers, "call_model", lambda h, lg, r: _result("A bold tagline.")):
         out = _draft_with_model_handler(step, None, "Write a tagline", {}, runtime)
     assert out == "A bold tagline."
 
@@ -85,7 +85,7 @@ def test_handler_raises_on_model_error(tmp_path: Path) -> None:
     agent = load_agents(paths.agents)["writer"]
     runtime = RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs, sessions_dir=paths.home / "sessions")
     step = WorkflowStep(id="s1", action="draft_with_model", input="x")
-    with patch.object(dispatcher, "call_model", lambda h, lg, r: _result("", status="error", error="boom")):
+    with patch.object(handlers, "call_model", lambda h, lg, r: _result("", status="error", error="boom")):
         with pytest.raises(RuntimeError, match="boom"):
             _draft_with_model_handler(step, None, "x", {}, runtime)
 
@@ -105,8 +105,8 @@ def test_workflow_chains_model_backed_steps(tmp_path: Path) -> None:
              "input": {"prompt": "Polish it", "draft": "tagline.md"}, "output": "final.md", "approval": "not_required"},
         ],
     })
-    with patch.object(dispatcher, "call_model", _echo_user):
-        result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "two_step")
+    with patch.object(handlers, "call_model", _echo_user):
+        result = run_workflow(paths, "two_step")
 
     assert result["status"] == "completed"
     run_dir = Path(result["run_dir"])

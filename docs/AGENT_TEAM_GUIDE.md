@@ -92,6 +92,9 @@ agents:
   - {id: acme-editor, role: review, required: true}
 routing:
   default_assignee: acme-lead     # the lead / workspace curator
+  handoffs:                       # who picks up after whom (see §4)
+    - {from: acme-lead,       to: acme-copywriter, when: brief_ready}
+    - {from: acme-copywriter, to: acme-editor,     when: draft_ready}
 ```
 
 ### Capabilities (what `tools:` references)
@@ -146,6 +149,26 @@ files, not direct messages.
 - **The team collaborating:** a workflow chains steps across members (e.g. the
   `team_launch` workflow: lead → copywriter → editor, each a real model call
   wired by named outputs), or the lead delegates.
+
+### Handoffs (member → member, file-first)
+`routing.handoffs` makes the team self-advancing. When a `from` member
+**completes its team task**, JIGGA creates the next task for each `to` member —
+completion is the signal, so every outgoing handoff from that member fires. The
+supervisor's normal tick then runs the next member, and the chain continues.
+
+Every handoff is recorded in an auditable file —
+`workspaces/<team>/shared-context/handoffs.jsonl` (who, to whom, `when`, the new
+task id, optional evidence) — and emitted as a `team.handoff.fired` audit event.
+No ephemeral message bus; coordination is files you can read.
+
+A hop counter on each handoff task caps the chain at `teams.handoff_max_hops`
+(default 25) so a cyclic routing graph can't loop forever (refusals log as
+`team.handoff.blocked`).
+
+```bash
+jigga team handoff acme --from acme-lead --signal brief_ready   # fire manually
+jigga team decisions acme                                       # read the log
+```
 
 ### Approvals (human-in-the-loop)
 A medium/high-risk action by a non-`autonomous` agent **pauses** for approval:
@@ -266,6 +289,7 @@ jigga approvals list         # anything waiting on you
 | Model | `jigga model setup`, `jigga model use <provider>`, `jigga model login [--device-code]`, `jigga model status` |
 | Channels | `jigga channels setup`, `jigga channels status`, `jigga channels listen` |
 | Run | `jigga supervisor run`, `jigga team run <id>`, `jigga workflow run <id>`, `jigga run agent <id>` |
+| Coordination | `jigga team handoff <id> --from <member> [--signal S]`, `jigga team decisions <id>` |
 | Human-in-the-loop | `jigga approvals list`, `jigga approvals approve <code>`, `jigga approvals deny <code>` |
 | Observability | `jigga trace <id>`, `jigga cost [--since 7d]`, `jigga logs tail`, `jigga audit [--agent X --type T --since 24h]` |
 | Capabilities | `jigga capabilities list`, `jigga capabilities install <name>` |

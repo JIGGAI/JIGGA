@@ -30,6 +30,35 @@ def write_json(path: Path, value: Any) -> None:
     _atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Read a JSONL file into a list of dicts. Missing file → []. Blank lines
+    and lines that don't parse are skipped (tolerant of partial/corrupt tails)."""
+    if not path.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def append_jsonl(path: Path, entry: dict[str, Any]) -> None:
+    """Append one record as a JSON line, creating parent dirs as needed."""
+    ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, default=str) + "\n")
+
+
+def rewrite_jsonl(path: Path, entries: list[dict[str, Any]]) -> None:
+    """Atomically replace a JSONL file with `entries` (one record per line)."""
+    _atomic_write_text(path, "".join(json.dumps(e, default=str) + "\n" for e in entries))
+
+
 def read_yaml(path: Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 

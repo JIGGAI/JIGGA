@@ -67,7 +67,7 @@ def test_memory_context_does_not_leak_runtime_plumbing(tmp_path: Path) -> None:
     # runtime split, no runtime key should appear in the memory_context that
     # handlers receive.
     paths = init_runtime(tmp_path, examples=True)
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    result = run_workflow(paths, "morning_day_summary")
     assert result["status"] == "completed"
     summary_step = result["outputs"]["summarize"]
     leaked_keys = {"home", "logs_dir", "sessions_dir", "agent"}
@@ -76,7 +76,7 @@ def test_memory_context_does_not_leak_runtime_plumbing(tmp_path: Path) -> None:
 
 def test_workflow_run_dispatches_through_capabilities(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    result = run_workflow(paths, "morning_day_summary")
     assert result["status"] == "completed"
     assert result["outputs"]["read_calendar"][0]["source"] == "capability.dry_run"
     logs = "\n".join(item.read_text(encoding="utf-8") for item in paths.logs.glob("*.jsonl"))
@@ -94,7 +94,7 @@ def test_unknown_workflow_action_blocks_cleanly(tmp_path: Path) -> None:
             "steps": [{"id": "do_it", "agent": "daily_briefing_agent", "action": "missing.action"}],
         },
     )
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "unknown")
+    result = run_workflow(paths, "unknown")
     assert result["status"] == "blocked"
     assert result["plan"]["steps"][0]["policy"]["permission"] == "capability.available"
 
@@ -216,7 +216,7 @@ def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> N
     # registry will dispatch through it.
     record_approval(paths.policies, load_capability_manifest(cap_dir / "manifest.yaml"))
     result = run_workflow(
-        paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "custom"
+        paths, "custom"
     )
     assert result["status"] == "completed"
     assert result["outputs"]["run_custom"]["marker"] == "custom_handler_was_called"

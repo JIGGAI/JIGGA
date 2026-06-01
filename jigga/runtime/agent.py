@@ -25,6 +25,7 @@ from jigga.runtime.model_router import (
     resolve_agent_model_profile,
 )
 from jigga.runtime.policy import NON_EXECUTING_MODES, resolve_permission_mode
+from jigga.runtime.handoffs import fire_handoffs
 from jigga.runtime.tasks import set_task_state, tasks_for_agent
 from jigga.runtime.workspaces import (
     append_agent_output,
@@ -290,6 +291,21 @@ def _run_task_loop(
 # --- run_agent -------------------------------------------------------------
 
 
+def _maybe_fire_handoffs(home: Path, logs_dir: Path, tasks_dir: Path, task: Any, agent_id: str) -> None:
+    """When a completed task belongs to a team, execute the team's handoffs from
+    this member (file-first). Completion is the signal, so every outgoing handoff
+    fires; the hop counter on the task caps the chain."""
+    meta = task.metadata or {}
+    team_id = meta.get("team_id")
+    if not team_id:
+        return
+    fire_handoffs(
+        home, logs_dir, tasks_dir, home / "teams",
+        team_id=team_id, from_member=agent_id,
+        hops=int(meta.get("handoff_hops") or 0),
+    )
+
+
 def run_agent(
     home: Path,
     logs_dir: Path,
@@ -392,6 +408,8 @@ def _run_agent(
             if final_text:
                 append_agent_output(home, ws_team_id, agent_id, f"**{task.title}**\n\n{final_text}")
                 append_status(home, ws_team_id, f"{agent_id}: completed “{task.title}”")
+            # Execute any team handoffs this completion triggers (file-first).
+            _maybe_fire_handoffs(home, logs_dir, tasks_dir, task, agent_id)
         elif loop["state"] == "needs_approval":
             append_event(logs_dir, "task.needs_approval", status="ask", agent=agent_id, task_id=task.id,
                          run_id=run_id, reason=(loop["halted"] or {}).get("reason"))

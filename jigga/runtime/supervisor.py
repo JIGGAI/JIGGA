@@ -22,7 +22,7 @@ from jigga.runtime.loop_guard import (
 )
 from jigga.runtime.state import read_state, write_state
 from jigga.runtime.scheduler import due_events
-from jigga.runtime.tasks import create_task, list_tasks
+from jigga.runtime.tasks import create_task, pending_summary
 from jigga.runtime.workflow import run_workflow
 
 
@@ -75,7 +75,7 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     _poll_channels(paths)
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
-    events = due_events(paths.agents, paths.workflows)
+    events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)
     loop_state = load_loop_state(paths.home)
     now = now_utc()
     wake_limit = max_wakes_per_hour(paths.home)
@@ -113,19 +113,18 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
             record_cron_fire(loop_state, cron_key, event.payload.get("schedule", ""), now)
             append_event(paths.logs, "event.created", **event_dict)
             if workflow_id in workflows:
-                run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, workflow_id)
+                run_workflow(paths, workflow_id)
             deduped_events.append(event_dict)
         else:
             append_event(paths.logs, "event.created", **event_dict)
             deduped_events.append(event_dict)
 
-    tasks = list_tasks(paths.tasks)
-    targets = sorted({task.assignee for task in tasks if task.state == "pending" and task.assignee})
+    targets, pending_task_count = pending_summary(paths.tasks)
     append_event(
         paths.logs,
         "supervisor.tick",
         targets=targets,
-        pending_task_count=len(tasks),
+        pending_task_count=pending_task_count,
         event_count=len(deduped_events),
         skipped_event_count=len(skipped_events),
     )

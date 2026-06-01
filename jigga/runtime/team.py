@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_teams
 from jigga.core.io import ensure_dir, write_json
+from jigga.core.paths import JiggaPaths
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.tasks import create_task
 from jigga.runtime.workflow import run_workflow
@@ -12,15 +12,12 @@ from jigga.runtime.workspaces import scaffold_workspace
 
 
 def run_team(
-    home: Path,
-    logs_dir: Path,
-    tasks_dir: Path,
-    teams_dir: Path,
-    workflows_dir: Path,
-    agents_dir: Path,
-    memory_dir: Path,
+    paths: JiggaPaths,
     team_id: str,
 ) -> dict[str, Any]:
+    home, logs_dir, tasks_dir, teams_dir = (
+        paths.home, paths.logs, paths.tasks, paths.teams,
+    )
     teams = load_teams(teams_dir)
     team = teams.get(team_id)
     if team is None:
@@ -43,10 +40,10 @@ def run_team(
         handoff_count=len(handoffs),
     )
     if handoffs:
-        # Handoffs are declarative routing rules; the v1 team runtime doesn't
-        # yet act on them (the rules require condition evaluation), but they
-        # are surfaced in the audit log and on the coordination task so a
-        # downstream agent or Codex extension can consume them.
+        # Handoffs are declarative routing rules; they execute file-first when a
+        # `from` member completes its team task (see jigga.runtime.handoffs —
+        # fire_handoffs, wired into the agent completion path). Here we just
+        # surface what's declared on the run for auditability.
         append_event(
             logs_dir,
             "team.handoffs_declared",
@@ -81,7 +78,7 @@ def run_team(
         )
 
     for workflow_id in team.default_workflows:
-        result = run_workflow(home, logs_dir, workflows_dir, agents_dir, memory_dir, workflow_id)
+        result = run_workflow(paths, workflow_id)
         workflow_runs.append(result)
 
     record = {

@@ -82,16 +82,7 @@ def test_supervisor_loop_handles_sigterm_cleanly(tmp_path: Path) -> None:
 
 def test_team_runtime_surfaces_handoffs_in_audit_and_metadata(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    result = run_team(
-        paths.home,
-        paths.logs,
-        paths.tasks,
-        paths.teams,
-        paths.workflows,
-        paths.agents,
-        paths.memory,
-        "social_content_team",
-    )
+    result = run_team(paths, "social_content_team")
     assert result["handoffs"], "social_content_team has handoffs declared in YAML"
     # Coordination task metadata carries the handoffs forward
     assert result["created_tasks"][0]["metadata"]["handoffs"] == result["handoffs"]

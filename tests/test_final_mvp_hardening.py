@@ -25,8 +25,8 @@ def test_actual_agent_runs_feed_workflow_inference(tmp_path: Path) -> None:
 
 def test_completed_workflow_runs_feed_workflow_inference(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
-    run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "morning_day_summary")
+    run_workflow(paths, "morning_day_summary")
+    run_workflow(paths, "morning_day_summary")
 
     suggestions = suggest_workflows(paths.logs)
     assert any(suggestion["workflow"]["steps"][0]["agent"] == "morning_day_summary" for suggestion in suggestions)

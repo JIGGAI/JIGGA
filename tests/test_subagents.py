@@ -154,7 +154,7 @@ def test_workflow_dispatch_spawns_subagent(tmp_path: Path) -> None:
     assert plan["can_run"] is True
     agent_yaml = paths.agents / "content_strategist.yaml"
     agent_yaml.write_text(agent_yaml.read_text(encoding="utf-8") + "\npermission_mode: autonomous\n", encoding="utf-8")
-    result = run_workflow(paths.home, paths.logs, paths.workflows, paths.agents, paths.memory, "delegate")
+    result = run_workflow(paths, "delegate")
     assert result["status"] == "completed"
     assert result["outputs"]["spawn"]["status"] == "completed"
     assert list_sessions(paths.sessions)
