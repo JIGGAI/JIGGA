@@ -750,6 +750,24 @@ def main(argv: list[str] | None = None) -> int:
             if args.channels_command == "setup":
                 _channels_setup(paths)
                 return 0
+            if args.channels_command == "listen":
+                result = channel_listen(
+                    paths.home,
+                    paths.logs,
+                    paths.tasks,
+                    paths.agents,
+                    long_poll_seconds=args.long_poll_seconds,
+                    max_cycles=args.max_cycles,
+                    process_agents=not args.no_process,
+                )
+                print_json(
+                    {
+                        "status": result["status"],
+                        "cycles": result["cycles"],
+                        "stopped_by_signal": result["stopped_by_signal"],
+                    }
+                )
+                return 0
             return 0
 
         if args.command == "approvals":
@@ -772,25 +790,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"{'Approved' if approved else 'Denied'} {args.code}."
                   + (" Task re-queued — the agent will retry the action." if approved else ""))
-            return 0
-            if args.channels_command == "listen":
-                result = channel_listen(
-                    paths.home,
-                    paths.logs,
-                    paths.tasks,
-                    paths.agents,
-                    long_poll_seconds=args.long_poll_seconds,
-                    max_cycles=args.max_cycles,
-                    process_agents=not args.no_process,
-                )
-                print_json(
-                    {
-                        "status": result["status"],
-                        "cycles": result["cycles"],
-                        "stopped_by_signal": result["stopped_by_signal"],
-                    }
-                )
-                return 0
             return 0
 
         if args.command == "logs":
