@@ -12,6 +12,7 @@ from jigga.runtime.tasks import (
     rebuild_index,
     set_task_state,
     tasks_for_agent,
+    write_task,
 )
 
 
@@ -67,3 +68,29 @@ def test_reader_tolerates_archived_file(tmp_path: Path) -> None:
     (tasks / f"{t.id}.json").unlink()  # file gone, index still references it
     assert find_task(tasks, t.id) is None
     assert tasks_for_agent(tasks, "alpha") == []
+
+
+def test_pending_summary_reflects_the_index_not_disk(tmp_path: Path) -> None:
+    """Proves the index is actually consulted: a hand-edited index that disagrees
+    with the on-disk task changes the answer (so pending_summary/tasks_for_agent
+    read the index, not a disk glob)."""
+    from jigga.core.io import write_json
+    tasks = tmp_path / "tasks"
+    t = create_task(tasks, "a", assignee="alpha")          # file: pending, index: pending
+    # diverge the index: mark it completed while the task file stays pending
+    idx = read_json(_index_path(tasks))
+    idx[t.id]["state"] = "completed"
+    write_json(_index_path(tasks), idx)
+
+    targets, count = pending_summary(tasks)
+    assert targets == [] and count == 0                    # reflects the index, not the pending file
+    assert tasks_for_agent(tasks, "alpha") == []
+
+
+def test_find_task_prefix_tie_breaks_on_created_at(tmp_path: Path) -> None:
+    from jigga.core.models import Task
+    tasks = tmp_path / "tasks"
+    write_task(tasks, Task(id="task_dup_late", title="late", created_at="2020-01-02T00:00:00+00:00"))
+    write_task(tasks, Task(id="task_dup_early", title="early", created_at="2020-01-01T00:00:00+00:00"))
+    found = find_task(tasks, "task_dup")                    # shared prefix → earliest created wins
+    assert found is not None and found.id == "task_dup_early"

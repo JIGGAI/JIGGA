@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -206,3 +207,47 @@ def test_result_to_dict_serializes_tool_calls(tmp_path: Path) -> None:
     payload = result.to_dict()
     assert payload["tool_calls"][0]["name"] == "a.b"
     assert payload["tool_calls"][0]["arguments"] == {"x": 1}
+
+
+def test_provider_fallback_used_when_primary_fails(tmp_path: Path, monkeypatch) -> None:
+    """If the primary provider raises, the router must fall through to the
+    configured fallback and flag fallback_used. This path had no test."""
+    from jigga.core.io import read_yaml, write_yaml
+    init_runtime(tmp_path)
+    config = read_yaml(tmp_path / "config.yaml")
+    config["models"] = {
+        "defaults": {"provider": "primary"},
+        "providers": {
+            "primary": {"kind": "openai_compatible", "base_url": "https://primary.example/v1",
+                        "api_key_env": "OPENAI_API_KEY", "default_model": "m1"},
+            "secondary": {"kind": "openai_compatible", "base_url": "https://secondary.example/v1",
+                          "api_key_env": "OPENAI_API_KEY", "default_model": "m2"},
+        },
+        "profiles": {"default": {"primary": "primary", "fallback": ["secondary"]}},
+    }
+    write_yaml(tmp_path / "config.yaml", config)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    calls = {"n": 0}
+
+    def fake_urlopen(request, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.URLError("primary down")
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {"choices": [{"message": {"content": "from secondary"}}]}).encode("utf-8")
+        cm = MagicMock()
+        cm.__enter__.return_value = response
+        cm.__exit__.return_value = False
+        return cm
+
+    request = ModelCallRequest(agent_id="a", role="r", task={"id": "t", "title": "x"},
+                               items=[ModelCallItem(id="sys", role="system", content="x")], dry_run=False)
+    with patch("jigga.runtime.model_router.urllib.request.urlopen", fake_urlopen):
+        result = call_model(tmp_path, tmp_path / "logs", request)
+
+    assert calls["n"] == 2                      # primary tried, then secondary
+    assert result.status == "ok"
+    assert result.content == "from secondary"
+    assert result.fallback_used is True

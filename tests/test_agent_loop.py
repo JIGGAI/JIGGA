@@ -213,3 +213,16 @@ def test_agent_with_no_tools_completes_in_one_turn(tmp_path: Path) -> None:
     assert list_tasks(paths.tasks)[0].state == "completed"
     types = _types(paths)
     assert "agent.tool_call.requested" not in types  # no tools → no tool calls
+
+
+def test_model_failure_marks_task_failed(tmp_path: Path) -> None:
+    """When the model call errors, the task must land in 'failed' — not silently
+    'completed'. This is the agent loop's error branch (agent.py: status != ok)."""
+    paths = init_runtime(tmp_path)
+    _write_agent(paths, "worker", tools=[])
+    create_task(paths.tasks, "do work", assignee="worker")
+    failing = ModelCallResult(status="error", provider="p", model="m", content="",
+                              dry_run=True, error="provider exploded")
+    with patch("jigga.runtime.agent.call_model", _scripted_call_model([failing])):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "worker")
+    assert list_tasks(paths.tasks)[0].state == "failed"

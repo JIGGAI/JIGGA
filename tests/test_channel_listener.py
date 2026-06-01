@@ -213,3 +213,22 @@ def test_cli_channels_listen_reaches_listener(tmp_path: Path) -> None:
                    "--max-cycles", "1", "--no-process"])
     assert rc == 0
     assert fake.called, "channels listen did not reach channel_listen"
+
+
+def test_ingest_rejects_message_from_unauthorized_sender(tmp_path: Path) -> None:
+    """The inbound auth boundary: a message from a chat_id NOT in the allowlist
+    must be dropped — no task created — and logged as rejected. Proves the
+    listener actually enforces identity_allowed, not just that the predicate works."""
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths, allowed=("111",))
+    poll_result = {"status": "ok", "messages": [_msg(text="let me in", chat_id=999)]}
+
+    with patch("jigga.runtime.telegram.poll_messages", return_value=poll_result), patch(
+        "jigga.runtime.channel_listener.run_agent"
+    ) as run_mock:
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+
+    assert summary["created"] == []                       # no task for an unauthorized sender
+    assert list_tasks(paths.tasks) == []
+    run_mock.assert_not_called()
+    assert "channel.message.rejected" in [e["type"] for e in _events(paths)]

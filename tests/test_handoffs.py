@@ -121,3 +121,43 @@ def test_agent_completion_fires_handoff_to_next_member(tmp_path: Path) -> None:
     # the decision log captured both hops, in order
     log = read_decision_log(paths.home, "ct")
     assert [(e["from"], e["to"]) for e in log] == [("strategist", "writer"), ("writer", "editor")]
+
+
+# --- guards + CLI ----------------------------------------------------------
+
+
+def test_non_team_task_completion_does_not_fire_handoffs(tmp_path: Path) -> None:
+    """A completed task with no team_id must not trigger any handoff (the
+    _maybe_fire_handoffs guard). Otherwise ordinary tasks would spawn handoff
+    tasks."""
+    paths = init_runtime(tmp_path)
+    _team(paths, handoffs=[{"from": "strategist", "to": "writer", "when": "x"}])
+    # a plain task for strategist with NO team_id metadata
+    create_task(paths.tasks, "solo task", assignee="strategist")
+
+    with patch("jigga.runtime.agent.call_model", lambda h, lg, r: _result("done")):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "strategist")
+
+    assert tasks_for_agent(paths.tasks, "writer") == []          # no handoff fired
+    assert read_decision_log(paths.home, "ct") == []
+    assert not any(e["type"] == "team.handoff.fired" for e in _events(paths))
+
+
+def test_cli_team_handoff_and_decisions(tmp_path: Path, capsys) -> None:
+    """End-to-end through main(): `team handoff` creates the task + logs the
+    decision; `team decisions` reads it back. Guards the CLI subcommand wiring
+    (the H0 dead-branch class)."""
+    from jigga.cli import main
+
+    paths = init_runtime(tmp_path)
+    _team(paths, handoffs=[{"from": "strategist", "to": "writer", "when": "core_message_ready"}])
+
+    assert main(["--home", str(tmp_path), "team", "handoff", "ct",
+                 "--from", "strategist", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out and out[0]["assignee"] == "writer"
+    assert tasks_for_agent(paths.tasks, "writer")                # task really created
+
+    assert main(["--home", str(tmp_path), "team", "decisions", "ct", "--json"]) == 0
+    log = json.loads(capsys.readouterr().out)
+    assert log and log[0]["from"] == "strategist" and log[0]["to"] == "writer"
