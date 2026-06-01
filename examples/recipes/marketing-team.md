@@ -7,6 +7,20 @@ description: A marketing team that turns a product brief into reviewed, platform
 purpose: Turn a product brief into reviewed launch copy.
 routing:
   lead: lead
+# Extra workspace files written at scaffold time. `template` names an entry in
+# `templates:`; `{{teamId}}`/`{{teamName}}` are substituted. createOnly (default)
+# won't clobber edits on re-scaffold.
+templates:
+  charter: |
+    # {{teamName}} — Charter
+
+    Mission: turn a product brief into reviewed, platform-ready launch copy.
+    Lead curates notes/plan.md and shared-context/priorities.md; others append
+    to shared-context/agent-outputs/.
+files:
+  - path: notes/charter.md
+    template: charter
+    mode: createOnly
 agents:
   - role: lead
     name: "{{teamName}} Lead"

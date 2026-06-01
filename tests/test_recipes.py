@@ -177,6 +177,62 @@ def test_cli_scaffold_kind_agent(tmp_path: Path, capsys) -> None:
     assert "rr" in load_agents((tmp_path / "agents"))
 
 
+# --- W4 follow-up: files / templates ---------------------------------------
+
+FILES_RECIPE = """---
+id: docs-team
+name: Docs Team
+kind: team
+routing: {lead: lead}
+templates:
+  charter: "# {{teamName}} charter for {{teamId}}"
+files:
+  - path: notes/charter.md
+    template: charter
+    mode: createOnly
+  - path: shared-context/conventions.md
+    content: "Inline content, {{teamId}}."
+  - path: "../escape.md"            # path traversal → must be refused
+    content: "nope"
+agents:
+  - role: lead
+    name: Lead
+    tools: [draft_with_model]
+---
+"""
+
+
+def test_recipe_files_written_with_templating_and_traversal_guard(tmp_path: Path) -> None:
+    from jigga.runtime.workspaces import read_file, workspace_dir
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "docs.md"
+    recipe_path.write_text(FILES_RECIPE, encoding="utf-8")
+    summary = scaffold_team(paths.home, load_recipe(recipe_path), team_id="dx",
+                            agents_dir=paths.agents, teams_dir=paths.teams)
+
+    assert "notes/charter.md" in summary["files_written"]
+    assert "shared-context/conventions.md" in summary["files_written"]
+    assert "../escape.md" in summary["files_skipped"]                      # traversal refused
+    assert not (workspace_dir(paths.home, "dx").parent / "escape.md").exists()
+
+    assert read_file(paths.home, "dx", "notes/charter.md") == "# Docs Team charter for dx"  # templated
+    assert read_file(paths.home, "dx", "shared-context/conventions.md") == "Inline content, dx."
+
+
+def test_recipe_files_are_create_only(tmp_path: Path) -> None:
+    from jigga.runtime.workspaces import read_file
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "docs.md"
+    recipe_path.write_text(FILES_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path), team_id="dx", agents_dir=paths.agents, teams_dir=paths.teams)
+    # edit a recipe-written file, re-scaffold → not clobbered (createOnly)
+    from jigga.runtime.workspaces import workspace_dir
+    (workspace_dir(paths.home, "dx") / "notes" / "charter.md").write_text("HAND-EDITED", encoding="utf-8")
+    again = scaffold_team(paths.home, load_recipe(recipe_path), team_id="dx", agents_dir=paths.agents, teams_dir=paths.teams)
+    assert "notes/charter.md" in again["files_skipped"]
+    assert read_file(paths.home, "dx", "notes/charter.md") == "HAND-EDITED"
+
+
 def test_scheduled_workloop_message_becomes_task_description(tmp_path: Path) -> None:
     """End-to-end: a cron-due agent → supervisor creates a task whose body is the
     cronJob message."""

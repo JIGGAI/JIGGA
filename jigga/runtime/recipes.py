@@ -18,8 +18,10 @@ Recipe shape (frontmatter):
         model: profile:default        # optional
         permissions: {...}            # optional
 
-Deferred to follow-ups: cronJobs (schedules), agentTools policy, arbitrary
-files/templates, and `kind: agent` single-agent recipes.
+Now also supported: `cronJobs` (scheduled work-loops → agent `wake.schedules`),
+per-role `permissions`/`tools`, `kind: agent` single-agent recipes, and
+`files:`/`templates:` (extra workspace files written at scaffold time, templated,
+create-only by default). This completes the W4 recipe surface.
 """
 
 from __future__ import annotations
@@ -124,6 +126,38 @@ def _template(value: Any, ctx: dict[str, str]) -> Any:
     return value
 
 
+def _write_recipe_files(workspace_root: Path, recipe: Recipe, ctx: dict[str, str], *, overwrite: bool) -> dict[str, list[str]]:
+    """Write a recipe's `files:` into the workspace. Each entry: `{path,
+    content | template, mode: createOnly|overwrite}`; `template` names an entry
+    in the recipe's top-level `templates:` map. Content is `{{...}}`-templated.
+    Create-only by default. Paths are confined to the workspace (no traversal /
+    absolute-path escape)."""
+    templates = recipe.meta.get("templates") or {}
+    written: list[str] = []
+    skipped: list[str] = []
+    root = workspace_root.resolve()
+    for spec in recipe.meta.get("files") or []:
+        if not isinstance(spec, dict) or not spec.get("path"):
+            continue
+        rel = str(spec["path"])
+        target = (workspace_root / rel).resolve()
+        if target != root and root not in target.parents:  # escapes the workspace → refuse
+            skipped.append(rel)
+            continue
+        raw = spec.get("content")
+        if raw is None and spec.get("template"):
+            raw = templates.get(str(spec["template"]), "")
+        content = _template(str(raw or ""), ctx)
+        allow_overwrite = overwrite or str(spec.get("mode", "createOnly")).lower() == "overwrite"
+        if target.exists() and not allow_overwrite:
+            skipped.append(rel)
+            continue
+        ensure_dir(target.parent)
+        target.write_text(content, encoding="utf-8")
+        written.append(rel)
+    return {"written": written, "skipped": skipped}
+
+
 def _wake_from_cronjobs(cronjobs: Any, ctx: dict[str, str]) -> dict[str, Any]:
     """Map a recipe's `cronJobs` to a JIGGA agent `wake.schedules`. Each entry's
     `schedule` (5-field cron) → `cron`; `message` (the work-loop instruction) is
@@ -187,8 +221,16 @@ def scaffold_agent(
     written = overwrite or not path.exists()
     if written:
         write_yaml(path, doc)
+    # A solo agent is its own one-member team → its own workspace (also created
+    # on first run); scaffold it now so recipe `files:` have a home.
+    solo_team = TeamConfig.from_dict({"id": agent_id, "name": recipe.name,
+                                      "agents": [{"id": agent_id, "role": ""}],
+                                      "routing": {"default_assignee": agent_id}})
+    workspace = scaffold_workspace(home, solo_team)
+    files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
     return {"kind": "agent", "agent_id": agent_id, "agent_file": str(path), "written": written,
-            "scheduled": bool(doc.get("wake"))}
+            "scheduled": bool(doc.get("wake")), "workspace": workspace["workspace"],
+            "files_written": files["written"], "files_skipped": files["skipped"]}
 
 
 def scaffold_team(
@@ -242,8 +284,10 @@ def scaffold_team(
         write_yaml(team_path, team_doc)
 
     workspace = scaffold_workspace(home, TeamConfig.from_dict(team_doc))
+    files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
     return {
         "team_id": team_id, "team_file": str(team_path), "team_written": team_written,
         "agents_written": written, "agents_skipped": skipped, "lead": lead_id,
         "workspace": workspace["workspace"],
+        "files_written": files["written"], "files_skipped": files["skipped"],
     }
