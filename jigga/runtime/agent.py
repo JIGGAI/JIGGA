@@ -27,11 +27,12 @@ from jigga.runtime.model_router import (
 from jigga.runtime.policy import NON_EXECUTING_MODES, resolve_permission_mode
 from jigga.runtime.handoffs import fire_handoffs
 from jigga.runtime.tasks import set_task_state, tasks_for_agent
+from jigga.runtime.context_pack import assemble_agent_context
 from jigga.runtime.workspaces import (
     append_agent_output,
+    append_daily_memory,
     append_status,
     ensure_agent_workspace,
-    workspace_context,
 )
 
 DEFAULT_MAX_TOOL_CALLS_PER_RUN = 10
@@ -140,13 +141,14 @@ def _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action
 # --- the per-task tool-use loop --------------------------------------------
 
 
-def _system_prompt(agent: AgentConfig, memory_context: dict[str, Any]) -> str:
-    base = f"You are {agent.name}. Role: {agent.role}."
-    instructions = (
-        " Use the available tools to accomplish the task. When the task is done, "
-        "reply with a short final summary and stop calling tools."
-    )
-    return base + instructions
+_TOOL_INSTRUCTIONS = (
+    "Use the available tools to accomplish the task. When the task is done, "
+    "reply with a short final summary and stop calling tools."
+)
+
+
+def _identity_prompt(agent: AgentConfig) -> str:
+    return f"You are {agent.name}. Role: {agent.role}."
 
 
 def _run_task_loop(
@@ -164,7 +166,7 @@ def _run_task_loop(
     dry_run_model: bool,
     max_tool_calls: int,
     max_iterations: int,
-    workspace_brief: str = "",
+    system_context: str = "",
 ) -> dict[str, Any]:
     tool_actions = _resolve_agent_actions(agent, registry)
     name_map = {_to_tool_name(a): a for a in tool_actions}
@@ -173,9 +175,11 @@ def _run_task_loop(
 
     task_dict = task.to_dict()
     body = task_dict.get("description") or task_dict.get("title") or "No task description."
-    system_content = _system_prompt(agent, memory_context)
-    if workspace_brief:
-        system_content += f"\n\nYour team workspace (lead-curated plan & priorities):\n{workspace_brief}"
+    # The assembled context pack (identity / persona / role / tools / memory /
+    # team) becomes the system prompt; fall back to the minimal identity prompt
+    # if no context was assembled (e.g. a direct _run_task_loop test call).
+    base = system_context.strip() or _identity_prompt(agent)
+    system_content = f"{base}\n\n{_TOOL_INSTRUCTIONS}"
     items = [
         ModelCallItem(id="system", role="system", content=system_content),
         ModelCallItem(id=f"task:{task.id}", role="user", content=f"Task: {task.title}\n\n{body}"),
@@ -372,21 +376,30 @@ def _run_agent(
     memory_context = build_context_package(home / "memory", scope)
     max_tool_calls, max_iterations = _loop_limits(home)
 
-    # Bind to the team/agent shared workspace (created on first use). Read the
-    # lead-curated plan/priorities to ground the run; outputs are appended below.
+    # Bind to the team/agent shared workspace (created on first use). The context
+    # pack (identity / persona / role / tools / memory / team) is assembled per
+    # task below and injected as the system prompt so the agent wakes grounded.
     ws_team_id = ensure_agent_workspace(home, home / "teams", agent)
-    workspace_brief = workspace_context(home, ws_team_id)
     append_event(logs_dir, "workspace.ensured", agent=agent_id, run_id=run_id, workspace=ws_team_id)
 
     processed: list[dict[str, Any]] = []
     for task in pending:
         set_task_state(tasks_dir, task.id, "claimed")
         set_task_state(tasks_dir, task.id, "running")
+        # Group/channel messages run with restricted memory (no private USER /
+        # MEMORY layers) — the leak/injection guard set on the task at ingest.
+        restricted = bool((task.metadata or {}).get("restricted_memory"))
+        system_context, layers = assemble_agent_context(
+            home, agent, ws_team_id, registry=registry,
+            memory_context=memory_context, restricted=restricted,
+        )
+        append_event(logs_dir, "agent.context.assembled", agent=agent_id, task_id=task.id,
+                     run_id=run_id, layers=layers, restricted=restricted)
         loop = _run_task_loop(
             home=home, logs_dir=logs_dir, run_dir=run_dir, run_id=run_id, agent=agent, task=task,
             effective_mode=effective_mode, registry=registry, memory_context=memory_context,
             runtime=runtime, dry_run_model=dry_run_model, max_tool_calls=max_tool_calls,
-            max_iterations=max_iterations, workspace_brief=workspace_brief,
+            max_iterations=max_iterations, system_context=system_context,
         )
         result = loop["result"]
         artifact = {
@@ -414,6 +427,10 @@ def _run_agent(
             if final_text:
                 append_agent_output(home, ws_team_id, agent_id, f"**{task.title}**\n\n{final_text}")
                 append_status(home, ws_team_id, f"{agent_id}: completed “{task.title}”")
+            # Daily breadcrumb for the agent's own continuity (read back into its
+            # context on the next run as the "recent daily log").
+            append_daily_memory(home, ws_team_id, agent_id,
+                                f"Completed “{task.title}”." + (f" {final_text}" if final_text else ""))
             # Execute any team handoffs this completion triggers (file-first).
             _maybe_fire_handoffs(home, logs_dir, tasks_dir, task, agent_id)
         elif loop["state"] == "needs_approval":

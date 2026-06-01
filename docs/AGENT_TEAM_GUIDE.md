@@ -137,11 +137,27 @@ notes/status.md                # append-only operational log
 shared-context/priorities.md   # lead-curated (create-only)
 shared-context/agent-outputs/  # append-only, per-member outputs
 shared-context/feedback/       # append-only QA / feedback
-roles/<member>/                # per-member space
+roles/<member>/SOUL.md         # persona (authored — edit to give a voice)
+roles/<member>/MEMORY.md       # the member's curated long-term memory
+roles/<member>/memory/<date>.md# dated daily breadcrumbs (written each run)
 ```
 **Curator model:** only the **lead** edits `plan.md`/`priorities.md`; other
 members **append** to `agent-outputs/`/`feedback/`. They coordinate through
 files, not direct messages.
+
+### What an agent knows when it wakes (the context pack)
+Each run, JIGGA assembles the agent's system prompt from layered files (the
+OpenClaw/ClawRecipes model) so it isn't a per-task amnesiac:
+
+`USER.md` (the principal — `~/.jigga/USER.md`) → identity (from config) →
+`SOUL.md` (persona) → role + teammates roster → `TEAM.md` → tools → its
+`MEMORY.md` + recent daily logs + team facts → the lead's plan/priorities → the task.
+
+Each layer is **generate-unless-authored**: `AGENTS`/`TOOLS` are generated from
+config; drop a `roles/<id>/AGENTS.md` or `TOOLS.md` to override. `USER.md` and
+`SOUL.md` are authored (starters are scaffolded — edit them). Missing layers are
+skipped. **Privacy:** in a group/shared channel (`restricted_memory`), the private
+`USER.md` and `MEMORY.md` layers are withheld so personal context can't leak.
 
 ### Talking to one agent vs the team
 - **One agent:** assign it a task (a channel message routed to it, a schedule, or

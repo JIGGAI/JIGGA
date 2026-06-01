@@ -86,6 +86,19 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
     if not paths.state.exists():
         write_json(paths.state, State().to_dict())
 
+    # USER.md — who the agents work for. Injected into every agent's context pack
+    # (private sessions only). create-only; edit it to ground your agents.
+    user_md = paths.home / "USER.md"
+    if not user_md.exists():
+        user_md.write_text(
+            "# USER.md — About your principal\n"
+            "_The human these agents work for. Injected into each agent's context in private "
+            "sessions (omitted in group/shared channels). Edit freely._\n\n"
+            "- **Name:**\n- **What to call them:**\n- **Timezone:**\n- **Cares about:**\n\n"
+            "## Context\n_(projects, preferences, constraints — build this over time)_\n",
+            encoding="utf-8",
+        )
+
     if examples:
         ex = examples_dir()
         for source, target in [
