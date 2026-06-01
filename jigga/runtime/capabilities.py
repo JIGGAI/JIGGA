@@ -222,6 +222,14 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "dry_run.generic",
     },
     {
+        "name": "memory-write",
+        "version": "0.1.0",
+        "summary": "Persist a durable fact to the team's memory (team.jsonl) for later reuse/retrieval.",
+        "actions": ["memory.remember"],
+        "risk_level": "low",
+        "handler": "runtime.remember",
+    },
+    {
         "name": "memory-search",
         "version": "0.1.0",
         "summary": "Search memory (raw entries + structured/summaries) by keyword, scope-aware. "

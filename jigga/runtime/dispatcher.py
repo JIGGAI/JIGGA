@@ -298,6 +298,17 @@ def _generic_handler(
     }
 
 
+def _agent_team_id(runtime: RuntimeContext) -> str | None:
+    """The workspace id whose memory this agent should see — its (first) team, or
+    its own id when team-less. Read-only (no scaffolding)."""
+    from jigga.runtime.workspaces import find_agent_teams
+
+    if runtime.agent is None:
+        return None
+    teams = find_agent_teams(runtime.home / "teams", runtime.agent.id)
+    return teams[0].id if teams else runtime.agent.id
+
+
 def _search_memory_handler(
     _step: WorkflowStep,
     _capability: CapabilityManifest,
@@ -306,7 +317,8 @@ def _search_memory_handler(
     runtime: RuntimeContext,
 ) -> Any:
     """Keyword search over the agent's memory (`memory.search`). Input is a query
-    string, or `{query, scope?, limit?}`."""
+    string, or `{query, scope?, limit?}`. With an explicit `scope`, searches that
+    memory scope; otherwise searches global memory + the agent's own team memory."""
     from jigga.runtime.memory_index import search_memory
 
     if isinstance(resolved_input, dict):
@@ -315,8 +327,37 @@ def _search_memory_handler(
         limit = int(resolved_input.get("limit") or 10)
     else:
         query, scope, limit = str(resolved_input or ""), None, 10
-    results = search_memory(runtime.home / "memory", query, scope=scope, limit=limit)
-    return {"source": "capability.memory_search", "query": query, "scope": scope, "results": results}
+    team = None if scope else _agent_team_id(runtime)
+    results = search_memory(runtime.home / "memory", query, scope=scope, team=team, limit=limit)
+    return {"source": "capability.memory_search", "query": query, "scope": scope, "team": team, "results": results}
+
+
+def _remember_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Persist a durable fact to the agent's team memory (`memory.remember`).
+    Input is text, or `{text, type?, tags?}`."""
+    from jigga.runtime.team_memory import append_team_memory
+    from jigga.runtime.workspaces import ensure_agent_workspace
+
+    if runtime.agent is None:
+        raise ValueError("memory.remember requires an executing agent")
+    if isinstance(resolved_input, dict):
+        text = str(resolved_input.get("text") or resolved_input.get("content") or "")
+        mem_type = str(resolved_input.get("type") or "fact")
+        tags = list(resolved_input.get("tags") or [])
+    else:
+        text, mem_type, tags = str(resolved_input or ""), "fact", []
+    if not text.strip():
+        raise ValueError("memory.remember needs `text` to remember")
+    team_id = ensure_agent_workspace(runtime.home, runtime.home / "teams", runtime.agent)
+    entry = append_team_memory(runtime.home, team_id, text=text, type=mem_type, tags=tags,
+                               source={"agent": runtime.agent.id})
+    return {"source": "capability.memory_remember", "team": team_id, "remembered": entry["id"], "text": text}
 
 
 def _draft_prompt(agent: AgentConfig, resolved_input: Any) -> tuple[str, str]:
@@ -528,6 +569,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.spawn_subagent": _spawn_subagent_handler,
     "runtime.draft_with_model": _draft_with_model_handler,
     "runtime.search_memory": _search_memory_handler,
+    "runtime.remember": _remember_handler,
     "runtime.filesystem": filesystem_handler,
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,

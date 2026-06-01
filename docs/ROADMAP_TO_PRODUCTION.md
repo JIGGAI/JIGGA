@@ -88,7 +88,7 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 | Domain | Has | Missing |
 |---|---|---|
-| Raw / structured / summary layers | folder shape exists | Real write pipelines beyond the workflow-end raw dump |
+| Raw / structured / summary layers | ✅ raw dump + team/role write pipeline (`team.jsonl`/`pinned.jsonl`/role `MEMORY.md`) via `memory.remember` | structured-layer pipelines (preferences/relationships) |
 | Indexes | ✅ sqlite FTS5 keyword index (`memory/indexes/`, rebuild-on-stale; scan fallback) | optional vector index behind a feature flag |
 | Retrieval | ✅ `memory.search` capability + `jigga memory search` (scope-aware, ranked) | — |
 | Compaction | not started | Summarize completed tasks, archive old raw logs, mark stale facts |
@@ -212,6 +212,7 @@ Pull remaining items in "when it makes sense" rather than all at once.
 *Goal: long-running agents don't drown.*
 
 - ✅ **D1 — Keyword index (sqlite FTS5) + `memory.search` capability** (PR pending). Indexes `raw/` + `structured/`/`summaries/` into `memory/indexes/`, rebuilds when stale, scope-aware ranked snippets; falls back to a tokenized scan if FTS5 is absent. `jigga memory search`/`reindex`; the `memory.search` capability (now resolves for agents like `content_strategist`).
+- ✅ **D2 — team/role memory write pipelines** (PR pending). `runtime/team_memory.py` writes durable knowledge to a team's `shared-context/memory/team.jsonl` (+ `pinned.jsonl`) and per-role `MEMORY.md`; the `memory.remember` capability lets agents persist facts mid-run; the FTS index covers team/role memory with a `team:`/`role:` layer so `memory.search`/`jigga memory search --team` is team-scoped (no cross-team leakage).
 - Optional vector index behind a feature flag — embed via model router or local model.
 - Compaction pipeline: summarize completed tasks weekly, archive raw logs older than N days, mark stale facts.
 - Memory write proposal queue for sensitive types (`fact`, `preference`, `relationship`) — writes are batched, the user approves a digest.
