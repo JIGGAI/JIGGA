@@ -61,6 +61,7 @@ from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
+from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
 from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
@@ -380,9 +381,18 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_due = scheduler_sub.add_parser("due", help="List due events for the current time")
     scheduler_due.add_argument("--at", help="Evaluate due events at an ISO timestamp")
 
-    team = sub.add_parser("team", help="Run team runtime skeleton")
+    team = sub.add_parser("team", help="Run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
     team_run = team_sub.add_parser("run")
+    team_handoff = team_sub.add_parser("handoff", help="Fire a team's handoffs from a member (file-first)")
+    team_handoff.add_argument("team_id")
+    team_handoff.add_argument("--from", dest="from_member", required=True, help="Member completing/handing off")
+    team_handoff.add_argument("--signal", help="Only fire handoffs whose `when` matches this signal")
+    team_handoff.add_argument("--evidence", help="Path/reference to the work product being handed off")
+    team_handoff.add_argument("--json", action="store_true", dest="json_output")
+    team_decisions = team_sub.add_parser("decisions", help="Show a team's handoff decision log")
+    team_decisions.add_argument("team_id")
+    team_decisions.add_argument("--json", action="store_true", dest="json_output")
     team_init = team_sub.add_parser("init", help="Scaffold a team's shared workspace (notes/ + shared-context/ + roles/)")
     team_init.add_argument("team_id")
     team_init.add_argument("--json", action="store_true", dest="json_output")
@@ -894,6 +904,31 @@ def _cmd_team(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.team_command == "run":
         print_json(run_team(paths, args.team_id))
+        return 0
+    if args.team_command == "handoff":
+        created = fire_handoffs(
+            paths.home, paths.logs, paths.tasks, paths.teams,
+            team_id=args.team_id, from_member=args.from_member,
+            signal=args.signal, evidence=args.evidence,
+        )
+        if args.json_output:
+            print_json(created)
+        elif not created:
+            print(f"No handoffs fired from {args.from_member!r} in team {args.team_id!r}.")
+        else:
+            for task in created:
+                print(f"→ {task['assignee']}  (task {task['id']})  {task['title']}")
+        return 0
+    if args.team_command == "decisions":
+        log = read_decision_log(paths.home, args.team_id)
+        if args.json_output:
+            print_json(log)
+        elif not log:
+            print(f"No handoffs recorded for team {args.team_id!r}.")
+        else:
+            for entry in log:
+                when = f" on '{entry['when']}'" if entry.get("when") else ""
+                print(f"{entry['time'][:19]}  {entry['from']} → {entry['to']}{when}  (task {entry['task_id']})")
         return 0
     if args.team_command == "init":
         teams = load_teams(paths.teams)

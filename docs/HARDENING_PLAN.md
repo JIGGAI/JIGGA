@@ -93,30 +93,36 @@ existing `JiggaPaths` bundle.
 
 ---
 
-## H3 — Team Runtime / enforced handoffs (close the thesis gap)
+## H3 — Team Runtime / enforced handoffs (close the thesis gap) ✅
 
-`team.py` (97 LOC) *logs* declared handoffs (`team.handoffs_declared`) but never
-**acts** on them — the "teams of AI workers collaborating" promise is a stub.
-This is the largest doc↔code gap and the headline value prop.
+`team.py` *logged* declared handoffs but never **acted** on them — the "teams of
+AI workers collaborating" promise was a stub. Now executed, file-first.
 
-**Design (file-first / auditable — per the coordination decision):**
-- Evaluate `routing.handoffs[].when` conditions against a run's task/output
-  state; on match, create the next task assigned to `to`, recording the
-  triggering `from` + condition on the task and in the audit log.
-- A file-backed **decision log** (`workspaces/<team>/shared-context/handoffs.jsonl`)
-  records each handoff: who, to whom, why, evidence path. No ephemeral bus.
-- Keep it opt-in/bounded: a max-hops guard to prevent handoff loops (reuse the
-  loop-prevention pattern).
+**Built (`jigga/runtime/handoffs.py`):**
+- `fire_handoffs(...)` — when a `from` member completes its team task, create a
+  task for each `to` member; completion is the signal, so every outgoing handoff
+  fires (an explicit `signal` filters to matching `when` rules). Wired into the
+  agent completion path (`agent._maybe_fire_handoffs`), so the supervisor's
+  normal tick picks up the next member's task — the chain runs itself.
+- **Decision log** at `workspaces/<team>/shared-context/handoffs.jsonl` records
+  every handoff (from, to, when, task_id, evidence, hops). No ephemeral bus.
+- **Hop guard**: each handoff-created task carries `handoff_hops`; once it hits
+  `teams.handoff_max_hops` (default 25) the chain is refused and logged
+  (`team.handoff.blocked`), so a cyclic routing graph can't loop forever.
+- CLI: `jigga team handoff <team> --from <member> [--signal …] [--evidence …]`
+  and `jigga team decisions <team>`.
+- Audit: `team.handoff.fired` / `team.handoff.blocked`.
 
-Treated as a feature milestone (larger than H0–H2); land after the correctness +
-decomposition passes so it's built on a firm base.
+Future: agent-emitted selective signals (the `signal` arg already supports it),
+and `when` condition expressions beyond completion.
 
 ---
 
-## Sequencing
-1. **H0** (done) — live bug.
-2. **H1a–d** — correctness cliffs; ship as one slice, each with a test.
-3. **H2a–d** — decomposition; mechanical, test-guarded, can land incrementally.
-4. **H3** — team runtime; its own milestone.
+## Status
+1. **H0** ✅ — live bug fixed + regression test.
+2. **H1a–d** ✅ — spend ledger, task index, bounded ticks, deduped tick loads.
+3. **H2a–d** ✅ — JSONL→core/io, cli.py dispatch table, dispatcher split,
+   JiggaPaths threading.
+4. **H3** ✅ — file-first team handoffs + decision log.
 
-Hold Milestones E/F until H1 is merged.
+Foundation hardened — Milestones E/F can build on it.

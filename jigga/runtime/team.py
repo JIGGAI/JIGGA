@@ -40,10 +40,10 @@ def run_team(
         handoff_count=len(handoffs),
     )
     if handoffs:
-        # Handoffs are declarative routing rules; the v1 team runtime doesn't
-        # yet act on them (the rules require condition evaluation), but they
-        # are surfaced in the audit log and on the coordination task so a
-        # downstream agent or Codex extension can consume them.
+        # Handoffs are declarative routing rules; they execute file-first when a
+        # `from` member completes its team task (see jigga.runtime.handoffs —
+        # fire_handoffs, wired into the agent completion path). Here we just
+        # surface what's declared on the run for auditability.
         append_event(
             logs_dir,
             "team.handoffs_declared",
