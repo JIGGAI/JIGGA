@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -508,9 +509,37 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+# Matches ANSI/VT escape sequences — including the focus-report events
+# (ESC[I / ESC[O) a terminal injects into stdin when you alt-tab away during a
+# blocking wait (e.g. a device-code login). Left in the buffer, those bytes get
+# read as part of the *next* prompt's answer.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _sanitize_answer(raw: str) -> str:
+    """Strip escape sequences + non-printable chars from a prompt answer, then
+    normalize, so stray terminal control bytes can't corrupt a yes/no reply."""
+    cleaned = _ANSI_RE.sub("", raw)
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    return cleaned.strip().lower()
+
+
+def _drain_stdin() -> None:
+    """Discard buffered terminal input before prompting, so focus-report escape
+    sequences (or other type-ahead noise) accumulated during a prior blocking
+    wait don't get consumed as the answer. POSIX TTY only; no-op elsewhere."""
+    try:
+        import termios
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError):
+        pass
+
+
 def _confirm(question: str, *, default: bool, echo=print) -> bool:
+    _drain_stdin()
     suffix = "[Y/n]" if default else "[y/N]"
-    answer = input(f"{question} {suffix}: ").strip().lower()
+    answer = _sanitize_answer(input(f"{question} {suffix}: "))
     if not answer:
         return default
     return answer in {"y", "yes"}
@@ -552,24 +581,37 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
     elif not interactive and not args.skip_channels:
         print("• Skipped channel setup (non-interactive). Run `jigga channels setup` later.")
 
-    # 4. Always-on: register the supervisor as a user service so it survives reboots.
-    if args.install_daemon:
+    # 4. Start it now + keep it running. Registering the user service is the
+    #    right "start now": it runs in the background, independent of this shell
+    #    (we can't activate the parent shell's venv from here), and survives
+    #    logout/reboot. Forced by --install-daemon; otherwise offered.
+    install_daemon = args.install_daemon
+    if not install_daemon and interactive:
+        install_daemon = _confirm(
+            "\nStart the assistant now and keep it running across reboots?", default=True)
+    started_service = False
+    if install_daemon:
         from jigga.runtime.service import install_service
         result = install_service(paths, interval_seconds=args.service_interval)
-        if result["backend"] == "unsupported":
-            print(f"\n! Could not install a service: {result.get('instructions', '')}")
+        backend = result["backend"]
+        if backend == "unsupported":
+            print(f"\n! Couldn't install a background service here: {result.get('instructions', '')}")
         elif result.get("started"):
-            print(f"\n✓ Supervisor installed as a {result['backend']} service and started.")
+            started_service = True
+            print(f"\n✓ Supervisor running as a {backend} service (survives logout/reboot).")
         else:
-            print(f"\n! Wrote the {result['backend']} unit at {result.get('unit_path')}, "
+            print(f"\n! Wrote the {backend} unit at {result.get('unit_path')}, "
                   "but starting it reported a problem — see `jigga service status`.")
 
     # 5. Next steps.
     print("\n✓ Onboarding complete.")
-    if not args.install_daemon:
-        print("  Start the assistant:  jigga supervisor start   "
-              "(or `jigga service install` to keep it always-on)")
-    print("  Check health/config anytime with `jigga state`.")
+    if started_service:
+        print("  It's running in the background now — `jigga service status` to check it.")
+    else:
+        print("  Start it:  `jigga supervisor start` (foreground) "
+              "or `jigga service install` (always-on background).")
+    print("  To run `jigga` commands in this shell, activate the venv first "
+          "(e.g. `source .venv/bin/activate`).")
     return 0
 
 
