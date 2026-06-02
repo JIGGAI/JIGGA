@@ -26,14 +26,16 @@ JIGGA is not intended to be just a chatbot, a one-off automation tool, or a prom
 - **vs. agent SDKs/frameworks (e.g. LangChain):** JIGGA is a **runtime + config layer (an "OS")**, not a library you wire into an app. You declare workers in files; the supervisor runs them.
 - **vs. cloud agent platforms:** **local-first** — your memory, state, logs, and credentials stay on your machine. **Bring your own model/credentials**; JIGGA-the-project never holds a shared key.
 
-Two things make it distinctive in practice:
+Three things make it distinctive in practice:
 
 1. **Run on subscriptions and your local CLIs, not metered API keys.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), and agents can **delegate to your locally-installed `codex` and `claude` CLIs** as subagent backends — executing those tools directly with their own login, not a per-token API key (`jigga auth login codex_cli|claude_code`). A team can *think* without metered API costs.
 2. **Auditable by construction.** A single trace id threads a whole operation (supervisor tick → agent run → tool call → subagent); `jigga trace <id>` reconstructs it. Coordination (handoffs, decisions, memory) is files under `~/.jigga/`.
+3. **Repeatable work becomes infrastructure — and JIGGA proposes it.** Beyond declaring workflows by hand, JIGGA watches your audit log for recurring multi-step patterns and **suggests turning them into reusable, schedulable workflows** (`jigga workflow suggest` / `apply`). Your SOPs accrete from what you actually do. See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
 
 ## Capabilities (what's built today)
 
 - **Agents / teams / workflows / tasks as code** — plain YAML; `jigga plan` / `apply` / `validate` show and gate config changes (agents-as-code, not a reconcile engine).
+- **Workflows & inference** — declarative, schedulable playbooks (`jigga workflow plan` / `run`); steps chain by named output, can be model-backed, and gate risky steps for approval. **JIGGA also infers and proposes new workflows from your repeated work** (`jigga workflow suggest` / `apply`). See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
 - **Always-on supervisor daemon** — cron/event/channel-driven; wakes temporary agents; loop-prevention (wake throttle + cron dedup).
 - **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.

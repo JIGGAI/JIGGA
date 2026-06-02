@@ -1,5 +1,9 @@
 # JIGGA Workflows
 
+> **Hands-on usage** (authoring, `plan`/`run`/`suggest`/`apply`, scheduling,
+> approval gating, and workflow inference) lives in
+> [`WORKFLOWS_GUIDE.md`](WORKFLOWS_GUIDE.md). This file is the conceptual overview.
+
 ## Definition
 
 A JIGGA workflow is a reusable playbook or standard operating procedure that agents can invoke for repeatable work.
