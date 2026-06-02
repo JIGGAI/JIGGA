@@ -194,11 +194,11 @@ examples/
 ```bash
 git clone https://github.com/JIGGAI/JIGGA.git
 cd JIGGA
-./scripts/install.sh               # finds Python 3.11+, builds .venv, upgrades pip, installs
+./scripts/install.sh --init        # install, then launch guided onboarding
 source .venv/bin/activate
 ```
 
-`scripts/install.sh` runs on a fresh machine *before* `jigga` exists. It probes for a Python 3.11+ (newest first, so it won't settle for macOS's stock 3.9), creates `.venv` with it, upgrades pip past the editable-install cutoff, and installs JIGGA — turning the two most common fresh-machine failures into a clear message instead. Pass `PYTHON=/path/to/python3.12` to force an interpreter, or `make install` if you prefer.
+`scripts/install.sh` runs on a fresh machine *before* `jigga` exists. It probes for a Python 3.11+ (newest first, so it won't settle for macOS's stock 3.9), creates `.venv` with it, upgrades pip past the editable-install cutoff, and installs JIGGA — turning the two most common fresh-machine failures into a clear message instead. With `--init` it then runs **`jigga onboard`** (guided setup; see below). Drop `--init` to install only; pass `PYTHON=/path/to/python3.12` to force an interpreter, or use `make install`.
 
 ### Manual steps (if you'd rather not run the script)
 
@@ -217,32 +217,22 @@ python --version                   # sanity check: must be 3.11+
 pip install --upgrade pip          # need pip >= 21.3 for editable installs (PEP 660)
 pip install -e .
 
-# 3. Create the local runtime at ~/.jigga (add --examples for sample agents/teams)
-jigga init --examples
+# 3. Guided setup — one command walks through everything:
+#    runtime (~/.jigga) -> who the assistant works for + your default agent
+#    (chief-of-staff vs personal-assistant, comms style, folder access; writes
+#    ~/.jigga/USER.md, nothing hardcoded) -> model -> chat channel.
+jigga onboard --examples
+#    add --install-daemon to also keep the supervisor always-on across reboots
+#    (launchd on macOS / systemd --user on Linux)
 
-# 4. First-run setup — who the assistant works for, its purpose, chief-of-staff
-#    vs personal-assistant, comms style, and which folders it may access.
-#    Generates ~/.jigga/USER.md and your default agent. (Nothing is hardcoded.)
-jigga setup
-
-# 5. Connect a model so agents can actually think:
-jigga model setup                  # choose a provider
-jigga model login                  # ChatGPT subscription via OAuth (no API key)
-#    — or configure an OpenAI-compatible endpoint/key in model setup.
-#    Skip step 5 to stay on the built-in dry-run provider for a no-cost trial.
-
-# 6. (optional) Connect a chat channel to talk to it:
-jigga channels setup               # e.g. Telegram
-
-# 7. Run it:
-jigga service install              # keep the supervisor always-on across reboots
-#                                    (launchd on macOS / systemd --user on Linux)
-#    …or run it in the foreground:
+# 4. Run it:
 jigga supervisor start             # wakes agents on schedules/events/messages
 #    …or one-off:
 jigga run agent <agent_id>         # run a single agent now
 jigga team run <team_id>           # kick off a team
 ```
+
+Prefer to do the steps à la carte? `jigga init --examples`, then `jigga setup` (assistant + USER.md), `jigga model setup` / `jigga model login` (ChatGPT-subscription OAuth or any OpenAI-compatible endpoint — skip to stay on the no-cost dry-run provider), `jigga channels setup` (e.g. Telegram), and `jigga service install` (always-on).
 
 Run against an isolated runtime directory instead of `~/.jigga` with `--home <path>` or `JIGGA_HOME=<path>` — handy for trying recipes without touching your main install.
 
@@ -250,7 +240,8 @@ Run against an isolated runtime directory instead of `~/.jigga` with `--home <pa
 
 ```bash
 jigga init [--examples]            # create the local runtime
-jigga setup                        # first-run onboarding (default agent + USER.md)
+jigga onboard [--install-daemon]   # guided end-to-end setup (runtime+assistant+model+channel)
+jigga setup                        # just the assistant step (default agent + USER.md)
 jigga state                        # inspect agents / teams / workflows / tasks
 jigga plan | apply | validate      # show, gate, and apply config changes (agents-as-code)
 jigga team scaffold <recipe>       # create a team + agents + workspace from a recipe
