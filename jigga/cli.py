@@ -608,12 +608,22 @@ def _cmd_apply(args: argparse.Namespace) -> int:
 
 def _cmd_validate(args: argparse.Namespace) -> int:
     result = validate_runtime_configs(get_paths(args.home))
+    problems = result.get("problems", [])
     if args.json_output:
         print_json(result)
     else:
         for kind, values in result.items():
+            if kind == "problems":
+                continue
             print(f"{kind}: {', '.join(values) if values else 'none'}")
-    return 0
+        if problems:
+            print("problems:")
+            for p in problems:
+                print(f"  - {p}")
+        else:
+            print("problems: none")
+    # Non-zero exit when there are error-level problems (warnings don't fail).
+    return 1 if any(not p.startswith("warning:") for p in problems) else 0
 
 
 def _cmd_capabilities(args: argparse.Namespace) -> int:

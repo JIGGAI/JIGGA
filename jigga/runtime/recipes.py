@@ -194,6 +194,14 @@ def _agent_doc(*, agent_id: str, name: str, role: str, tools: Any, model: Any,
     wake = _wake_from_cronjobs(cronjobs, ctx)
     if wake:
         doc["wake"] = wake
+        # Fail fast on a malformed cron in the recipe rather than scaffolding an
+        # agent that silently never wakes.
+        from jigga.runtime.validation import validate_cron
+        for sched in wake.get("schedules", []):
+            cron = sched.get("cron")
+            err = validate_cron(cron) if cron else None
+            if err:
+                raise ValueError(f"recipe agent {agent_id!r} has an invalid cron: {err}")
     return doc
 
 
