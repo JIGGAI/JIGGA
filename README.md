@@ -19,6 +19,31 @@ JIGGA lets users define:
 
 JIGGA is not intended to be just a chatbot, a one-off automation tool, or a prompt framework. It is a runtime and configuration layer for AI workers that feel persistent because their tasks, memory, state, and workflows persist.
 
+## What Sets JIGGA Apart
+
+- **vs. personal-assistant runtimes (e.g. OpenClaw):** adds **declarative teams**, **scoped memory**, **repeatable workflows**, **agents-as-code recipes**, and a **plan/diff before applying** config changes.
+- **vs. memory-agent assistants (e.g. Hermes):** makes memory **scoping, permissions, and approval explicit** — and **file-first/auditable** (every action lands in the audit log; every coordination decision is a file you can read, not an ephemeral message bus).
+- **vs. agent SDKs/frameworks (e.g. LangChain):** JIGGA is a **runtime + config layer (an "OS")**, not a library you wire into an app. You declare workers in files; the supervisor runs them.
+- **vs. cloud agent platforms:** **local-first** — your memory, state, logs, and credentials stay on your machine. **Bring your own model/credentials**; JIGGA-the-project never holds a shared key.
+
+Two things make it distinctive in practice:
+
+1. **Run on a subscription, not a per-token API key.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), so a team can *think* without metered API costs.
+2. **Auditable by construction.** A single trace id threads a whole operation (supervisor tick → agent run → tool call → subagent); `jigga trace <id>` reconstructs it. Coordination (handoffs, decisions, memory) is files under `~/.jigga/`.
+
+## Capabilities (what's built today)
+
+- **Agents / teams / workflows / tasks as code** — plain YAML; `jigga plan` / `apply` / `validate` show and gate config changes (agents-as-code, not a reconcile engine).
+- **Always-on supervisor daemon** — cron/event/channel-driven; wakes temporary agents; loop-prevention (wake throttle + cron dedup).
+- **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
+- **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
+- **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga team scaffold`), and **file-first handoffs** with an auditable decision log.
+- **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation**, **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
+- **Channels** — a normalized **Telegram** gateway (supervisor-polled, activation modes, `jigga channels setup`) with an **approval queue routed back to the channel** (`approve <code>`).
+- **Model routing** — dry-run, any OpenAI-compatible endpoint, and **ChatGPT-subscription (OAuth, no API key)**, with provider fallback.
+- **Cost & safety** — per-call cost + **per-agent budgets** (hard-stop + warn), **permission modes**, policy gating, a path-canonicalized filesystem gate, and human-in-the-loop approvals.
+- **Observability** — JSONL audit log, `jigga logs` / `jigga audit` / `jigga trace`, secret redaction, and log rotation.
+
 ## Core Philosophy
 
 Agents do not need to run forever.
@@ -151,54 +176,73 @@ examples/
   memory/
 ```
 
-## Runtime MVP
+## Installation (fresh machine)
 
-The first runtime slice implements the Week 1 foundation from [`docs/MVP_ROADMAP.md`](docs/MVP_ROADMAP.md): local runtime initialization, config loading, task queue files, state, logs, a supervisor tick, and a basic agent runner.
+**Prerequisites:** Python 3.11+ and git. macOS and Linux are supported; Windows is experimental. The only runtime dependency is PyYAML (installed for you).
 
 ```bash
-# Optional but recommended: isolated environment
-/home/linuxbrew/.linuxbrew/bin/python3 -m venv .venv
-source .venv/bin/activate
-python -m ensurepip --upgrade
-python -m pip install -e .
+# 1. Get the code
+git clone https://github.com/JIGGAI/JIGGA.git
+cd JIGGA
 
-# Create ~/.jigga-style runtime directories and copy example agents/teams
-python -m jigga.cli init --examples
+# 2. Isolated environment + install (this provides the `jigga` command)
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e .
 
-# Inspect loaded agents, teams, and task state
-python -m jigga.cli state
+# 3. Create the local runtime at ~/.jigga (add --examples for sample agents/teams)
+jigga init --examples
 
-# Create a local task for an agent
-python -m jigga.cli task create --title "Draft morning briefing" --assignee daily_briefing_agent
+# 4. First-run setup — who the assistant works for, its purpose, chief-of-staff
+#    vs personal-assistant, comms style, and which folders it may access.
+#    Generates ~/.jigga/USER.md and your default agent. (Nothing is hardcoded.)
+jigga setup
 
-# Run one supervisor polling tick; pending assigned tasks wake the target agent
-python -m jigga.cli supervisor tick
+# 5. Connect a model so agents can actually think:
+jigga model setup                  # choose a provider
+jigga model login                  # ChatGPT subscription via OAuth (no API key)
+#    — or configure an OpenAI-compatible endpoint/key in model setup.
+#    Skip step 5 to stay on the built-in dry-run provider for a no-cost trial.
 
-# Or run an agent manually
-python -m jigga.cli run agent daily_briefing_agent
+# 6. (optional) Connect a chat channel to talk to it:
+jigga channels setup               # e.g. Telegram
+
+# 7. Run it:
+jigga supervisor start             # always-on: wakes agents on schedules/events/messages
+#    …or one-off:
+jigga run agent <agent_id>         # run a single agent now
+jigga team run <team_id>           # kick off a team
 ```
 
-Use `--home <path>` or `JIGGA_HOME=<path>` to run against an isolated runtime directory instead of `~/.jigga`.
+Run against an isolated runtime directory instead of `~/.jigga` with `--home <path>` or `JIGGA_HOME=<path>` — handy for trying recipes without touching your main install.
 
-## Terraform-Style CLI Direction
-
-Planned interface:
+## CLI reference (most-used)
 
 ```bash
-jigga init
-jigga plan
-jigga apply
-jigga state
-jigga run agent daily_briefing_agent
-jigga workflow plan morning_day_summary
-jigga workflow apply morning_day_summary
+jigga init [--examples]            # create the local runtime
+jigga setup                        # first-run onboarding (default agent + USER.md)
+jigga state                        # inspect agents / teams / workflows / tasks
+jigga plan | apply | validate      # show, gate, and apply config changes (agents-as-code)
+jigga team scaffold <recipe>       # create a team + agents + workspace from a recipe
+jigga team run|handoff|decisions   # run a team / fire a handoff / read the decision log
+jigga workflow plan|run <id>       # plan or run a workflow
+jigga run agent <id>               # run one agent
+jigga supervisor start|tick        # the always-on daemon (or a single tick)
+jigga model setup|login|status     # configure / authenticate the model provider
+jigga channels setup|status        # connect a chat channel (Telegram)
+jigga memory search <query>        # search scoped memory
+jigga cost [--since 7d]            # per-agent model spend + budgets
+jigga trace <id> | audit | logs    # observability
+jigga approvals list|approve <code># human-in-the-loop
 ```
 
 ## Status
 
-This repo contains the initial product and architecture plan, starter schemas, example configurations, and the first Python runtime foundation.
+A working local-first runtime: **545 passing tests** across the supervisor, agent/team runtimes, scoped memory, channels, model routing, cost/budgets, observability, and the default-agent + setup flow. Standard library + PyYAML only.
 
-See [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/MVP_ROADMAP.md`](docs/MVP_ROADMAP.md) for the full handoff plan.
+Roadmap to v1.0 (see [`docs/ROADMAP_TO_PRODUCTION.md`](docs/ROADMAP_TO_PRODUCTION.md)): finish real connectors (email), OS-level isolation (sandbox + secrets broker), and distribution (`pip install jigga`, service autostart, a dashboard).
+
+See [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/AGENT_TEAM_GUIDE.md`](docs/AGENT_TEAM_GUIDE.md) for the deeper design + how to build agent teams.
 
 ## Additional Architecture Guides
 
