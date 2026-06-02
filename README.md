@@ -46,9 +46,11 @@ Two things make it distinctive in practice:
 
 ## Core Philosophy
 
-Agents do not need to run forever.
+**Agents as infrastructure.** You declare agents, teams, workflows, and policies as code — versioned, diffable, reproducible, scaffolded from recipes, and rolled out with `jigga plan` / `apply`. You manage your AI workforce the way you manage infrastructure, not by clicking around a UI.
 
-The **supervisor daemon** is always on. It watches schedules, events, task queues, and agent requests, then wakes agents when there is work to do. Agents run, act, update memory/state, and stop. This creates the feeling of always-on AI workers without wasting resources or creating runaway loops.
+**File-first.** Everything lives as plain files on disk under `~/.jigga/` — config, memory, tasks, logs, and coordination (handoffs, decisions). No hidden database, no ephemeral message bus. If it happened, there's a file for it: readable, greppable, version-controllable, and auditable.
+
+**Agents don't need to run forever.** The **supervisor daemon** is always on. It watches schedules, events, task queues, and agent requests, then wakes agents when there is work to do. Agents run, act, update memory/state, and stop — the feeling of always-on AI workers without wasting resources or creating runaway loops.
 
 ## Tool Capability Specs
 
@@ -74,13 +76,15 @@ Local Filesystem + Indexes
 
 ## Design Principles
 
-1. **Local-first** — Memory, state, logs, and configuration live on the user's machine by default.
-2. **Declarative** — Users define desired agents, teams, workflows, and policies in files.
-3. **Memory-centric** — Agents are temporary executors; memory is the persistent intelligence layer.
-4. **Scoped context** — Not every agent sees everything. Memory is filtered by role, need, and trust.
-5. **Safe autonomy** — Agents may act independently, but only within explicit permissions.
-6. **Workflow-aware** — Repeated work becomes reusable playbooks that can be invoked, proposed, reviewed, and approved.
-7. **Agent-to-agent activation** — Agents can delegate tasks and wake other agents through the supervisor.
+1. **Agents as infrastructure** — Agents, teams, workflows, and policies are declared as code: versioned, diffable, reproducible (`jigga plan` / `apply`), and scaffolded from recipes.
+2. **File-first** — All state (config, memory, tasks, logs, coordination) is plain files under `~/.jigga/` — auditable and greppable, with no hidden store or ephemeral message bus.
+3. **Local-first** — Memory, state, logs, and configuration live on the user's machine by default.
+4. **Declarative** — Users define desired agents, teams, workflows, and policies in files.
+5. **Memory-centric** — Agents are temporary executors; memory is the persistent intelligence layer.
+6. **Scoped context** — Not every agent sees everything. Memory is filtered by role, need, and trust.
+7. **Safe autonomy** — Agents may act independently, but only within explicit permissions.
+8. **Workflow-aware** — Repeated work becomes reusable playbooks that can be invoked, proposed, reviewed, and approved.
+9. **Agent-to-agent activation** — Agents can delegate tasks and wake other agents through the supervisor.
 
 ## Example Agent
 
