@@ -32,7 +32,6 @@ from typing import Any
 
 from jigga.core.config import load_runtime_config
 from jigga.core.io import append_jsonl, ensure_dir, read_jsonl, rewrite_jsonl, write_json
-from jigga.core.models import now_iso
 from jigga.runtime.tasks import forget_tasks
 
 _MARKER = ".compaction.json"
@@ -155,5 +154,8 @@ def maybe_compact(home: Path, *, now: datetime | None = None) -> dict[str, Any] 
             return None
     summary = compact_memory(home, now=now)
     ensure_dir(marker.parent)
-    write_json(marker, {"last_run": now_iso()})
+    # Stamp the marker with the logical `now`, not real wall-clock time — the
+    # rate-limit guard compares against the injected `now`, so mixing in real
+    # time makes the guard (and its test) misfire once real time drifts past it.
+    write_json(marker, {"last_run": now.isoformat()})
     return summary
