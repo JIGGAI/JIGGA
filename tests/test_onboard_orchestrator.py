@@ -70,8 +70,8 @@ def test_onboard_without_daemon_does_not_install_service(tmp_path: Path, monkeyp
 
 def test_onboard_interactive_offers_model_per_confirmation(tmp_path: Path, monkeypatch) -> None:
     # run_onboarding asks 6 questions (all blank -> defaults), then we answer
-    # the model confirm "y" and the channel confirm "n".
-    answers = iter(["", "", "", "", "", "", "y", "n"])
+    # the model confirm "y", the channel confirm "n", and the start-now confirm "n".
+    answers = iter(["", "", "", "", "", "", "y", "n", "n"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers, ""))
 
     ran = {"model": False, "channels": False}
@@ -92,3 +92,40 @@ def test_onboard_unsupported_service_does_not_crash(tmp_path: Path, monkeypatch)
     rc = main(["--home", str(tmp_path), "onboard", "--non-interactive",
                "--skip-model", "--skip-channels", "--install-daemon"])
     assert rc == 0  # onboarding still completes; service step degrades gracefully
+
+
+# ---- stdin hardening (regression: terminal focus-report escapes ate the answer) ----
+
+def test_sanitize_answer_strips_escape_sequences():
+    from jigga.cli import _sanitize_answer
+    # focus-out/in events a terminal injects on alt-tab, prepended to a real "y"
+    assert _sanitize_answer("\x1b[O\x1b[I\x1b[O\x1b[Iy") == "y"
+    assert _sanitize_answer("  YES \n") == "yes"
+    assert _sanitize_answer("\x1b[O\x1b[I") == ""  # garbage-only -> empty
+
+
+def test_confirm_survives_focus_escape_noise(monkeypatch):
+    from jigga.cli import _confirm
+    # The exact failure RJ hit: device-login wait left focus escapes in the buffer,
+    # and the channel confirm read them prepended to "y" -> wrongly treated as not-yes.
+    monkeypatch.setattr("builtins.input", lambda _p="": "\x1b[O\x1b[I\x1b[O\x1b[Iy")
+    assert _confirm("?", default=False) is True
+    # garbage-only falls back to the default (not a spurious yes/no)
+    monkeypatch.setattr("builtins.input", lambda _p="": "\x1b[O\x1b[I")
+    assert _confirm("?", default=False) is False
+    assert _confirm("?", default=True) is True
+
+
+def test_onboard_interactive_start_now_installs(tmp_path: Path, monkeypatch, _no_real_service) -> None:
+    # 6 setup blanks, model "n", channel "n", start-now "y"
+    answers = iter(["", "", "", "", "", "", "n", "n", "y"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
+    assert main(["--home", str(tmp_path), "onboard"]) == 0
+    assert len(_no_real_service) == 1  # service installed on "y"
+
+
+def test_onboard_interactive_decline_start_now(tmp_path: Path, monkeypatch, _no_real_service) -> None:
+    answers = iter(["", "", "", "", "", "", "n", "n", "n"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
+    assert main(["--home", str(tmp_path), "onboard"]) == 0
+    assert _no_real_service == []  # declined -> not installed
