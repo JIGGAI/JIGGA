@@ -1,5 +1,26 @@
 # JIGGA Workflows
 
+> Workflows are **built and usable today** — authoring, `jigga workflow plan` /
+> `run`, supervisor scheduling, approval gating, and workflow inference
+> (`suggest` / `apply`) all work and are covered by tests. For how to use them,
+> see [`WORKFLOWS_GUIDE.md`](WORKFLOWS_GUIDE.md) (the source of truth for current
+> behavior). This file is the **design & rationale**, and it also sketches a few
+> **planned** extensions — see "Built today vs. planned" below.
+
+## Built today vs. planned
+
+**Built and tested:** declarative workflow files; ordered (linear) steps with
+named-output chaining; `agent`/`action`/`input`/`output`/`approval`/`optional`
+fields; model-backed steps (`draft_with_model`); `trigger.schedule` firing via
+the supervisor; per-step approval gating (explicit or risk-based); memory writes;
+and **workflow inference** (`jigga workflow suggest` / `apply`).
+
+**Planned (described below but not yet implemented):** event triggers like
+`calendar_event_upcoming`/offsets (only `trigger.schedule` fires today),
+`on_fail` step handling (the field parses but isn't enforced yet), and
+conditional/branching steps (today's runner is a linear pipeline — branch
+*across agents* with team handoffs instead).
+
 ## Definition
 
 A JIGGA workflow is a reusable playbook or standard operating procedure that agents can invoke for repeatable work.

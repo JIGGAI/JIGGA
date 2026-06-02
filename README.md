@@ -26,19 +26,21 @@ JIGGA is not intended to be just a chatbot, a one-off automation tool, or a prom
 - **vs. agent SDKs/frameworks (e.g. LangChain):** JIGGA is a **runtime + config layer (an "OS")**, not a library you wire into an app. You declare workers in files; the supervisor runs them.
 - **vs. cloud agent platforms:** **local-first** — your memory, state, logs, and credentials stay on your machine. **Bring your own model/credentials**; JIGGA-the-project never holds a shared key.
 
-Two things make it distinctive in practice:
+Three things make it distinctive in practice:
 
-1. **Run on a subscription, not a per-token API key.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), so a team can *think* without metered API costs.
+1. **Run on subscriptions and your local CLIs, not metered API keys.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), and agents can **delegate to your locally-installed `codex` and `claude` CLIs** as subagent backends — executing those tools directly with their own login, not a per-token API key (`jigga auth login codex_cli|claude_code`). A team can *think* without metered API costs.
 2. **Auditable by construction.** A single trace id threads a whole operation (supervisor tick → agent run → tool call → subagent); `jigga trace <id>` reconstructs it. Coordination (handoffs, decisions, memory) is files under `~/.jigga/`.
+3. **Repeatable work becomes infrastructure — and JIGGA proposes it.** Beyond declaring workflows by hand, JIGGA watches your audit log for recurring multi-step patterns and **suggests turning them into reusable, schedulable workflows** (`jigga workflow suggest` / `apply`). Your SOPs accrete from what you actually do. See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
 
 ## Capabilities (what's built today)
 
 - **Agents / teams / workflows / tasks as code** — plain YAML; `jigga plan` / `apply` / `validate` show and gate config changes (agents-as-code, not a reconcile engine).
+- **Workflows & inference** — declarative, schedulable playbooks (`jigga workflow plan` / `run`); steps chain by named output, can be model-backed, and gate risky steps for approval. **JIGGA also infers and proposes new workflows from your repeated work** (`jigga workflow suggest` / `apply`). See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
 - **Always-on supervisor daemon** — cron/event/channel-driven; wakes temporary agents; loop-prevention (wake throttle + cron dedup).
 - **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
 - **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga team scaffold`), and **file-first handoffs** with an auditable decision log.
-- **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation**, **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
+- **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation** (incl. **local `codex` / `claude` CLI backends**, run directly instead of via API), **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
 - **Channels** — a normalized **Telegram** gateway (supervisor-polled, activation modes, `jigga channels setup`) with an **approval queue routed back to the channel** (`approve <code>`).
 - **Model routing** — dry-run, any OpenAI-compatible endpoint, and **ChatGPT-subscription (OAuth, no API key)**, with provider fallback.
 - **Cost & safety** — per-call cost + **per-agent budgets** (hard-stop + warn), **permission modes**, policy gating, a path-canonicalized filesystem gate, and human-in-the-loop approvals.
@@ -46,9 +48,13 @@ Two things make it distinctive in practice:
 
 ## Core Philosophy
 
-Agents do not need to run forever.
+**Agents as infrastructure.** You declare agents, teams, workflows, and policies as code — versioned, diffable, reproducible, scaffolded from recipes, and rolled out with `jigga plan` / `apply`. You manage your AI workforce the way you manage infrastructure, not by clicking around a UI.
 
-The **supervisor daemon** is always on. It watches schedules, events, task queues, and agent requests, then wakes agents when there is work to do. Agents run, act, update memory/state, and stop. This creates the feeling of always-on AI workers without wasting resources or creating runaway loops.
+**File-first.** Everything lives as plain files on disk under `~/.jigga/` — config, memory, tasks, logs, and coordination (handoffs, decisions). No hidden database, no ephemeral message bus. If it happened, there's a file for it: readable, greppable, version-controllable, and auditable.
+
+**You own your data, and it's portable.** Your agents, memory, history, and config are your files — copy, back up, or version the `~/.jigga/` directory and your entire AI workforce moves with it to another machine. JIGGA never *requires* your personal details to live on a third-party server; you bring your own model and credentials, which stay local.
+
+**Agents don't need to run forever.** The **supervisor daemon** is always on. It watches schedules, events, task queues, and agent requests, then wakes agents when there is work to do. Agents run, act, update memory/state, and stop — the feeling of always-on AI workers without wasting resources or creating runaway loops.
 
 ## Tool Capability Specs
 
@@ -74,13 +80,16 @@ Local Filesystem + Indexes
 
 ## Design Principles
 
-1. **Local-first** — Memory, state, logs, and configuration live on the user's machine by default.
-2. **Declarative** — Users define desired agents, teams, workflows, and policies in files.
-3. **Memory-centric** — Agents are temporary executors; memory is the persistent intelligence layer.
-4. **Scoped context** — Not every agent sees everything. Memory is filtered by role, need, and trust.
-5. **Safe autonomy** — Agents may act independently, but only within explicit permissions.
-6. **Workflow-aware** — Repeated work becomes reusable playbooks that can be invoked, proposed, reviewed, and approved.
-7. **Agent-to-agent activation** — Agents can delegate tasks and wake other agents through the supervisor.
+1. **Agents as infrastructure** — Agents, teams, workflows, and policies are declared as code: versioned, diffable, reproducible (`jigga plan` / `apply`), and scaffolded from recipes.
+2. **File-first** — All state (config, memory, tasks, logs, coordination) is plain files under `~/.jigga/` — auditable and greppable, with no hidden store or ephemeral message bus.
+3. **You own your data, fully portable** — Your agents/memory/history are your files; move `~/.jigga/` to another machine and everything comes with it. No requirement to store personal details on a third-party server; bring your own model + credentials.
+4. **Local-first** — Memory, state, logs, and configuration live on the user's machine by default.
+5. **Declarative** — Users define desired agents, teams, workflows, and policies in files.
+6. **Memory-centric** — Agents are temporary executors; memory is the persistent intelligence layer.
+7. **Scoped context** — Not every agent sees everything. Memory is filtered by role, need, and trust.
+8. **Safe autonomy** — Agents may act independently, but only within explicit permissions.
+9. **Workflow-aware** — Repeated work becomes reusable playbooks that can be invoked, proposed, reviewed, and approved.
+10. **Agent-to-agent activation** — Agents can delegate tasks and wake other agents through the supervisor.
 
 ## Example Agent
 
