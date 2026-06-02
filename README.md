@@ -80,9 +80,9 @@ Local Filesystem + Indexes
 
 ## Design Principles
 
-1. **Agents as infrastructure** — Agents, teams, workflows, and policies are declared as code: versioned, diffable, reproducible (`jigga plan` / `apply`), and scaffolded from recipes.
-2. **File-first** — All state (config, memory, tasks, logs, coordination) is plain files under `~/.jigga/` — auditable and greppable, with no hidden store or ephemeral message bus.
-3. **You own your data, fully portable** — Your agents/memory/history are your files; move `~/.jigga/` to another machine and everything comes with it. No requirement to store personal details on a third-party server; bring your own model + credentials.
+1. **Agents as infrastructure** — Agents, teams, workflows, and policies are declared as code: versioned, diffable, and rolled out with `jigga plan` / `apply`.
+2. **File-first** — All state lives as plain files under `~/.jigga/` — auditable and greppable, with no hidden store or message bus.
+3. **You own your data, fully portable** — Your agents, memory, and history are your files; move `~/.jigga/` and everything comes with it. No personal details required on a third-party server.
 4. **Local-first** — Memory, state, logs, and configuration live on the user's machine by default.
 5. **Declarative** — Users define desired agents, teams, workflows, and policies in files.
 6. **Memory-centric** — Agents are temporary executors; memory is the persistent intelligence layer.
