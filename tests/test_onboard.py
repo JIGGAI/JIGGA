@@ -63,3 +63,20 @@ def test_nothing_personal_shipped_in_repo() -> None:
     tracked = subprocess.run(["git", "ls-files", "USER.md", "**/USER.md"],
                              cwd=root, capture_output=True, text=True).stdout
     assert tracked.strip() == "", f"a USER.md is tracked in the repo: {tracked!r}"
+
+
+def test_onboarding_grants_extra_directories(tmp_path: Path) -> None:
+    """The setup 'which folders?' answer is added to the default agent's
+    filesystem allowlist (as recursive globs), alongside its JIGGA home."""
+    from jigga.runtime.policy import evaluate_filesystem
+    paths = init_runtime(tmp_path)
+    # answers: call_you, tz, purpose, role(1), style(1), dirs
+    run_onboarding(paths, input_fn=_scripted(
+        ["RJ", "", "", "1", "1", "~/Projects/site, /data/reports"]),
+        print_fn=lambda *a, **k: None)
+    agent = load_agents(paths.agents)["chief"]
+    allow = agent.permissions["filesystem"]["allow"]
+    assert "~/Projects/site/**" in allow and "/data/reports/**" in allow
+    assert evaluate_filesystem(agent, "~/Projects/site/index.md", "write").status == "allow"
+    assert evaluate_filesystem(agent, "/data/reports/q1.csv", "read").status == "allow"
+    assert evaluate_filesystem(agent, "~/other/secret.txt").status != "allow"   # not granted

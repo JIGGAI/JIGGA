@@ -65,6 +65,21 @@ def _all_capability_actions() -> list[str]:
     return actions
 
 
+def _normalize_dirs(raw: str) -> list[str]:
+    """Parse a comma-separated list of folders into recursive filesystem-allow
+    globs (e.g. `~/Projects, /data` → [`~/Projects/**`, `/data/**`]). Blank →
+    none. A path that already carries a glob is kept as-is."""
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        p = part.strip().rstrip("/")
+        if not p:
+            continue
+        glob = p if any(c in p for c in "*?[") else f"{p}/**"
+        if glob not in out:
+            out.append(glob)
+    return out
+
+
 def _choose(input_fn: Callable[[str], str], print_fn: Callable[..., None],
             prompt: str, options: list[tuple[str, str]], default: str) -> str:
     print_fn(f"\n{prompt}")
@@ -122,6 +137,8 @@ def run_onboarding(
         [("concise", _STYLES["concise"]), ("detailed", _STYLES["detailed"]), ("warm", _STYLES["warm"])],
         default="concise",
     )
+    extra_dirs = _normalize_dirs(ask(
+        "\nAny folders the assistant may read/write? (comma-separated, Enter for none) "))
 
     spec = _ROLES[role_kind]
     # USER.md — generated from the answers, never shipped pre-filled.
@@ -150,7 +167,7 @@ def run_onboarding(
                 # we can assume exists — `--home`/JIGGA_HOME may move it off
                 # ~/.jigga). `secrets/**` (incl. the runtime's own secrets dir)
                 # stays denied. Add your own project paths by editing this agent.
-                "filesystem": {"allow": [f"{paths.home}/**"],
+                "filesystem": {"allow": [f"{paths.home}/**", *extra_dirs],
                                "deny": [".env", "id_rsa", "~/.ssh/**", "~/.aws/**", "secrets/**"]},
                 "calendar": "read",
                 "email": "read",
@@ -165,8 +182,10 @@ def run_onboarding(
     echo(f"\n✓ Setup complete. Default agent: {spec['name']} (`{agent_id}`).")
     echo(f"  USER.md: {user_path}")
     echo("  It's the catch-all for inbound messages and can run/oversee every team.")
+    if extra_dirs:
+        echo(f"  Filesystem access: its JIGGA home + {', '.join(extra_dirs)}")
     return {"agent_id": agent_id, "role_kind": role_kind, "style": style,
-            "created": created, "user_md": str(user_path)}
+            "created": created, "user_md": str(user_path), "extra_dirs": extra_dirs}
 
 
 def _looks_filled(user_path: Path) -> bool:
