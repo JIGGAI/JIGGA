@@ -26,6 +26,8 @@ from jigga.runtime.handlers import (
     _skill_pack_handler,
     _spawn_subagent_handler,
     _summarization_handler,
+    _team_insight_handler,
+    _team_orchestration_handler,
 )
 from jigga.runtime.policy import (
     PolicyDecision,
@@ -158,6 +160,8 @@ HANDLERS: dict[str, Handler] = {
     "runtime.telegram": telegram_handler,
     "skill_pack.default": _skill_pack_handler,
     "mcp_server.subprocess": _mcp_server_handler,
+    "runtime.team_insight": _team_insight_handler,
+    "runtime.team_orchestration": _team_orchestration_handler,
 }
 
 

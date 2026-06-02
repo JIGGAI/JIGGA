@@ -252,6 +252,26 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "risk_level": "low",
         "handler": "runtime.draft_with_model",
     },
+    {
+        "name": "team-insight",
+        "version": "0.1.0",
+        "summary": "Read-only cross-team visibility for an orchestrator: list every team "
+                   "(members + lead) and read any team's lead-curated plan/priorities, recent "
+                   "status, and handoff decision log. File-first reads.",
+        "actions": ["team.list", "team.status"],
+        "risk_level": "low",
+        "handler": "runtime.team_insight",
+    },
+    {
+        "name": "team-orchestration",
+        "version": "0.1.0",
+        "summary": "Dispatch work across the org: run a team (team.run) or assign a task to any "
+                   "agent (task.assign). Commands flow through the task queue + audit log, so they "
+                   "stay file-first and auditable. For the default/chief agent.",
+        "actions": ["team.run", "task.assign"],
+        "risk_level": "medium",
+        "handler": "runtime.team_orchestration",
+    },
 ]
 
 
