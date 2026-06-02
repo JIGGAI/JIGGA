@@ -141,15 +141,16 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 - ✅ **Filesystem capabilities** (PR #9) — `read_file`/`write_file`/`list_directory`/`search_files` as a bundled native capability.
 - ✅ **Project-local capability discovery** (PR #10) — `<project>/.jigga/capabilities/` with auto-detect from cwd.
 - ✅ **Google Calendar via OAuth** (PR #11) — first opt-in first-party capability; also introduced the **three-tier capability model** (bundled / opt-in first-party / user-or-project-local).
-- ⏭️ **Email connector** (IMAP read + SMTP draft) — next slice. Ships as opt-in first-party (`jigga capabilities install email`).
-- ⏭️ **iCal stopgap** (small follow-up after email) — covers Apple/iCloud users and public calendar feeds. Also opt-in first-party — no OAuth, just an iCal URL.
-- ⏭️ **Outlook Calendar** (later) — same opt-in pattern, Microsoft Graph instead of Google.
+- ✅ **Google Workspace via `gog`** (`runtime/gog.py`, `optional_capabilities/gog/`) — opt-in first-party capability wrapping the `gog` CLI: **Gmail** (`gmail_search`/`get`/`draft`/`send` — send gated), Calendar, Drive, Sheets, Docs. Keyring-backed; auth via `jigga gog login --services gmail,calendar,…`. **This covers email for Gmail/Google Workspace users** (the roadmap's "email connector" line predated it).
+- ⏭️ **Provider-agnostic email** (native IMAP read + SMTP draft/send) — for users not on Google. Opt-in first-party (`jigga capabilities install email`). The remaining email gap.
+- ⏭️ **iCal stopgap** — covers Apple/iCloud users and public calendar feeds. Opt-in first-party — no OAuth, just an iCal URL.
+- ⏭️ **Outlook Calendar / Microsoft 365** (later) — same opt-in pattern, Microsoft Graph instead of Google.
 
 **Convention locked in by PR #11:** every real third-party connector ships as an opt-in first-party capability under `jigga/optional_capabilities/`. Users who don't want it never see it. No connector goes into `BUILTIN_CAPABILITY_DATA` — bundled is reserved for universal local primitives (filesystem, notifications, subagent-delegation, summarization).
 
 **Convention locked in for first-party connectors:** bring-your-own-OAuth-client / bring-your-own-credentials. JIGGA-the-org never holds a shared credential. A future cloud version of JIGGA is a separate product target with a different trust model — out of scope for this codebase.
 
-**Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification. Currently ~80% there (Google Calendar + notifications + filesystem are real; email is the gating item).
+**Exit:** the example `morning_day_summary` workflow produces a real summary on a real calendar/inbox and shows up as a real desktop notification. For a **Google/Gmail user** this is effectively reachable today (Gmail + Calendar via `gog`, notifications, filesystem are all real). The remaining gap is **provider-agnostic** email/calendar (IMAP/SMTP + iCal) for non-Google users.
 
 ### Milestone B — Channels (how invocations reach the runtime) — **DONE ENOUGH** (B5/Slack deferred)
 *Goal: JIGGA responds to events that didn't come from a CLI — through a single normalized gateway, always on.*
