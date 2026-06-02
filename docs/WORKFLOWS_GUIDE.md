@@ -1,9 +1,10 @@
 # Workflows & Workflow Inference — usage guide
 
-This is the hands-on guide: how to author a workflow, run/plan/schedule it, gate
-risky steps for approval, and — the differentiator — let JIGGA **propose
-workflows from your repeated work**. For the conceptual overview see
-[`WORKFLOWS.md`](WORKFLOWS.md); for steps that call a model see
+This is the hands-on guide and the **source of truth for current behavior**: how
+to author a workflow, run/plan/schedule it, gate risky steps for approval, and —
+the differentiator — let JIGGA **propose workflows from your repeated work**.
+Everything here is built and tested. For design rationale (and a few planned
+extensions) see [`WORKFLOWS.md`](WORKFLOWS.md); for steps that call a model see
 [`MODEL_BACKED_WORKFLOWS.md`](MODEL_BACKED_WORKFLOWS.md).
 
 A **workflow** is a declarative playbook/SOP — a file under
