@@ -446,6 +446,14 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_start.add_argument("--interval-seconds", type=float, default=60)
     supervisor_start.add_argument("--max-ticks", type=int, default=None, help="Stop after N ticks; useful for tests/demos")
 
+    service = sub.add_parser("service", help="Install the supervisor as an always-on user service (launchd/systemd)")
+    service_sub = service.add_subparsers(dest="service_command", required=True)
+    service_install = service_sub.add_parser("install", help="Register + start the supervisor as a user service")
+    service_install.add_argument("--interval-seconds", type=float, default=60)
+    service_install.add_argument("--dry-run", action="store_true", help="Show the unit + commands without installing")
+    service_sub.add_parser("uninstall", help="Stop and remove the supervisor user service")
+    service_sub.add_parser("status", help="Show whether the supervisor service is installed and running")
+
     task = sub.add_parser("task", help="Manage local task queue")
     task_sub = task.add_subparsers(dest="task_command", required=True)
     task_create = task_sub.add_parser("create")
@@ -1079,6 +1087,27 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_service(args: argparse.Namespace) -> int:
+    from jigga.runtime.service import install_service, status_service, uninstall_service
+
+    paths = get_paths(args.home)
+    if args.service_command == "install":
+        result = install_service(paths, interval_seconds=args.interval_seconds, dry_run=args.dry_run)
+        print_json(result)
+        if result["backend"] == "unsupported":
+            return 1
+        if args.dry_run:
+            return 0
+        return 0 if result.get("started") else 1
+    if args.service_command == "uninstall":
+        print_json(uninstall_service(paths))
+        return 0
+    # status
+    result = status_service(paths)
+    print_json(result)
+    return 0
+
+
 def _cmd_task(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.task_command == "create":
@@ -1122,6 +1151,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "model": _cmd_model,
     "run": _cmd_run,
     "supervisor": _cmd_supervisor,
+    "service": _cmd_service,
     "task": _cmd_task,
 }
 
