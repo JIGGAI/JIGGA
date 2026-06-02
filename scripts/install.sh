@@ -11,6 +11,7 @@
 #
 # Usage:
 #   ./scripts/install.sh              # create .venv and install
+#   ./scripts/install.sh --init       # also run `jigga init` + `jigga setup`
 #   VENV=.venv311 ./scripts/install.sh  # custom venv dir
 #   PYTHON=/path/to/python3.12 ./scripts/install.sh  # force an interpreter
 
@@ -19,6 +20,19 @@ set -euo pipefail
 MIN_MAJOR=3
 MIN_MINOR=11
 VENV="${VENV:-.venv}"
+DO_INIT=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --init) DO_INIT=1 ;;
+    -h|--help)
+      # Print the leading comment header (everything from line 2 up to the
+      # first non-comment line), stripping the leading "# ".
+      sed -n '2,${/^#/!q;s/^# \{0,1\}//;p;}' "$0"
+      exit 0 ;;
+    *) printf 'Unknown argument: %s (try --help)\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 # Resolve repo root from this script's location so it works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,7 +109,25 @@ say "Installing JIGGA (editable)"
 "$VPY" -m pip install --quiet -e .
 ok "jigga installed"
 
-cat <<EOF
+# Resolve the installed console script for the chained --init flow.
+JIGGA="$VENV/bin/jigga"
+[ -x "$JIGGA" ] || JIGGA="$VENV/Scripts/jigga.exe"  # Windows layout
+
+if [ "$DO_INIT" -eq 1 ]; then
+  [ -x "$JIGGA" ] || die "jigga console script not found under $VENV after install"
+  say "Creating the local runtime (jigga init --examples)"
+  "$JIGGA" init --examples
+  say "First-run setup (jigga setup)"
+  "$JIGGA" setup
+  cat <<EOF
+
+$(say "Ready. Activate the environment and connect a model:")
+  source $VENV/bin/activate
+  jigga model setup         # connect a model so agents can think
+
+EOF
+else
+  cat <<EOF
 
 $(say "Done. Next steps:")
   source $VENV/bin/activate
@@ -103,4 +135,7 @@ $(say "Done. Next steps:")
   jigga setup               # who the assistant works for + your default agent
   jigga model setup         # connect a model so agents can think
 
+  (or re-run with --init to do the first two automatically)
+
 EOF
+fi
