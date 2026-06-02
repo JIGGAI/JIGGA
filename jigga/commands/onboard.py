@@ -146,7 +146,11 @@ def run_onboarding(
             "tools": _all_capability_actions(),
             "permissions": {
                 "memory": {"scope": "task_only"},
-                "filesystem": {"allow": ["~/.jigga/**", "~/Projects/**"],
+                # Scoped to this install's actual runtime home (the only directory
+                # we can assume exists — `--home`/JIGGA_HOME may move it off
+                # ~/.jigga). `secrets/**` (incl. the runtime's own secrets dir)
+                # stays denied. Add your own project paths by editing this agent.
+                "filesystem": {"allow": [f"{paths.home}/**"],
                                "deny": [".env", "id_rsa", "~/.ssh/**", "~/.aws/**", "secrets/**"]},
                 "calendar": "read",
                 "email": "read",
