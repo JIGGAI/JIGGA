@@ -13,7 +13,6 @@ Errors are returned as human-readable strings; warnings are prefixed `warning:`
 
 from __future__ import annotations
 
-from typing import Any
 
 from jigga.core.models import AgentConfig, TeamConfig
 
