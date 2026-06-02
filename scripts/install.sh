@@ -11,7 +11,7 @@
 #
 # Usage:
 #   ./scripts/install.sh              # create .venv and install
-#   ./scripts/install.sh --init       # also run `jigga init` + `jigga setup`
+#   ./scripts/install.sh --init       # also run guided `jigga onboard`
 #   VENV=.venv311 ./scripts/install.sh  # custom venv dir
 #   PYTHON=/path/to/python3.12 ./scripts/install.sh  # force an interpreter
 
@@ -115,15 +115,14 @@ JIGGA="$VENV/bin/jigga"
 
 if [ "$DO_INIT" -eq 1 ]; then
   [ -x "$JIGGA" ] || die "jigga console script not found under $VENV after install"
-  say "Creating the local runtime (jigga init --examples)"
-  "$JIGGA" init --examples
-  say "First-run setup (jigga setup)"
-  "$JIGGA" setup
+  say "Guided setup (jigga onboard)"
+  # One guided flow: runtime + assistant + model + channel. Add --install-daemon
+  # yourself, or run `jigga service install`, to keep the supervisor always-on.
+  "$JIGGA" onboard --examples
   cat <<EOF
 
-$(say "Ready. Activate the environment and connect a model:")
+$(say "Ready. Activate the environment to use jigga:")
   source $VENV/bin/activate
-  jigga model setup         # connect a model so agents can think
 
 EOF
 else
@@ -131,11 +130,10 @@ else
 
 $(say "Done. Next steps:")
   source $VENV/bin/activate
-  jigga init --examples     # create ~/.jigga
-  jigga setup               # who the assistant works for + your default agent
-  jigga model setup         # connect a model so agents can think
+  jigga onboard --examples  # guided: runtime + assistant + model + channel
+  #   add --install-daemon to also keep the supervisor always-on
 
-  (or re-run with --init to do the first two automatically)
+  (or re-run this script with --init to launch onboarding automatically)
 
 EOF
 fi

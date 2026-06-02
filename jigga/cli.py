@@ -216,6 +216,21 @@ def build_parser() -> argparse.ArgumentParser:
     setup = sub.add_parser("setup", help="Set up your assistant: who it works with, its purpose, and the default agent")
     setup.add_argument("--overwrite", action="store_true", help="Overwrite an existing default agent / USER.md")
 
+    onboard = sub.add_parser(
+        "onboard",
+        help="Guided end-to-end setup: init -> assistant -> model -> channel -> always-on service",
+    )
+    onboard.add_argument("--examples", action="store_true", help="Also copy bundled example agents and teams")
+    onboard.add_argument("--overwrite", action="store_true", help="Overwrite an existing default agent / USER.md")
+    onboard.add_argument("--install-daemon", action="store_true",
+                         help="Install the supervisor as an always-on user service (launchd/systemd) at the end")
+    onboard.add_argument("--service-interval", type=float, default=60,
+                         help="Supervisor poll interval for the installed service (seconds)")
+    onboard.add_argument("--skip-model", action="store_true", help="Don't offer model setup")
+    onboard.add_argument("--skip-channels", action="store_true", help="Don't offer channel setup")
+    onboard.add_argument("--non-interactive", action="store_true",
+                         help="No prompts: scaffold defaults, skip model/channel steps (use --install-daemon to still install the service)")
+
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
 
@@ -487,6 +502,71 @@ def _cmd_init(args: argparse.Namespace) -> int:
 def _cmd_setup(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     run_onboarding(paths, overwrite=args.overwrite)
+    return 0
+
+
+def _confirm(question: str, *, default: bool, echo=print) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    answer = input(f"{question} {suffix}: ").strip().lower()
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def _cmd_onboard(args: argparse.Namespace) -> int:
+    """Guided end-to-end setup, OpenClaw-`onboard`-style: one command takes a
+    fresh clone from an empty runtime to a configured (optionally always-on)
+    assistant by chaining the steps that already exist as standalone commands.
+
+    Non-interactive scaffolds sane defaults and skips the inherently
+    interactive model/channel wizards; --install-daemon still runs since it's
+    flag-driven."""
+    interactive = not args.non_interactive
+    paths = init_runtime(args.home, examples=args.examples)
+    print(f"\n=== JIGGA onboarding === (home: {paths.home})")
+
+    # 1. Who the assistant works for + the default agent (USER.md + agent yaml).
+    run_onboarding(
+        paths,
+        input_fn=input if interactive else (lambda _prompt: ""),
+        overwrite=args.overwrite,
+    )
+
+    # 2. Model — needed for agents to think. Interactive only (provider choice
+    #    + secrets); offered unless skipped.
+    if interactive and not args.skip_model and _confirm(
+        "\nConnect a model now so agents can think?", default=True
+    ):
+        _model_setup(paths)
+    elif not interactive and not args.skip_model:
+        print("• Skipped model setup (non-interactive). Run `jigga model setup` later.")
+
+    # 3. Channel — optional way to talk to it (e.g. Telegram).
+    if interactive and not args.skip_channels and _confirm(
+        "\nConnect a chat channel now (e.g. Telegram)?", default=False
+    ):
+        _channels_setup(paths)
+    elif not interactive and not args.skip_channels:
+        print("• Skipped channel setup (non-interactive). Run `jigga channels setup` later.")
+
+    # 4. Always-on: register the supervisor as a user service so it survives reboots.
+    if args.install_daemon:
+        from jigga.runtime.service import install_service
+        result = install_service(paths, interval_seconds=args.service_interval)
+        if result["backend"] == "unsupported":
+            print(f"\n! Could not install a service: {result.get('instructions', '')}")
+        elif result.get("started"):
+            print(f"\n✓ Supervisor installed as a {result['backend']} service and started.")
+        else:
+            print(f"\n! Wrote the {result['backend']} unit at {result.get('unit_path')}, "
+                  "but starting it reported a problem — see `jigga service status`.")
+
+    # 5. Next steps.
+    print("\n✓ Onboarding complete.")
+    if not args.install_daemon:
+        print("  Start the assistant:  jigga supervisor start   "
+              "(or `jigga service install` to keep it always-on)")
+    print("  Check health/config anytime with `jigga state`.")
     return 0
 
 
@@ -1128,6 +1208,7 @@ def _cmd_task(args: argparse.Namespace) -> int:
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
     "setup": _cmd_setup,
+    "onboard": _cmd_onboard,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,
