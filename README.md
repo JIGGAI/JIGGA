@@ -235,7 +235,10 @@ jigga model login                  # ChatGPT subscription via OAuth (no API key)
 jigga channels setup               # e.g. Telegram
 
 # 7. Run it:
-jigga supervisor start             # always-on: wakes agents on schedules/events/messages
+jigga service install              # keep the supervisor always-on across reboots
+#                                    (launchd on macOS / systemd --user on Linux)
+#    …or run it in the foreground:
+jigga supervisor start             # wakes agents on schedules/events/messages
 #    …or one-off:
 jigga run agent <agent_id>         # run a single agent now
 jigga team run <team_id>           # kick off a team
@@ -255,6 +258,7 @@ jigga team run|handoff|decisions   # run a team / fire a handoff / read the deci
 jigga workflow plan|run <id>       # plan or run a workflow
 jigga run agent <id>               # run one agent
 jigga supervisor start|tick        # the always-on daemon (or a single tick)
+jigga service install|status|uninstall  # run the supervisor as a launchd/systemd user service
 jigga model setup|login|status     # configure / authenticate the model provider
 jigga channels setup|status        # connect a chat channel (Telegram)
 jigga memory search <query>        # search scoped memory
