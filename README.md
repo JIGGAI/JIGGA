@@ -225,7 +225,10 @@ jigga onboard --examples
 #    add --install-daemon to also keep the supervisor always-on across reboots
 #    (launchd on macOS / systemd --user on Linux)
 
-# 4. Run it:
+# 4. (anytime) Check everything is wired up:
+jigga doctor                       # ✓/⚠/✗ across runtime, config, model, channel, service
+
+# 5. Run it:
 jigga supervisor start             # wakes agents on schedules/events/messages
 #    …or one-off:
 jigga run agent <agent_id>         # run a single agent now
@@ -243,6 +246,7 @@ jigga init [--examples]            # create the local runtime
 jigga onboard [--install-daemon]   # guided end-to-end setup (runtime+assistant+model+channel)
 jigga setup                        # just the assistant step (default agent + USER.md)
 jigga state                        # inspect agents / teams / workflows / tasks
+jigga doctor                       # health check: runtime, config, model, channels, backends, service
 jigga plan | apply | validate      # show, gate, and apply config changes (agents-as-code)
 jigga team scaffold <recipe>       # create a team + agents + workspace from a recipe
 jigga team run|handoff|decisions   # run a team / fire a handoff / read the decision log

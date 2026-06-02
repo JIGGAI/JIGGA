@@ -234,6 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
 
+    doctor = sub.add_parser("doctor", help="Health check: runtime, config, model, channels, backends, service")
+    doctor.add_argument("--json", action="store_true", dest="json_output", help="Machine-readable output")
+
     memory = sub.add_parser("memory", help="Inspect memory scopes and layers")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
     memory_sub.add_parser("inspect", help="Inspect configured memory scopes")
@@ -582,6 +585,31 @@ def _cmd_state(args: argparse.Namespace) -> int:
         print(f"Memory scopes: {', '.join(result['memory_scopes']) if result['memory_scopes'] else 'none'}")
         print(f"Tasks: {len(result['tasks'])}")
     return 0
+
+
+_DOCTOR_GLYPH = {"ok": "✓", "warn": "⚠", "fail": "✗"}
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from jigga.runtime.doctor import run_checks
+
+    report = run_checks(get_paths(args.home))
+    if args.json_output:
+        print_json(report.to_dict())
+    else:
+        for c in report.checks:
+            print(f"{_DOCTOR_GLYPH.get(c.status, '?')} {c.name}: {c.detail}")
+            if c.hint and c.status != "ok":
+                print(f"    → {c.hint}")
+        s = report.to_dict()["summary"]
+        print(f"\n{s['ok']} ok, {s['warn']} warning(s), {s['fail']} problem(s).")
+        if report.failed:
+            print("Doctor found problems that need attention.")
+        elif report.warned:
+            print("No blocking problems; warnings are optional to address.")
+        else:
+            print("All good. 🦞")
+    return 1 if report.failed else 0
 
 
 def _cmd_memory(args: argparse.Namespace) -> int:
@@ -1209,6 +1237,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,
+    "doctor": _cmd_doctor,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,

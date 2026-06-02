@@ -9,8 +9,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jigga.cli import main
 from jigga.core.config import load_agents, resolve_default_agent
+
+
+@pytest.fixture(autouse=True)
+def _no_real_service(monkeypatch):
+    """Defensive: no test in this file may ever install a real launchd/systemd
+    service. install_service is stubbed to a harmless recorder by default; tests
+    that assert on it override this with their own monkeypatch. This guards
+    against a bug (or a mutated daemon gate) shelling out to the real system —
+    which is exactly how an earlier mutation run installed a stray unit."""
+    installs = []
+    monkeypatch.setattr(
+        "jigga.runtime.service.install_service",
+        lambda paths, **kw: installs.append(kw) or {"backend": "systemd", "started": True, "unit_path": "/x"},
+    )
+    return installs
 
 
 def test_onboard_non_interactive_scaffolds_defaults(tmp_path: Path) -> None:
