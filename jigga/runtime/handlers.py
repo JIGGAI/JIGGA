@@ -34,6 +34,85 @@ from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.sandbox import SandboxSpec, build_restricted_env
 from jigga.runtime.subagents import spawn_subagent
 
+def _team_insight_handler(
+    step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Read-only cross-team visibility for an orchestrator (chief of staff):
+    `team.list` (every team + members + lead) and `team.status` (a team's
+    lead-curated plan/priorities, recent status, recent outputs, and handoff
+    decision log). File-first reads — no mutation."""
+    from jigga.core.config import load_teams
+    from jigga.runtime.handoffs import read_decision_log
+    from jigga.runtime.workspaces import read_file, team_lead, members
+
+    home = runtime.home
+    teams = load_teams(home / "teams")
+    if step.action == "team.list":
+        return {"teams": [
+            {"id": t.id, "name": t.name, "purpose": t.purpose,
+             "lead": team_lead(t), "members": members(t)}
+            for t in teams.values()
+        ]}
+    # team.status — one team if given, else a compact roll-up of all
+    payload = resolved_input if isinstance(resolved_input, dict) else {}
+    target = payload.get("team_id") or payload.get("team")
+    ids = [target] if target else list(teams.keys())
+
+    def _status(team_id: str) -> dict[str, Any]:
+        decisions = read_decision_log(home, team_id)
+        return {
+            "team": team_id,
+            "plan": read_file(home, team_id, "notes/plan.md"),
+            "priorities": read_file(home, team_id, "shared-context/priorities.md"),
+            "status": read_file(home, team_id, "notes/status.md"),
+            "recent_handoffs": decisions[-10:],
+        }
+
+    statuses = [_status(tid) for tid in ids if tid in teams]
+    return {"statuses": statuses}
+
+
+def _team_orchestration_handler(
+    step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """Dispatch work as an orchestrator: `team.run` (run a team) and
+    `task.assign` (create a task for any agent). The created tasks / team run go
+    through the normal task queue + audit log, so the chief's commands stay
+    file-first and auditable."""
+    from jigga.core.paths import get_paths
+    from jigga.runtime.tasks import create_task
+
+    home = runtime.home
+    payload = resolved_input if isinstance(resolved_input, dict) else {}
+    if step.action == "team.run":
+        from jigga.runtime.team import run_team
+        team_id = payload.get("team_id") or payload.get("team")
+        if not team_id:
+            raise ValueError("team.run requires a 'team_id'")
+        return run_team(get_paths(home), str(team_id))
+    if step.action == "task.assign":
+        assignee = payload.get("assignee") or payload.get("agent")
+        title = payload.get("title")
+        if not assignee or not title:
+            raise ValueError("task.assign requires 'assignee' and 'title'")
+        meta = {"assigned_by": runtime.agent.id if runtime.agent else None}
+        if payload.get("team_id"):
+            meta["team_id"] = payload["team_id"]
+        task = create_task(home / "tasks", title=str(title),
+                           description=payload.get("description"),
+                           assignee=str(assignee), metadata=meta)
+        return {"assigned": task.id, "assignee": assignee, "title": title}
+    raise ValueError(f"Unsupported orchestration action: {step.action}")
+
+
 def _calendar_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,

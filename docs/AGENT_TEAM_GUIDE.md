@@ -35,6 +35,24 @@ recipe ──scaffold──▶ agents + team + workspace          (BUILD)
 
 ---
 
+## 1.5 First-run setup — your default agent
+
+`jigga setup` (also offered by `jigga init`) is a short wizard: it asks **who the
+AI works with** and **what this install is for**, lets you pick **chief of staff
+vs personal assistant** and a **communication style**, then — from your answers,
+nothing hardcoded — writes your `~/.jigga/USER.md` and scaffolds the **default
+agent**.
+
+The default agent (`default: true`) is the **catch-all** for any inbound message
+not routed to a specific agent, and your direct assistant. It's granted **all
+capabilities + cross-team read access** (`team.list`, `team.status`) plus the
+dispatch tools (`team.run`, `task.assign`), so it can oversee and run the whole
+org. Chief-of-staff delegates aggressively (route/run teams, don't do specialist
+work); personal-assistant handles small requests itself and delegates the rest.
+Re-run anytime with `jigga setup --overwrite`.
+
+---
+
 ## 2. BUILD — three ways to create agents/teams
 
 ### a) Scaffold from a recipe (recommended)

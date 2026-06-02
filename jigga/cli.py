@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from jigga.commands.init import init_runtime
+from jigga.commands.onboard import run_onboarding
 from jigga.commands.install import (
     install_capability,
     list_available_capabilities,
@@ -66,7 +67,13 @@ from jigga.runtime.team import run_team
 from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
-from jigga.core.config import default_permission_mode, load_agents, load_teams, load_workflows
+from jigga.core.config import (
+    default_permission_mode,
+    load_agents,
+    load_teams,
+    load_workflows,
+    resolve_default_agent,
+)
 
 
 def print_json(value: Any) -> None:
@@ -203,8 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--no-prompt",
         action="store_true",
-        help="Skip the post-init optional-capability install prompt (also auto-skipped when stdin is not a TTY)",
+        help="Skip the post-init setup/capability prompts (also auto-skipped when stdin is not a TTY)",
     )
+
+    setup = sub.add_parser("setup", help="Set up your assistant: who it works with, its purpose, and the default agent")
+    setup.add_argument("--overwrite", action="store_true", help="Overwrite an existing default agent / USER.md")
 
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
@@ -457,7 +467,18 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if args.examples:
         print("Copied example agents and teams.")
     interactive = (not args.no_prompt) and sys.stdin.isatty() and sys.stdout.isatty()
+    if interactive and resolve_default_agent(paths.agents) is None:
+        if input("\nSet up your assistant now? [Y/n]: ").strip().lower() in {"", "y", "yes"}:
+            run_onboarding(paths)
+        else:
+            print("Skipped. Run `jigga setup` when you're ready.")
     maybe_prompt_after_init(paths, interactive=interactive)
+    return 0
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    run_onboarding(paths, overwrite=args.overwrite)
     return 0
 
 
@@ -1067,6 +1088,7 @@ def _cmd_task(args: argparse.Namespace) -> int:
 
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
+    "setup": _cmd_setup,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,

@@ -41,7 +41,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from jigga.core.config import load_runtime_config
+from jigga.core.config import load_runtime_config, resolve_default_agent
 from jigga.runtime.agent import run_agent
 from jigga.runtime.audit import append_event, trace_context
 from jigga.runtime.approvals import find_by_code, parse_approval_reply, resolve_and_requeue
@@ -127,7 +127,9 @@ def _ingest_once(
             append_event(logs_dir, "channel.poll_skipped", status="ask", channel=name,
                          detail=result.get("status"))
             continue
-        default_agent = cfg.get("default_agent")
+        # The channel's configured target, else the global default/chief agent
+        # (catch-all for unrouted inbound), else nothing.
+        default_agent = cfg.get("default_agent") or resolve_default_agent(home / "agents")
         for event in result.get("events", []):
             # Policy / identity check — the gateway authorizes every sender.
             if not identity_allowed(event, cfg):

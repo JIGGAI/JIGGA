@@ -232,3 +232,19 @@ def test_ingest_rejects_message_from_unauthorized_sender(tmp_path: Path) -> None
     assert list_tasks(paths.tasks) == []
     run_mock.assert_not_called()
     assert "channel.message.rejected" in [e["type"] for e in _events(paths)]
+
+
+def test_ingest_falls_back_to_default_agent_when_channel_has_none(tmp_path: Path) -> None:
+    """When a channel sets no default_agent, inbound routes to the global default
+    (chief) agent — the catch-all."""
+    from jigga.core.io import write_yaml as _wy
+    paths = init_runtime(tmp_path)
+    _enable_telegram(paths, default_agent=None)
+    # a default/chief agent exists
+    _wy(paths.agents / "chief.yaml", {"id": "chief", "name": "Chief", "role": "chief",
+        "default": True, "memory_scope": "task_only", "tools": [], "permissions": {}})
+    with patch("jigga.runtime.telegram.poll_messages",
+               return_value={"status": "ok", "messages": [_msg(text="hi", chat_id=111)]}), \
+         patch("jigga.runtime.channel_listener.run_agent", return_value={}):
+        ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+    assert list_tasks(paths.tasks)[0].assignee == "chief"

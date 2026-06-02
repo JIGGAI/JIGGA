@@ -42,6 +42,10 @@ class AgentConfig:
     permissions: dict[str, Any] = field(default_factory=dict)
     workflows: list[str] = field(default_factory=list)
     delegation: dict[str, Any] = field(default_factory=dict)
+    # The default/primary agent (chief of staff / personal assistant) — the
+    # catch-all for unrouted inbound and the human's direct assistant. At most
+    # one agent sets this; resolve_default_agent picks it.
+    default: bool = False
     source: str | None = None
 
     @classmethod

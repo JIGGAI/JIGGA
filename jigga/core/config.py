@@ -37,6 +37,14 @@ def load_agents(path: Path) -> dict[str, AgentConfig]:
     return agents
 
 
+def resolve_default_agent(agents_dir: Path) -> str | None:
+    """The id of the default/primary agent (chief of staff / personal assistant)
+    — the entry with `default: true`. Ties break by sorted id for determinism.
+    None when no agent is marked default."""
+    defaults = sorted(a.id for a in load_agents(agents_dir).values() if getattr(a, "default", False))
+    return defaults[0] if defaults else None
+
+
 def load_teams(path: Path) -> dict[str, TeamConfig]:
     teams: dict[str, TeamConfig] = {}
     for file in list_config_files(path):
