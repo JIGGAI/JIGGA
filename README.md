@@ -28,7 +28,7 @@ JIGGA is not intended to be just a chatbot, a one-off automation tool, or a prom
 
 Two things make it distinctive in practice:
 
-1. **Run on a subscription, not a per-token API key.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), so a team can *think* without metered API costs.
+1. **Run on subscriptions and your local CLIs, not metered API keys.** The model router supports a **ChatGPT-subscription provider via OAuth** (plus any OpenAI-compatible endpoint), and agents can **delegate to your locally-installed `codex` and `claude` CLIs** as subagent backends — executing those tools directly with their own login, not a per-token API key (`jigga auth login codex_cli|claude_code`). A team can *think* without metered API costs.
 2. **Auditable by construction.** A single trace id threads a whole operation (supervisor tick → agent run → tool call → subagent); `jigga trace <id>` reconstructs it. Coordination (handoffs, decisions, memory) is files under `~/.jigga/`.
 
 ## Capabilities (what's built today)
@@ -38,7 +38,7 @@ Two things make it distinctive in practice:
 - **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
 - **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga team scaffold`), and **file-first handoffs** with an auditable decision log.
-- **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation**, **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
+- **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation** (incl. **local `codex` / `claude` CLI backends**, run directly instead of via API), **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
 - **Channels** — a normalized **Telegram** gateway (supervisor-polled, activation modes, `jigga channels setup`) with an **approval queue routed back to the channel** (`approve <code>`).
 - **Model routing** — dry-run, any OpenAI-compatible endpoint, and **ChatGPT-subscription (OAuth, no API key)**, with provider fallback.
 - **Cost & safety** — per-call cost + **per-agent budgets** (hard-stop + warn), **permission modes**, policy gating, a path-canonicalized filesystem gate, and human-in-the-loop approvals.
