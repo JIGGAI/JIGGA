@@ -187,7 +187,22 @@ examples/
 
 ## Installation (fresh machine)
 
-**Prerequisites:** Python 3.11+ and git. macOS and Linux are supported; Windows is experimental. The only runtime dependency is PyYAML (installed for you).
+**Prerequisites:** Python **3.11+** and git. macOS and Linux are supported; Windows is experimental. The only runtime dependency is PyYAML (installed for you).
+
+### Quick start (one command)
+
+```bash
+git clone https://github.com/JIGGAI/JIGGA.git
+cd JIGGA
+./scripts/install.sh               # finds Python 3.11+, builds .venv, upgrades pip, installs
+source .venv/bin/activate
+```
+
+`scripts/install.sh` runs on a fresh machine *before* `jigga` exists. It probes for a Python 3.11+ (newest first, so it won't settle for macOS's stock 3.9), creates `.venv` with it, upgrades pip past the editable-install cutoff, and installs JIGGA — turning the two most common fresh-machine failures into a clear message instead. Pass `PYTHON=/path/to/python3.12` to force an interpreter, or `make install` if you prefer.
+
+### Manual steps (if you'd rather not run the script)
+
+> **macOS note:** stock macOS ships Python 3.9 as `python3`, which is too old. Install a newer one first (`brew install python@3.12`) and create the venv with it explicitly (`python3.12 -m venv .venv`) — `python3 -m venv` would otherwise reuse 3.9 and the install fails with *"requires a different Python: 3.9.x not in '>=3.11'"*.
 
 ```bash
 # 1. Get the code
@@ -195,8 +210,11 @@ git clone https://github.com/JIGGAI/JIGGA.git
 cd JIGGA
 
 # 2. Isolated environment + install (this provides the `jigga` command)
-python3 -m venv .venv
+#    Use an explicit 3.11+ interpreter — NOT bare `python3` on macOS (that's 3.9).
+python3.12 -m venv .venv           # or python3.11; Linux: python3 is usually fine
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python --version                   # sanity check: must be 3.11+
+pip install --upgrade pip          # need pip >= 21.3 for editable installs (PEP 660)
 pip install -e .
 
 # 3. Create the local runtime at ~/.jigga (add --examples for sample agents/teams)
