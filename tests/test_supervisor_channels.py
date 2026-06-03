@@ -42,12 +42,41 @@ def test_supervisor_polls_channel_and_runs_agent(tmp_path: Path) -> None:
 
     # The channel message became a task...
     tasks = list_tasks(paths.tasks)
-    assert any(t.metadata.get("channel") == "telegram" and "summarize my day" in (t.description or "") for t in tasks)
-    # ...and the tick's own agent loop ran the assignee (one execution path).
-    assert "daily_briefing_agent" in result["targets"]
+    chan_task = next(t for t in tasks if t.metadata.get("channel") == "telegram")
+    assert "summarize my day" in (chan_task.description or "")
+    # ...and the agent ran it immediately during ingest (user-initiated, so it
+    # bypasses the tick's wake-throttle) — completed, not left pending.
+    assert chan_task.state == "completed"
+    assert result is not None
     types = [e["type"] for e in _events(paths)]
     assert "channel.message.received" in types
     assert "agent.run.started" in types
+
+
+def test_channel_chat_is_not_wake_throttled(tmp_path: Path) -> None:
+    """A user chatting must not be rate-limited by the autonomous-loop throttle.
+    With the agent already at its wake limit (as if a cron wake just fired), a
+    channel message must STILL run + complete — because channel ingest runs the
+    agent directly, bypassing the tick's wake-throttle."""
+    from jigga.runtime.loop_guard import load_loop_state, now_utc, record_wake, save_loop_state
+
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths, default_agent="daily_briefing_agent")
+    config = read_yaml(paths.config)
+    config["supervisor"] = {"max_wakes_per_agent_per_hour": 1}
+    write_yaml(paths.config, config)
+    # Exhaust the throttle for the agent so the tick's agent loop WOULD skip it.
+    state = load_loop_state(paths.home)
+    record_wake(state, "daily_briefing_agent", now_utc())
+    save_loop_state(paths.home, state)
+
+    poll = {"status": "ok", "messages": [_msg(text="still answer me", chat_id=111)]}
+    with patch("jigga.runtime.telegram.poll_messages", return_value=poll), \
+         patch("jigga.runtime.agent.call_model", _no_tool_result):
+        supervisor_tick(paths.home)
+
+    chan_task = next(t for t in list_tasks(paths.tasks) if t.metadata.get("channel") == "telegram")
+    assert chan_task.state == "completed"  # ran despite the agent being at its wake limit
 
 
 def test_supervisor_no_channels_is_noop(tmp_path: Path) -> None:

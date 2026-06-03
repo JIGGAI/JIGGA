@@ -27,10 +27,16 @@ from jigga.runtime.workflow import run_workflow
 
 
 def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
-    """Poll enabled channels into tasks on the heartbeat (B2). No-op when no
-    channel is enabled. Creates tasks only (process_agents=False) — the tick's
-    agent-waking loop runs them. Errors are contained so a flaky network or
-    channel can't take the supervisor down.
+    """Poll enabled channels into tasks on the heartbeat (B2) and run the agent
+    on them immediately (`process_agents=True`). No-op when no channel is
+    enabled. Errors are contained so a flaky network or channel can't take the
+    supervisor down.
+
+    Channel messages are *user-initiated*, so they run right here rather than
+    via the tick's agent-waking loop below — that loop applies the
+    `max_wakes_per_hour` throttle, which exists to stop runaway *autonomous*
+    (cron/self) wake loops and must NOT rate-limit a person typing in chat.
+    Running here matches `jigga channels listen` and keeps replies prompt.
 
     `long_poll_seconds` is the Telegram long-poll timeout: 0 = a single
     non-blocking poll (the legacy tick behavior); >0 makes the call block until
@@ -40,7 +46,7 @@ def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
         return
     try:
         ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
-                    long_poll_seconds=long_poll_seconds, process_agents=False)
+                    long_poll_seconds=long_poll_seconds, process_agents=True)
     except Exception as exc:  # noqa: BLE001 — the supervisor must survive any channel fault
         append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc))
 
