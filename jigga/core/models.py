@@ -42,6 +42,11 @@ class AgentConfig:
     permissions: dict[str, Any] = field(default_factory=dict)
     workflows: list[str] = field(default_factory=list)
     delegation: dict[str, Any] = field(default_factory=dict)
+    # How `notifications.send` reaches the user. `channel:` is "default" (the
+    # user's default connected channel — config `channels.default`), a specific
+    # channel name, or "desktop" (desktop notification only). Recipes ship
+    # "default" so they work with whatever surface the user actually connected.
+    notifications: dict[str, Any] = field(default_factory=dict)
     # The default/primary agent (chief of staff / personal assistant) — the
     # catch-all for unrouted inbound and the human's direct assistant. At most
     # one agent sets this; resolve_default_agent picks it.

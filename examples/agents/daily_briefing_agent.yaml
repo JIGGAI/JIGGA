@@ -9,10 +9,22 @@ tools:
   - email.search
   - notifications.send
   - memory.write_summary
+# Where notifications.send reaches the user: "default" = the user's default
+# connected channel (config channels.default, set when they connect one), or
+# a specific channel name, or "desktop" for desktop-notification only.
+notifications:
+  channel: default
 wake:
   schedules:
     - cron: "30 7 * * 1-5"
       event: morning_briefing
+      message: >
+        Prepare the morning briefing. Gather today's calendar events with
+        calendar.list_events and recent important email with email.search,
+        then compose one concise briefing (schedule, highlights, suggested
+        priorities). You MUST deliver it by calling notifications.send with
+        title "Morning briefing" and the briefing text as body — the task is
+        not done until the notification is sent.
   events:
     - task.assigned.daily_briefing_agent
   accepts_agent_requests: true
