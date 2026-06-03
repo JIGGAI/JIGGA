@@ -140,8 +140,47 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
     entry["enabled"] = True
     entry["activation"] = mode
     write_yaml(paths.config, config)
+
+    # Close the reply loop: the agent that messages route to can only act on the
+    # channel if it holds the channel's tools. The channel capability is opt-in,
+    # so the default agent (scaffolded from *bundled* caps) doesn't get them
+    # automatically — grant the whole set here, or inbound messages create tasks
+    # that complete silently.
+    granted = _grant_channel_tools(paths, name, config)
+    if granted:
+        agent_id, added = granted
+        echo(f"  Granted '{agent_id}' the {name} tools: {', '.join(added)}")
+
     echo(f"\n✓ {name} ready (activation={mode}). The supervisor polls it each tick — "
          "run `jigga supervisor run` (or install it as a service).")
+
+
+def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, list[str]] | None:
+    """Grant the channel capability's full action set (poll + send + any future
+    ones) to the channel's routed agent — its configured `default_agent`, else
+    the install's default agent — so it can both see and reply on the channel.
+    Persists the agent yaml. Returns (agent_id, newly_added_actions), or None if
+    there's no agent to grant to or it already has them all."""
+    routed = (config.get("channels", {}).get(channel, {}) or {}).get("default_agent") \
+        or resolve_default_agent(paths.agents)
+    if not routed:
+        return None
+    agent_path = paths.agents / f"{routed}.yaml"
+    if not agent_path.exists():
+        return None
+    capability_name = _CHANNEL_CATALOG.get(channel, (channel,))[0]
+    registry = CapabilityRegistry.load(user_capabilities=paths.capabilities, approvals_dir=paths.policies)
+    capability = registry.get(capability_name)
+    actions = list(capability.actions) if capability else [f"{channel}.send_message"]
+    doc = read_yaml(agent_path)
+    tools = list(doc.get("tools") or [])
+    added = [a for a in actions if a not in tools]
+    if not added:
+        return None
+    tools.extend(added)
+    doc["tools"] = tools
+    write_yaml(agent_path, doc)
+    return routed, added
 
 
 def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:

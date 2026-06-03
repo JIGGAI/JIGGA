@@ -144,7 +144,29 @@ def _check_channels(paths: JiggaPaths) -> Check:
         return Check("channels", WARN, "No chat channels enabled",
                      hint="Run `jigga channels setup` (optional).")
     names = ", ".join(name for name, _ in channels)
-    return Check("channels", OK, f"Enabled channels: {names}")
+
+    # Reply-loop check: a channel's routed agent can only respond if it holds the
+    # channel's send tool. Missing it => inbound messages complete silently.
+    from jigga.core.config import load_agents, resolve_default_agent
+
+    try:
+        agents = load_agents(paths.agents)
+        default_id = resolve_default_agent(paths.agents)
+    except Exception:  # noqa: BLE001
+        agents, default_id = {}, None
+    cant_reply = []
+    for name, cfg in channels:
+        routed_id = (cfg or {}).get("default_agent") or default_id
+        agent = agents.get(routed_id) if routed_id else None
+        send = f"{name}.send_message"
+        if agent is not None and send not in (agent.tools or []):
+            cant_reply.append(f"{routed_id} lacks {send}")
+        elif routed_id and agent is None:
+            cant_reply.append(f"{name} routes to missing agent '{routed_id}'")
+    if cant_reply:
+        return Check("channels", WARN, f"Enabled: {names}; but replies won't send: {'; '.join(cant_reply)}",
+                     hint="Re-run `jigga channels setup` to grant the channel tools (or add them to the agent).")
+    return Check("channels", OK, f"Enabled channels: {names} (reply tools present)")
 
 
 def _check_backends() -> Check:
