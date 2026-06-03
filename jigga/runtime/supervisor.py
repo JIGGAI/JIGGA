@@ -26,29 +26,34 @@ from jigga.runtime.tasks import create_task, pending_summary
 from jigga.runtime.workflow import run_workflow
 
 
-def _poll_channels(paths: Any) -> None:
+def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
     """Poll enabled channels into tasks on the heartbeat (B2). No-op when no
     channel is enabled. Creates tasks only (process_agents=False) — the tick's
     agent-waking loop runs them. Errors are contained so a flaky network or
-    channel can't take the supervisor down."""
+    channel can't take the supervisor down.
+
+    `long_poll_seconds` is the Telegram long-poll timeout: 0 = a single
+    non-blocking poll (the legacy tick behavior); >0 makes the call block until
+    a message arrives or the timeout elapses, which is what lets the supervisor
+    loop run channels in near-real-time instead of once per cron interval."""
     if not enabled_channels(paths.home):
         return
     try:
         ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
-                    long_poll_seconds=0, process_agents=False)
+                    long_poll_seconds=long_poll_seconds, process_agents=False)
     except Exception as exc:  # noqa: BLE001 — the supervisor must survive any channel fault
         append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc))
 
 
-def supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
+def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:
     # One trace per tick: every event this tick produces — agent runs, workflow
     # runs, and the subagents they spawn — shares this id, so `jigga trace <id>`
     # returns the whole tick's causal tree.
     with trace_context():
-        return _supervisor_tick(home)
+        return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
 
 
-def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
+def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:
     paths = get_paths(home)
     # Roll the audit log over (by day / size) and prune old archives on the
     # heartbeat, so the write path stays free of this. Emits an event when it
@@ -68,11 +73,14 @@ def _supervisor_tick(home: str | Path | None = None) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — compaction must not break the tick
         append_event(paths.logs, "memory.compact_error", status="error", error=str(exc))
     # Channels poll on the heartbeat (B2): enabled bots always respond whenever
-    # the supervisor runs — no separate `jigga channels listen`. We short-poll
-    # (long_poll_seconds=0) and only create tasks here; the tick's own
-    # agent-waking loop below runs them, so there's one execution path. Any
-    # channel/network error is contained so it can't break the tick.
-    _poll_channels(paths)
+    # the supervisor runs — no separate `jigga channels listen` needed. We only
+    # create tasks here; the tick's own agent-waking loop below runs them, so
+    # there's one execution path. Any channel/network error is contained so it
+    # can't break the tick. `channel_long_poll_seconds` defaults to 0 (a single
+    # non-blocking poll), but the supervisor loop passes a real long-poll timeout
+    # when a channel is enabled, so a message is picked up the instant it arrives
+    # rather than waiting for the next cron interval (near-real-time chat).
+    _poll_channels(paths, long_poll_seconds=channel_long_poll_seconds)
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)

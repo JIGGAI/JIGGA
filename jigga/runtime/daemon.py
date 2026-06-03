@@ -6,7 +6,9 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from jigga.core.paths import get_paths
 from jigga.runtime.audit import append_event
+from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, enabled_channels
 from jigga.runtime.supervisor import supervisor_tick
 
 # An always-on supervisor runs indefinitely; keep only the most recent tick
@@ -18,7 +20,17 @@ def supervisor_loop(
     home: str | Path | None = None,
     interval_seconds: float = 60,
     max_ticks: int | None = None,
+    channel_long_poll_seconds: int = DEFAULT_LONG_POLL_SECONDS,
 ) -> dict[str, Any]:
+    """Run supervisor ticks until interrupted.
+
+    When a chat channel is enabled, each tick long-polls it (blocking up to
+    `channel_long_poll_seconds`, returning the instant a message arrives), and
+    the loop runs ticks back-to-back with no inter-tick sleep — so inbound
+    messages are handled in near-real-time instead of waiting up to
+    `interval_seconds` for the next cron tick. With no channel enabled the loop
+    keeps the classic cadence: one tick, then sleep `interval_seconds`."""
+    home_path = get_paths(home).home
     stopped = {"flag": False, "signal": None}
 
     def _handle(signum: int, _frame: Any) -> None:
@@ -38,14 +50,21 @@ def supervisor_loop(
     count = 0
     try:
         while not stopped["flag"] and (max_ticks is None or count < max_ticks):
-            result = supervisor_tick(home)
+            # Re-checked each tick so enabling/disabling a channel takes effect
+            # without restarting the daemon.
+            channels_on = bool(enabled_channels(home_path))
+            poll_seconds = channel_long_poll_seconds if channels_on else 0
+            result = supervisor_tick(home, channel_long_poll_seconds=poll_seconds)
             ticks.append(result)
             count += 1
             if stopped["flag"] or (max_ticks is not None and count >= max_ticks):
                 break
-            # time.sleep is interruptible by signals on POSIX; the signal handler
-            # runs, sets the flag, and sleep returns early.
-            time.sleep(interval_seconds)
+            # With channels on, the tick already blocked in a long-poll (which
+            # returns immediately on a message), so it paces the loop — no extra
+            # sleep, keeping replies near-real-time. Otherwise keep the cron
+            # cadence. time.sleep is interruptible by signals on POSIX; the
+            # handler runs, sets the flag, and sleep returns early.
+            time.sleep(0 if channels_on else interval_seconds)
     finally:
         if previous_int is not None:
             try:
