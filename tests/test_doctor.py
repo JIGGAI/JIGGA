@@ -67,6 +67,31 @@ def test_config_warnings_do_not_fail(tmp_path: Path, monkeypatch):
     assert report.failed is False
 
 
+def test_channels_check_warns_when_routed_agent_cant_reply(tmp_path: Path, monkeypatch):
+    """A channel enabled but whose routed agent lacks the send tool => WARN
+    (the user's exact silent-drop case)."""
+    _unsupported_service(monkeypatch)
+    init_runtime(tmp_path)
+    from jigga.core.io import write_yaml
+    write_yaml(tmp_path / "config.yaml",
+               {"channels": {"telegram": {"enabled": True, "default_agent": "assistant"}}})
+    # routed agent exists but has no telegram.send_message
+    write_yaml(tmp_path / "agents" / "assistant.yaml",
+               {"id": "assistant", "name": "A", "role": "pa", "default": True, "tools": ["filesystem.read"]})
+
+    report = doctor.run_checks(get_paths(tmp_path))
+    channels = next(c for c in report.checks if c.name == "channels")
+    assert channels.status == doctor.WARN
+    assert "won't send" in channels.detail
+
+    # grant the tool -> OK
+    write_yaml(tmp_path / "agents" / "assistant.yaml",
+               {"id": "assistant", "name": "A", "role": "pa", "default": True,
+                "tools": ["filesystem.read", "telegram.send_message"]})
+    channels = next(c for c in doctor.run_checks(get_paths(tmp_path)).checks if c.name == "channels")
+    assert channels.status == doctor.OK
+
+
 def test_cli_exit_code_and_json(tmp_path: Path, monkeypatch, capsys):
     _unsupported_service(monkeypatch)
     # uninitialized -> non-zero
