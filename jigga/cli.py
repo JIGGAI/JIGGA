@@ -28,7 +28,7 @@ from jigga.runtime.cost import budget_status, cost_summary
 from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.approvals import pending_approvals, resolve_and_requeue
-from jigga.runtime.channel_listener import channel_listen, enabled_channels
+from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, channel_listen, enabled_channels
 from jigga.runtime.gog import (
     DEFAULT_SERVICES,
     gog_auth_status,
@@ -527,6 +527,8 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_start = supervisor_sub.add_parser("start", help="Run the supervisor loop")
     supervisor_start.add_argument("--interval-seconds", type=float, default=60)
     supervisor_start.add_argument("--max-ticks", type=int, default=None, help="Stop after N ticks; useful for tests/demos")
+    supervisor_start.add_argument("--channel-poll-seconds", type=int, default=DEFAULT_LONG_POLL_SECONDS,
+                                  help="Channel long-poll timeout — how responsive chat is (0 = legacy per-tick poll)")
 
     service = sub.add_parser("service", help="Install the supervisor as an always-on user service (launchd/systemd)")
     service_sub = service.add_subparsers(dest="service_command", required=True)
@@ -1296,7 +1298,8 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
     elif args.supervisor_command == "start":
         paths = get_paths(args.home)
         record_supervisor_start(paths.logs, args.interval_seconds, args.max_ticks)
-        print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks))
+        print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks,
+                                   channel_long_poll_seconds=args.channel_poll_seconds))
     return 0
 
 
