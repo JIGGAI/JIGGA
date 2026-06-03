@@ -53,7 +53,11 @@ def test_channels_setup_grants_channel_tools_to_routed_agent(tmp_path: Path) -> 
     answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "2"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
 
-    tools = load_agents(paths.agents)["assistant"].tools
-    assert "telegram.send_message" in tools   # can reply
-    assert "telegram.poll_messages" in tools  # full action set granted
-    assert "filesystem.read" in tools         # existing tools preserved
+    agent = load_agents(paths.agents)["assistant"]
+    assert "telegram.send_message" in agent.tools   # can reply
+    assert "telegram.poll_messages" in agent.tools  # full action set granted
+    assert "filesystem.read" in agent.tools         # existing tools preserved
+    # network egress to the channel host is also granted (targeted, not blanket)
+    net = agent.permissions["network"]
+    assert net["mode"] != "allow"                       # NOT opened to all egress
+    assert "https://api.telegram.org" in net["allow"]   # just the channel host

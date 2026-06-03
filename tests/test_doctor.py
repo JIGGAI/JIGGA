@@ -92,6 +92,35 @@ def test_channels_check_warns_when_routed_agent_cant_reply(tmp_path: Path, monke
     assert channels.status == doctor.OK
 
 
+def test_channels_check_warns_when_agent_cant_reach_network(tmp_path: Path, monkeypatch):
+    """The user's exact case: agent has the send tool but no network egress to the
+    channel host => WARN 'can't reach', not a false OK."""
+    _unsupported_service(monkeypatch)
+    from jigga.cli import _channels_setup
+
+    init_runtime(tmp_path)
+    paths = get_paths(tmp_path)
+    from jigga.core.io import write_yaml
+    write_yaml(paths.agents / "assistant.yaml",
+               {"id": "assistant", "name": "A", "role": "pa", "default": True,
+                "permission_mode": "autonomous", "tools": []})
+    answers = iter(["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "1"])
+    _channels_setup(paths, prompt=lambda _p: next(answers), echo=lambda *_a, **_k: None)
+
+    # full setup grants tool + network -> OK
+    channels = next(c for c in doctor.run_checks(paths).checks if c.name == "channels")
+    assert channels.status == doctor.OK
+
+    # strip the network egress (simulate a pre-fix install) -> WARN can't reach
+    from jigga.core.io import read_yaml
+    doc = read_yaml(paths.agents / "assistant.yaml")
+    doc["permissions"]["network"] = {"mode": "ask"}
+    write_yaml(paths.agents / "assistant.yaml", doc)
+    channels = next(c for c in doctor.run_checks(paths).checks if c.name == "channels")
+    assert channels.status == doctor.WARN
+    assert "can't reach" in channels.detail
+
+
 def test_cli_exit_code_and_json(tmp_path: Path, monkeypatch, capsys):
     _unsupported_service(monkeypatch)
     # uninitialized -> non-zero
