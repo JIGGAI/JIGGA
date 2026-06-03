@@ -29,6 +29,7 @@ from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.approvals import pending_approvals, resolve_and_requeue
 from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, channel_listen, enabled_channels
+from jigga.runtime.channels import ensure_default_channel
 from jigga.runtime.gog import (
     DEFAULT_SERVICES,
     gog_auth_status,
@@ -139,6 +140,7 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
     entry = config.setdefault("channels", {}).setdefault(name, {})
     entry["enabled"] = True
     entry["activation"] = mode
+    ensure_default_channel(config, name)
     write_yaml(paths.config, config)
 
     # Close the reply loop: the agent that messages route to can only act on the

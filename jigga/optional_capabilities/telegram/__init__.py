@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Callable
 
 from jigga.core.io import read_yaml, write_yaml
+from jigga.runtime.channels import ensure_default_channel
 from jigga.runtime.telegram import poll_messages, store_bot_token
 
 _HELP = """
@@ -39,6 +40,9 @@ def _write_telegram_config(config_path, *, allowed_chat_ids: list[str], default_
         "default_agent": default_agent,
     }
     config["channels"] = channels
+    # First connected channel becomes the user's default delivery channel
+    # (`notifications.send` routes here) — changeable in config / future UI.
+    ensure_default_channel(config, "telegram")
     write_yaml(config_path, config)
 
 

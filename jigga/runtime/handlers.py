@@ -17,6 +17,7 @@ from typing import Any
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest
+from jigga.runtime.channels import ADAPTERS, owner_conversation
 from jigga.runtime.mcp_client import call_mcp_tool
 from jigga.runtime.model_router import (
     ModelCallItem,
@@ -170,6 +171,45 @@ def _coerce_notification_body(value: Any) -> str:
     return str(value)
 
 
+def _notification_channel_delivery(
+    runtime: RuntimeContext, *, title: str, body: str, is_dry_run: bool
+) -> dict[str, Any] | None:
+    """Deliver a notification to the user's channel (Telegram etc.) per the
+    agent's `notifications.channel` preference: "default" (the user's default
+    connected channel) when unset, a specific channel name, or "desktop" to
+    opt out of channel delivery.
+
+    Delivery goes out via the channel adapter directly (the bot's own token,
+    like the listener's failure-notify path), so a recipe that declares
+    `notifications.send` reaches the user the moment a channel is connected —
+    no per-agent channel tools or network grants. The destination conversation
+    is resolved from config only (`owner_conversation`), never from model
+    output, so an agent can notify the owner but can't redirect delivery.
+
+    Returns a result dict, or None when channel delivery doesn't apply
+    (preference "desktop", or no usable channel)."""
+    preference = "default"
+    if runtime.agent is not None:
+        preference = str((runtime.agent.notifications or {}).get("channel") or "default").lower()
+    if preference == "desktop":
+        return None
+    target = owner_conversation(runtime.home, None if preference == "default" else preference)
+    if target is None:
+        return None
+    channel, conversation_id = target
+    text = body if title in ("", "JIGGA") else f"{title}\n\n{body}"
+    if is_dry_run:
+        return {"channel": channel, "delivered": False, "dry_run": True}
+    try:
+        ADAPTERS[channel].send(runtime.home, conversation_id=conversation_id, text=text)
+    except Exception as exc:  # noqa: BLE001 — channel delivery is best-effort; desktop still ran
+        append_event(runtime.logs_dir, "notification.channel_failed", status="error",
+                     channel=channel, title=title, error=str(exc))
+        return {"channel": channel, "delivered": False, "error": str(exc)}
+    append_event(runtime.logs_dir, "notification.channel_delivered", channel=channel, title=title)
+    return {"channel": channel, "delivered": True}
+
+
 def _notifications_handler(
     _step: WorkflowStep,
     _capability: CapabilityManifest,
@@ -177,13 +217,16 @@ def _notifications_handler(
     _memory_context: dict[str, Any],
     runtime: RuntimeContext,
 ) -> Any:
-    """Real notification delivery via `runtime.notifications`.
+    """Real notification delivery via `runtime.notifications` + the user's
+    connected channel.
 
     Accepts either a structured `{title, body|content, urgency}` input from
     the workflow step, or a bare scalar that becomes the body. Looks up the
-    runtime's delivery_mode (real / dry_run) and routes accordingly. Every
-    invocation emits a `notification.delivered` or `notification.failed`
-    audit event so the user can tell whether the desktop saw it.
+    runtime's delivery_mode (real / dry_run) and routes accordingly: a desktop
+    notification, plus the user's default channel (Telegram etc.) when one is
+    connected — so a headless box still reaches the user. Every invocation
+    emits a `notification.delivered` or `notification.failed` audit event so
+    the user can tell whether anything saw it.
     """
     if isinstance(resolved_input, dict):
         title = str(resolved_input.get("title") or "JIGGA")
@@ -200,11 +243,16 @@ def _notifications_handler(
     is_dry_run = mode == "dry_run"
     request = NotificationRequest(title=title, body=body, urgency=urgency)
     result = send_notification(request, dry_run=is_dry_run)
+    channel_result = _notification_channel_delivery(runtime, title=title, body=body, is_dry_run=is_dry_run)
+    delivered = result.delivered or bool(channel_result and channel_result.get("delivered"))
     append_event(
         runtime.logs_dir,
-        "notification.delivered" if result.delivered else "notification.failed",
-        status="ok" if result.delivered else "error",
+        "notification.delivered" if delivered else "notification.failed",
+        status="ok" if delivered else "error",
         backend=result.backend,
+        desktop_delivered=result.delivered,
+        channel=channel_result.get("channel") if channel_result else None,
+        channel_delivered=bool(channel_result and channel_result.get("delivered")),
         dry_run=is_dry_run,
         urgency=urgency,
         title=title,
@@ -212,8 +260,10 @@ def _notifications_handler(
     )
     return {
         "source": "capability.notifications",
-        "delivered": result.delivered,
+        "delivered": delivered,
         "backend": result.backend,
+        "desktop_delivered": result.delivered,
+        "channel": channel_result,
         "title": title,
         "body": body,
         "urgency": urgency,
