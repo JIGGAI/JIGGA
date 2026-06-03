@@ -139,6 +139,47 @@ def test_ingest_no_process_skips_agents(tmp_path: Path) -> None:
     run_mock.assert_not_called()
 
 
+def test_failed_channel_task_replies_with_error(tmp_path: Path, monkeypatch) -> None:
+    """When the agent run fails (e.g. model rate-limited), the user gets a short
+    error reply in the chat instead of silence."""
+    from jigga.runtime.model_router import ModelCallResult
+
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    sent: list[tuple] = []
+    monkeypatch.setattr("jigga.runtime.telegram.send_message",
+                        lambda home, chat_id, text: sent.append((chat_id, text)) or {"sent": True})
+    err = ModelCallResult(status="error", provider="chatgpt", model="m", content="", dry_run=False, tool_calls=[])
+    with patch("jigga.runtime.telegram.poll_messages",
+               return_value={"status": "ok", "messages": [_msg(text="hi", chat_id=111)]}), \
+         patch("jigga.runtime.agent.call_model", return_value=err):
+        ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, process_agents=True)
+
+    task = list_tasks(paths.tasks)[0]
+    assert task.state == "failed"                       # the run failed
+    assert sent and sent[0][0] == 111                   # …and we replied to that chat
+    assert "try again" in sent[0][1].lower()
+    assert "channel.failure_notified" in [e["type"] for e in _events(paths)]
+
+
+def test_successful_channel_task_gets_no_error_reply(tmp_path: Path, monkeypatch) -> None:
+    """A successful run must NOT trigger the failure reply."""
+    from jigga.runtime.model_router import ModelCallResult
+
+    paths = init_runtime(tmp_path, examples=True)
+    _enable_telegram(paths)
+    sent: list[tuple] = []
+    monkeypatch.setattr("jigga.runtime.telegram.send_message",
+                        lambda home, chat_id, text: sent.append((chat_id, text)) or {"sent": True})
+    ok = ModelCallResult(status="ok", provider="x", model="m", content="done", dry_run=False, tool_calls=[])
+    with patch("jigga.runtime.telegram.poll_messages",
+               return_value={"status": "ok", "messages": [_msg(text="hi", chat_id=111)]}), \
+         patch("jigga.runtime.agent.call_model", return_value=ok):
+        ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0, process_agents=True)
+
+    assert sent == []  # no error reply on success
+
+
 # --- channel_listen bounded loop -------------------------------------------
 
 
