@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field, replace
@@ -413,6 +414,24 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
             "input_tokens": input_tokens, "output_tokens": output_tokens}
 
 
+# How many times to retry a 429 (rate-limit) before giving up. Small bursts —
+# e.g. several chat messages in quick succession — usually clear within seconds.
+_CHATGPT_MAX_RETRIES = 3
+_CHATGPT_MAX_BACKOFF_SECONDS = 30.0
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError, attempt: int) -> float:
+    """Backoff before retrying a 429: honor a `Retry-After` header (integer
+    seconds) if the server sent one, else exponential (1, 2, 4, …), capped."""
+    header = exc.headers.get("Retry-After") if getattr(exc, "headers", None) else None
+    if header:
+        try:
+            return min(float(header), _CHATGPT_MAX_BACKOFF_SECONDS)
+        except (TypeError, ValueError):
+            pass
+    return min(2.0 ** attempt, _CHATGPT_MAX_BACKOFF_SECONDS)
+
+
 def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str, home: Path) -> ModelCallResult:
     """Call the ChatGPT/Codex backend on a subscription OAuth token (no API key)."""
     from jigga.runtime.chatgpt_auth import load_credentials  # local import: optional dependency path
@@ -435,19 +454,28 @@ def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest
         http_request = urllib.request.Request(CHATGPT_CODEX_URL, data=payload, headers=headers, method="POST")
         return urllib.request.urlopen(http_request, timeout=provider.timeout_seconds)  # noqa: S310
 
-    try:
-        response = _post(creds.access_token, creds.account_id)
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):  # token expired/rejected → refresh once and retry
-            creds.force_refresh()
-            try:
-                response = _post(creds.access_token, creds.account_id)
-            except urllib.error.HTTPError as retry_exc:
-                detail = retry_exc.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"ChatGPT request failed after refresh: HTTP {retry_exc.code}: {detail}") from retry_exc
-        else:
+    # Retry transient 429s with backoff (respecting Retry-After) before failing
+    # the task — a short rate-limit burst should resolve, not surface as a hard
+    # failure. 401/403 still trigger a single token refresh + retry.
+    response = None
+    refreshed = False
+    for attempt in range(_CHATGPT_MAX_RETRIES + 1):
+        try:
+            response = _post(creds.access_token, creds.account_id)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) and not refreshed:  # token expired/rejected → refresh once
+                creds.force_refresh()
+                refreshed = True
+                continue
+            if exc.code == 429 and attempt < _CHATGPT_MAX_RETRIES:
+                time.sleep(_retry_after_seconds(exc, attempt))
+                continue
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"ChatGPT request failed: HTTP {exc.code}: {detail}") from exc
+            suffix = " after refresh" if refreshed else ""
+            raise RuntimeError(f"ChatGPT request failed{suffix}: HTTP {exc.code}: {detail}") from exc
+    if response is None:  # exhausted retries without a definitive HTTPError to raise
+        raise RuntimeError("ChatGPT request failed: rate-limited (429), retries exhausted")
 
     with response:
         parsed = parse_responses_stream(response)

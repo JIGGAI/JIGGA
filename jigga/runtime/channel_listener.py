@@ -52,7 +52,7 @@ from jigga.runtime.channels import (
     from_public_conversation,
     identity_allowed,
 )
-from jigga.runtime.tasks import create_task
+from jigga.runtime.tasks import create_task, find_task
 
 DEFAULT_LONG_POLL_SECONDS = 30
 
@@ -199,8 +199,39 @@ def _ingest_once(
     if process_agents:
         for agent_id in sorted(affected_agents):
             runs.append(run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id))
+        _notify_failed_channel_tasks(home, logs_dir, tasks_dir, created)
 
     return {"polled": polled, "created": created, "runs": runs}
+
+
+_FAILURE_REPLY = ("⚠️ I couldn't finish that just now (often a temporary rate limit). "
+                  "Please try again in a moment.")
+
+
+def _notify_failed_channel_tasks(
+    home: Path, logs_dir: Path, tasks_dir: Path, created: list[dict[str, Any]]
+) -> None:
+    """After running channel-created tasks, send a short error reply for any that
+    ended up `failed` (e.g. the model was rate-limited), so the user gets
+    feedback instead of silence. The reply goes out via the channel adapter
+    directly (the bot's own token), so it isn't subject to the agent's tool/
+    network policy. Best-effort: a notify failure must not break ingest."""
+    for created_task in created:
+        meta = created_task.get("metadata") or {}
+        channel = meta.get("channel")
+        chat_id = meta.get("chat_id")
+        if not channel or chat_id is None or channel not in ADAPTERS:
+            continue
+        task = find_task(tasks_dir, created_task.get("id"))
+        if task is None or task.state != "failed":
+            continue
+        try:
+            ADAPTERS[channel].send(home, conversation_id=chat_id, text=_FAILURE_REPLY)
+            append_event(logs_dir, "channel.failure_notified", channel=channel,
+                         task_id=task.id, chat_id=chat_id)
+        except Exception as exc:  # noqa: BLE001 — notify failure must not break ingest
+            append_event(logs_dir, "channel.failure_notify_error", status="error",
+                         task_id=created_task.get("id"), error=str(exc))
 
 
 def channel_listen(
