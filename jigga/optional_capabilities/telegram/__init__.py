@@ -94,7 +94,12 @@ def setup(
             "channels.telegram.allowed_chat_ids to config.yaml."
         )
 
-    default_agent = input_fn("Default agent to route messages to [daily_briefing_agent]: ").strip() or "daily_briefing_agent"
+    # Suggest this install's actual default agent (the chief/assistant from
+    # `jigga setup`/`onboard`) — not a bundled example — so inbound messages
+    # route to the real primary assistant out of the box.
+    from jigga.core.config import resolve_default_agent
+    suggested = resolve_default_agent(paths.agents) or "assistant"
+    default_agent = input_fn(f"Default agent to route messages to [{suggested}]: ").strip() or suggested
     _write_telegram_config(paths.config, allowed_chat_ids=chat_ids, default_agent=default_agent)
     print_fn("\nTelegram channel configured. Try the examples/demos/telegram_echo.yaml workflow.")
     return 0
