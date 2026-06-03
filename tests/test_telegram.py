@@ -287,6 +287,24 @@ def test_setup_wizard_stores_token_and_config(tmp_path: Path) -> None:
     assert config["channels"]["telegram"]["default_agent"] == "daily_briefing_agent"
 
 
+def test_setup_wizard_default_agent_follows_resolved_default(tmp_path: Path) -> None:
+    """Accepting the suggested default routes to the install's real default
+    agent (chief/assistant), not the bundled `daily_briefing_agent` example."""
+    from jigga.core.io import write_yaml
+    from jigga.optional_capabilities.telegram import setup
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.agents / "chief.yaml",
+               {"id": "chief", "name": "Chief", "role": "chief of staff", "default": True})
+    inputs = iter([
+        "123:abc",  # token
+        "n",         # discover? no
+        "111",       # allowed chat ids
+        "",          # default agent -> accept the suggestion
+    ])
+    assert setup(paths, input_fn=lambda _: next(inputs), print_fn=lambda *a, **k: None) == 0
+    assert read_yaml(paths.config)["channels"]["telegram"]["default_agent"] == "chief"
+
+
 def test_setup_wizard_discovery_prefills_chat_ids(tmp_path: Path) -> None:
     from jigga.optional_capabilities.telegram import setup
     paths = init_runtime(tmp_path)
