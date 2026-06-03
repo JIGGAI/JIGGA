@@ -121,9 +121,30 @@ def evaluate_workflow_step(
     return PolicyDecision("allow")
 
 
+def _network_target_allowed(target: str, allow: Any) -> bool:
+    """True if `target` matches an entry in a network `allow` list. Matches on
+    exact host/URL or a path-boundary prefix (so `https://api.telegram.org`
+    permits `.../botX/sendMessage` but NOT `api.telegram.org.evil.com`)."""
+    if not isinstance(allow, list):
+        return False
+    t = str(target).strip().rstrip("/")
+    for entry in allow:
+        e = str(entry).strip().rstrip("/")
+        if e and (e in {"*", "all"} or t == e or t.startswith(e + "/")):
+            return True
+    return False
+
+
 def evaluate_network(agent: AgentConfig, target: str | None = None) -> PolicyDecision:
-    mode = _mode(agent.permissions.get("network"), default="deny")
+    perm = agent.permissions.get("network")
+    mode = _mode(perm, default="deny")
     if mode == "allow":
+        return PolicyDecision("allow")
+    # Per-target egress allowlist: a specific declared target may be permitted
+    # even when the default mode is ask/deny, so a channel capability's host
+    # (e.g. api.telegram.org) gets through without opening the agent to all
+    # network egress. (Milestone-E egress allowlist, in miniature.)
+    if target and isinstance(perm, dict) and _network_target_allowed(target, perm.get("allow")):
         return PolicyDecision("allow")
     if mode == "ask":
         return PolicyDecision("ask", f"Network access requires approval for {target or 'target'}.", "network")

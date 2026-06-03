@@ -33,6 +33,26 @@ def test_network_defaults_to_deny_when_unset() -> None:
     assert evaluate_network(_agent({}), "example.com").status == "deny"
 
 
+# --- per-target egress allowlist -------------------------------------------
+
+def test_network_allowlist_permits_specific_target_under_ask() -> None:
+    perm = {"network": {"mode": "ask", "allow": ["https://api.telegram.org"]}}
+    # the allowlisted host is permitted even though the default mode is ask…
+    assert evaluate_network(_agent(perm), "https://api.telegram.org").status == "allow"
+    # …and a path under it is too (path-boundary prefix)
+    assert evaluate_network(_agent(perm), "https://api.telegram.org/bot1/sendMessage").status == "allow"
+    # a different host still falls back to the mode (ask)
+    assert evaluate_network(_agent(perm), "https://evil.com").status == "ask"
+
+
+def test_network_allowlist_no_prefix_bypass() -> None:
+    """A look-alike host must NOT be allowed by a prefix trick."""
+    perm = {"network": {"mode": "deny", "allow": ["https://api.telegram.org"]}}
+    assert evaluate_network(_agent(perm), "https://api.telegram.org.evil.com").status == "deny"
+    # the legit host is still allowed even under mode=deny (allowlist is explicit)
+    assert evaluate_network(_agent(perm), "https://api.telegram.org").status == "allow"
+
+
 # --- resource permissions (calendar/email/notifications/secrets) -----------
 
 

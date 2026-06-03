@@ -148,8 +148,8 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
     # that complete silently.
     granted = _grant_channel_tools(paths, name, config)
     if granted:
-        agent_id, added = granted
-        echo(f"  Granted '{agent_id}' the {name} tools: {', '.join(added)}")
+        agent_id, items = granted
+        echo(f"  Granted '{agent_id}' {name} access — " + "; ".join(items))
 
     echo(f"\n✓ {name} ready (activation={mode}). The supervisor polls it each tick — "
          "run `jigga supervisor run` (or install it as a service).")
@@ -173,14 +173,38 @@ def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, l
     capability = registry.get(capability_name)
     actions = list(capability.actions) if capability else [f"{channel}.send_message"]
     doc = read_yaml(agent_path)
+    granted: list[str] = []
+
+    # 1. Tools — the channel's full action set (poll + send + future).
     tools = list(doc.get("tools") or [])
     added = [a for a in actions if a not in tools]
-    if not added:
+    if added:
+        tools.extend(added)
+        doc["tools"] = tools
+        granted.append("tools: " + ", ".join(added))
+
+    # 2. Network egress — the channel API host the send tool must reach. Without
+    #    this the call is granted but blocked by the network gate. Targeted
+    #    allowlist entry, NOT a blanket `network: allow`.
+    net = (capability.permissions or {}).get("network") if capability else None
+    target = net.get("target") if isinstance(net, dict) else None
+    if target:
+        perms = doc.get("permissions") or {}
+        netperm = perms.get("network")
+        if not isinstance(netperm, dict):
+            netperm = {"mode": netperm if isinstance(netperm, str) else "ask"}
+        allow_list = list(netperm.get("allow") or [])
+        if netperm.get("mode") not in {"allow", "*"} and target not in allow_list:
+            allow_list.append(target)
+            netperm["allow"] = allow_list
+            perms["network"] = netperm
+            doc["permissions"] = perms
+            granted.append(f"network: {target}")
+
+    if not granted:
         return None
-    tools.extend(added)
-    doc["tools"] = tools
     write_yaml(agent_path, doc)
-    return routed, added
+    return routed, granted
 
 
 def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
