@@ -75,6 +75,7 @@ from jigga.runtime.recipes import (
     scaffold_agent,
     scaffold_team,
 )
+from jigga.runtime.term_select import Option, multi_select, supports_picker
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import (
@@ -645,7 +646,19 @@ def _examples_setup(paths: Any, *, interactive: bool, echo: Callable[..., None] 
     if not recipes:
         echo("• No example recipes found.")
         return []
-    if interactive:
+    if interactive and supports_picker():
+        # Arrow-key checkbox picker (the OpenClaw onboarding style).
+        echo("")
+        options = [Option(label=f"{r['id']:24} {r['kind']:6}", detail=r.get("description") or "")
+                   for r in recipes]
+        _drain_stdin()
+        picked = multi_select("Install example recipes", options)
+        if not picked:
+            echo("• Skipped examples. Install any later with `jigga recipes scaffold <name>`.")
+            return []
+        chosen = [recipes[i] for i in picked]
+    elif interactive:
+        # Typed fallback for pipes/dumb terminals: numbers/names, 'all', Enter.
         echo("\nExample recipes available:")
         for index, entry in enumerate(recipes, 1):
             echo(f"  {index}) {entry['id']:24} {entry['kind']:6} {entry.get('description') or ''}")
