@@ -82,9 +82,10 @@ def _regenerate_artifacts(record: dict[str, Any]) -> dict[str, str] | None:
         return generated
 
 
-def _plan_recipe_actions(home: Path) -> tuple[list[UpdateAction], list[str]]:
+def _plan_recipe_actions(home: Path) -> tuple[list[UpdateAction], list[str], list[dict[str, Any]]]:
     actions: list[UpdateAction] = []
     notices: list[str] = []
+    edited: list[dict[str, Any]] = []
     for record in installed_recipes(home):
         generated = _regenerate_artifacts(record)
         scaffold_id = record.get("scaffold_id") or record.get("recipe_id")
@@ -109,9 +110,14 @@ def _plan_recipe_actions(home: Path) -> tuple[list[UpdateAction], list[str]]:
                     "artifact.update",
                     f"update {rel} (pristine since install; shipped recipe changed)", detail))
             else:
-                notices.append(f"{rel}: shipped recipe changed but your copy has local edits — "
-                               "left alone (re-scaffold with --overwrite to replace)")
-    return actions, notices
+                # Local edits + shipped changes: never auto-replaced. Returned
+                # structured so the CLI can offer a per-item picker (backed up
+                # before any replace); also a human notice for plan output.
+                edited.append({"path": rel, "content": content,
+                               "record": str(record.get("scaffold_id")),
+                               "recipe": Path(str(record.get("source") or "")).stem})
+                notices.append(f"{rel}: shipped recipe changed but your copy has local edits — kept")
+    return actions, notices, edited
 
 
 def _sha256_text(text: str) -> str:
@@ -168,7 +174,7 @@ def _installed_interval(unit_path: Path) -> float:
 def plan_update(paths: Any) -> dict[str, Any]:
     """Compute the reconciliation plan. Read-only — nothing is mutated."""
     home = Path(paths.home)
-    actions, notices = _plan_recipe_actions(home)
+    actions, notices, edited = _plan_recipe_actions(home)
 
     config = read_yaml(paths.config) if paths.config.exists() else {}
     for _key, plan_fn in _CONFIG_MIGRATIONS:
@@ -185,7 +191,7 @@ def plan_update(paths: Any) -> dict[str, Any]:
             f"(interval {int(interval)}s) so the daemon runs the current code",
             {"interval_seconds": interval}))
 
-    return {"actions": [a.to_dict() for a in actions], "notices": notices}
+    return {"actions": [a.to_dict() for a in actions], "notices": notices, "edited": edited}
 
 
 def apply_update(paths: Any, plan: dict[str, Any]) -> dict[str, Any]:
@@ -225,6 +231,47 @@ def apply_update(paths: Any, plan: dict[str, Any]) -> dict[str, Any]:
     if config_dirty:
         write_yaml(paths.config, config)
     return {"applied": applied, "errors": errors}
+
+
+def backup_path_for(home: Path, rel: str, *, stamp: str) -> Path:
+    return Path(home) / "state" / "backups" / stamp / rel
+
+
+def overwrite_edited(paths: Any, plan: dict[str, Any], selected_paths: list[str]) -> dict[str, Any]:
+    """Replace the SELECTED edited-divergent files with their regenerated
+    content. Each file is backed up first (state/backups/<date>/<rel>) so the
+    destructive choice stays reversible; the install record's hash refreshes so
+    the file reads pristine again. Unselected files are never touched."""
+    home = Path(paths.home)
+    chosen = set(selected_paths)
+    replaced: list[str] = []
+    backups: list[str] = []
+    errors: list[str] = []
+    stamp = now_iso()[:10]
+    for item in plan.get("edited", []):
+        rel = item.get("path")
+        if rel not in chosen:
+            continue
+        try:
+            target = home / rel
+            backup = backup_path_for(home, rel, stamp=stamp)
+            counter = 1
+            while backup.exists():  # same file replaced twice in one day
+                backup = backup_path_for(home, f"{rel}.{counter}", stamp=stamp)
+                counter += 1
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+                backups.append(str(backup))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(item["content"], encoding="utf-8")
+            _refresh_record_hash(home, item.get("record"), rel, _sha256_text(item["content"]))
+            replaced.append(rel)
+            append_event(paths.logs, "update.overwrote_edited", path=rel,
+                         backup=str(backup), record=item.get("record"))
+        except (OSError, KeyError, ValueError) as exc:
+            errors.append(f"{rel}: {exc}")
+    return {"replaced": replaced, "backups": backups, "errors": errors}
 
 
 def _refresh_record_hash(home: Path, scaffold_id: str | None, rel: str, digest: str) -> None:

@@ -207,3 +207,101 @@ def test_cli_up_to_date_and_dry_run(tmp_path: Path, capsys) -> None:
     out = capsys.readouterr().out
     assert "dry run" in out
     assert "default" not in read_yaml(paths.config)["channels"]
+
+
+# --- edited-divergent files: per-item picker + backups ---------------------------
+
+
+def _make_edited(paths) -> Path:
+    """Scaffold researcher, edit it locally, point its record at a changed
+    recipe → planner reports it as edited-divergent."""
+    agent_yaml = _scaffold_researcher(paths)
+    agent_yaml.write_text(agent_yaml.read_text(encoding="utf-8") + "# my custom note\n",
+                          encoding="utf-8")
+    original = find_recipe(paths.home, "researcher").read_text(encoding="utf-8")
+    _retarget_record_to_local_recipe(paths, original.replace("Gathers", "Hunts"))
+    return agent_yaml
+
+
+def test_plan_returns_structured_edited_entries(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    _make_edited(paths)
+    plan = plan_update(paths)
+    assert len(plan["edited"]) == 1
+    entry = plan["edited"][0]
+    assert entry["path"] == "agents/researcher.yaml"
+    assert entry["recipe"] == "researcher"
+    assert "Hunts" in entry["content"]
+
+
+def test_overwrite_edited_backs_up_replaces_and_re_pristines(tmp_path: Path) -> None:
+    from jigga.runtime.recipes import installed_recipes
+    from jigga.runtime.update import overwrite_edited
+
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    plan = plan_update(paths)
+
+    results = overwrite_edited(paths, plan, ["agents/researcher.yaml"])
+    assert results["errors"] == [] and results["replaced"] == ["agents/researcher.yaml"]
+    # replaced with the shipped version...
+    text = agent_yaml.read_text(encoding="utf-8")
+    assert "Hunts" in text and "# my custom note" not in text
+    # ...the edit is preserved in a backup...
+    assert len(results["backups"]) == 1
+    backup = Path(results["backups"][0])
+    assert backup.is_relative_to(paths.home / "state" / "backups")
+    assert "# my custom note" in backup.read_text(encoding="utf-8")
+    # ...and the file reads pristine again (hash refreshed)
+    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "researcher")
+    assert record["modified"] == []
+    assert plan_update(paths)["edited"] == []
+
+
+def test_overwrite_edited_never_touches_unselected(tmp_path: Path) -> None:
+    from jigga.runtime.update import overwrite_edited
+
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    plan = plan_update(paths)
+    results = overwrite_edited(paths, plan, [])                     # nothing selected
+    assert results["replaced"] == [] and results["backups"] == []
+    assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
+
+
+def test_cli_picker_replaces_selected_and_prints_footer(tmp_path: Path, monkeypatch, capsys) -> None:
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [0])
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    out = capsys.readouterr().out
+    assert "replaced agents/researcher.yaml" in out and "backup:" in out
+    assert "# my custom note" not in agent_yaml.read_text(encoding="utf-8")
+
+
+def test_cli_picker_declined_keeps_files_and_prints_example(tmp_path: Path, monkeypatch, capsys) -> None:
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [])
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    out = capsys.readouterr().out
+    assert "kept all edited files" in out
+    assert "jigga recipes scaffold researcher --overwrite" in out   # the example command
+    assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
+
+
+def test_cli_non_interactive_edited_prints_example_only(tmp_path: Path, monkeypatch, capsys) -> None:
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: False)})())
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    out = capsys.readouterr().out
+    assert "jigga recipes scaffold researcher --overwrite" in out
+    assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
