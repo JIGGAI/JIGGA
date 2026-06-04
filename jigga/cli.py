@@ -279,7 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="Create a local runtime directory")
-    init.add_argument("--examples", action="store_true", help="Copy bundled example agents and teams")
+    init.add_argument("--examples", action="store_true",
+                      help="Also scaffold the bundled example recipes (personal admin, marketing, social teams)")
     init.add_argument(
         "--no-prompt",
         action="store_true",
@@ -293,7 +294,8 @@ def build_parser() -> argparse.ArgumentParser:
         "onboard",
         help="Guided end-to-end setup: init -> assistant -> model -> channel -> always-on service",
     )
-    onboard.add_argument("--examples", action="store_true", help="Also copy bundled example agents and teams")
+    onboard.add_argument("--examples", action="store_true",
+                         help="Also scaffold the bundled example recipes (personal admin, marketing, social teams)")
     onboard.add_argument("--overwrite", action="store_true", help="Overwrite an existing default agent / USER.md")
     onboard.add_argument("--install-daemon", action="store_true",
                          help="Install the supervisor as an always-on user service (launchd/systemd) at the end")
