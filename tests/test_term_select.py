@@ -302,3 +302,17 @@ def test_onboard_choose_uses_picker_and_cancel_falls_to_default(monkeypatch) -> 
 
     monkeypatch.setattr("jigga.commands.onboard.select_one", lambda *a, **k: None)
     assert _choose(boom, lambda *a, **k: None, "Role?", options, default="chief") == "chief"
+
+
+def test_channels_setup_activation_cancel_defaults_to_always(tmp_path, monkeypatch) -> None:
+    from jigga.cli import _channels_setup
+    from jigga.commands.init import init_runtime
+    from jigga.core.io import read_yaml
+
+    paths = init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    answers = iter([0, None])                      # pick telegram; cancel the activation pick
+    monkeypatch.setattr("jigga.cli.select_one", lambda *a, **k: next(answers))
+    monkeypatch.setattr("jigga.cli.install_capability", lambda *a, **k: 0)
+    _channels_setup(paths, prompt=lambda _p: "", echo=lambda *a, **k: None)
+    assert read_yaml(paths.config)["channels"]["telegram"]["activation"] == "always"
