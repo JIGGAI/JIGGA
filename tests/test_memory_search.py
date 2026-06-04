@@ -154,3 +154,17 @@ def test_team_gate_still_hides_other_teams(tmp_path: Path) -> None:
     assert hidden == []
     visible = search_memory(paths.memory, "secret zebra initiative", team="other_team")
     assert visible and visible[0]["layer"] == "team:other_team"
+
+
+def test_tasks_visible_to_team_filtered_search(tmp_path: Path) -> None:
+    """Agents search with their team filter set (the memory.search handler
+    passes team=<agent's team>) — task history must be visible through it,
+    like the global memory tree."""
+    from jigga.runtime.tasks import create_task
+
+    paths = init_runtime(tmp_path)
+    create_task(paths.tasks, "telegram message from RJ",
+                description="please order more espresso beans",
+                assignee="assistant", metadata={"channel": "telegram"})
+    results = search_memory(paths.memory, "espresso beans", team="assistant", rebuild=True)
+    assert results and results[0]["layer"] == "tasks"
