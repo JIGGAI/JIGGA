@@ -346,6 +346,14 @@ def build_parser() -> argparse.ArgumentParser:
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
 
+    update_p = sub.add_parser(
+        "update", help="Reconcile this runtime with the current code: recipes, config keys, service")
+    update_p.add_argument("--apply", action="store_true",
+                          help="Apply without prompting (for scripts/automation)")
+    update_p.add_argument("--dry-run", action="store_true",
+                          help="Show the plan only; never prompt or apply")
+    update_p.add_argument("--json", action="store_true", dest="json_output")
+
     doctor = sub.add_parser("doctor", help="Health check: runtime, config, model, channels, backends, service")
     doctor.add_argument("--json", action="store_true", dest="json_output", help="Machine-readable output")
 
@@ -839,6 +847,64 @@ def _cmd_state(args: argparse.Namespace) -> int:
 
 
 _DOCTOR_GLYPH = {"ok": "✓", "warn": "⚠", "fail": "✗"}
+
+
+
+def _cmd_update(args: argparse.Namespace) -> int:
+    """Plan → review → confirm. Interactive runs end with an apply prompt so
+    no --apply re-run is needed; --apply skips the prompt (automation),
+    --dry-run never prompts or applies."""
+    import sys as _sys
+
+    from jigga.runtime.update import apply_update, plan_update
+
+    paths = get_paths(args.home)
+    plan = plan_update(paths)
+    actions, notices = plan["actions"], plan["notices"]
+
+    if args.json_output and args.dry_run:
+        print_json(plan)
+        return 0
+    if not args.json_output:
+        if not actions and not notices:
+            print("✓ Everything up to date — nothing to reconcile.")
+            return 0
+        if actions:
+            print("Planned changes:")
+            for action in actions:
+                print(f"  • {action['description']}")
+        for notice in notices:
+            print(f"  ~ {notice}")
+        if not actions:
+            return 0
+    if args.dry_run:
+        print("\n(dry run — apply with: jigga update --apply)")
+        return 0
+
+    do_apply = args.apply
+    if not do_apply:
+        if not _sys.stdin.isatty():  # piped/scripted without --apply: never guess
+            if not args.json_output:
+                print("\nNot applied (non-interactive). Apply with: jigga update --apply")
+            else:
+                print_json({**plan, "applied": False})
+            return 0
+        do_apply = _confirm("\nApply these changes?", default=True)
+    if not do_apply:
+        print("Not applied.")
+        return 0
+
+    results = apply_update(paths, plan)
+    if args.json_output:
+        print_json({**plan, "applied": True, "results": results})
+    else:
+        for item in results["applied"]:
+            print(f"  ✓ {item}")
+        for error in results["errors"]:
+            print(f"  ! {error}")
+        print(f"\n✓ Applied {len(results['applied'])} change(s)."
+              + (f"  {len(results['errors'])} error(s)." if results["errors"] else ""))
+    return 1 if results["errors"] else 0
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -1602,6 +1668,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,
     "doctor": _cmd_doctor,
+    "update": _cmd_update,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,
