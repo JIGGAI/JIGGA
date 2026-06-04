@@ -44,6 +44,10 @@ class CapabilityManifest:
     source: str | None = None
     manifest_hash: str | None = None
     bundled: bool = False
+    # Routing guidance appended to the action's function-schema description —
+    # the ONLY signal the model routes tools/skills by. Write it as trigger
+    # language: "When asked for an outline or talking points — not full drafts."
+    when_to_use: str | None = None
     # Actions only the RUNTIME may invoke — never granted to or callable by an
     # agent. Channel ingest (telegram.poll_messages) lives here: Telegram's
     # getUpdates allows ONE consumer per bot token, and an agent polling would
@@ -116,6 +120,7 @@ class CapabilityManifest:
             manifest_hash=manifest_hash,
             bundled=bundled,
             runtime_only_actions=[str(a) for a in (data.get("runtime_only_actions") or [])],
+            when_to_use=str(data["when_to_use"]) if data.get("when_to_use") else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -138,6 +143,7 @@ class CapabilityManifest:
             "manifest_hash": self.manifest_hash,
             "bundled": self.bundled,
             "runtime_only_actions": self.runtime_only_actions,
+            "when_to_use": self.when_to_use,
         }
 
 

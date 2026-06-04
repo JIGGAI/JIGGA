@@ -120,7 +120,12 @@ routing:
   `spawn_subagent`, `content-drafting` actions, `draft_with_model` (real model call).
 - **Opt-in first-party**: `gog` (Gmail/Workspace), `google-calendar`, `telegram` —
   installed via `jigga capabilities install <name>`.
-- **User/project-local**: your own packs in `~/.jigga/capabilities/`.
+- **User/project-local**: your own packs in `~/.jigga/capabilities/` — including
+  **skill packs** (`type: skill_pack`: a `manifest.yaml` + `instructions.md`
+  prompt specialization, run as a sub-model-call on dispatch). Agents route to
+  a skill purely from its function-schema description, so give every skill a
+  trigger-phrased `when_to_use:` ("When asked for an outline or talking points
+  — not full drafts") alongside its `summary`.
 
 ---
 
