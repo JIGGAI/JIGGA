@@ -76,7 +76,7 @@ def test_scaffold_fails_fast_on_bad_cron(tmp_path: Path) -> None:
     from jigga.runtime.recipes import Recipe, scaffold_agent
     paths = init_runtime(tmp_path)
     recipe = Recipe(id="r", name="R", kind="agent",
-                    meta={"cronJobs": [{"schedule": "*/0 * * * *", "message": "loop"}]})
+                    meta={"agent": {"cronJobs": [{"schedule": "*/0 * * * *", "message": "loop"}]}})
     with pytest.raises(ValueError, match="invalid cron"):
         scaffold_agent(paths.home, recipe, agent_id="r", agents_dir=paths.agents)
 

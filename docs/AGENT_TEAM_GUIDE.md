@@ -60,8 +60,8 @@ A **recipe** is a Markdown file with YAML frontmatter describing a team and its
 roles. Scaffolding generates the agent + team YAML and the workspace:
 
 ```bash
-jigga team recipes                                  # list available recipes
-jigga team scaffold marketing-team --team-id acme   # generate the team
+jigga recipes list                                  # list available recipes
+jigga recipes scaffold marketing-team --id acme     # generate the team
 ```
 This writes `acme-lead`, `acme-copywriter`, `acme-editor` agents, the `acme`
 team, and `~/.jigga/workspaces/acme/`. `{{teamId}}`/`{{teamName}}` in the recipe
@@ -69,7 +69,7 @@ are templated. Re-running is safe (create-only); pass `--overwrite` to regenerat
 
 ### b) Copy the bundled examples
 ```bash
-jigga init --examples        # copies example agents/teams/workflows into ~/.jigga
+jigga init --examples        # scaffolds the bundled example recipes into ~/.jigga
 ```
 
 ### c) Hand-write YAML
@@ -261,7 +261,7 @@ agents:
 Scaffolds lead → copywriter → editor. Each role becomes `{{teamId}}-<role>`.
 ```
 ```bash
-jigga team scaffold marketing-team --team-id acme
+jigga recipes scaffold marketing-team --id acme
 ```
 
 ### A single agent (`examples/recipes/researcher.md`)
@@ -282,7 +282,7 @@ cronJobs:
 # Researcher (single-agent recipe)
 ```
 ```bash
-jigga team scaffold researcher --team-id my-researcher
+jigga recipes scaffold researcher --id my-researcher
 ```
 
 ---
@@ -296,7 +296,7 @@ jigga model setup            # pick ChatGPT subscription / API key / dry-run
 jigga channels setup         # (optional) wire Telegram so the team is reachable
 
 # 1. build a team from a recipe
-jigga team scaffold marketing-team --team-id acme
+jigga recipes scaffold marketing-team --id acme
 jigga team workspace acme    # see the scaffolded workspace files
 
 # 2. give the team direction (lead curates the plan)
@@ -319,7 +319,7 @@ jigga approvals list         # anything waiting on you
 
 | Area | Commands |
 |---|---|
-| Build | `jigga init [--examples]`, `jigga team recipes`, `jigga team scaffold <recipe> --team-id <id> [--overwrite]`, `jigga team init <id>`, `jigga team workspace <id>` |
+| Build | `jigga init [--examples]`, `jigga recipes list|show|scaffold <recipe> --id <id> [--overwrite]`, `jigga team init <id>`, `jigga team workspace <id>` |
 | Model | `jigga model setup`, `jigga model use <provider>`, `jigga model login [--device-code]`, `jigga model status` |
 | Channels | `jigga channels setup`, `jigga channels status`, `jigga channels listen` |
 | Run | `jigga supervisor run`, `jigga team run <id>`, `jigga workflow run <id>`, `jigga run agent <id>` |

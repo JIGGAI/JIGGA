@@ -89,11 +89,14 @@ def test_append_helpers(tmp_path: Path) -> None:
 
 
 def test_cli_team_init_and_workspace(tmp_path: Path, capsys) -> None:
-    init_runtime(tmp_path, examples=True)  # ships marketing_team.yaml
+    init_runtime(tmp_path, examples=True)  # scaffolds marketing_team (recipe) incl. its workspace
     assert main(["--home", str(tmp_path), "team", "init", "marketing_team", "--json"]) == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["lead"] == "marketing_lead"
-    assert "notes/plan.md" in summary["created"]
+    # The recipe scaffold already created the workspace at init; team init is
+    # idempotent and reports nothing new.
+    assert summary["created"] == []
+    assert (Path(summary["workspace"]) / "notes" / "plan.md").exists()
 
     assert main(["--home", str(tmp_path), "team", "workspace", "marketing_team"]) == 0
     listing = capsys.readouterr().out

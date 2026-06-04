@@ -210,15 +210,18 @@ def test_no_channel_connected_is_desktop_only(tmp_path: Path, monkeypatch) -> No
 
 
 def test_briefing_recipe_is_self_contained() -> None:
-    """The bundled example must define everything the agent needs: a delivery
+    """The bundled recipe must define everything the agent needs: a delivery
     channel preference and a cron message that instructs actual delivery —
     a scheduled wake with no instruction is a recipe bug."""
-    recipe = read_yaml(Path(__file__).resolve().parents[1] / "examples" / "agents"
-                       / "daily_briefing_agent.yaml")
-    assert recipe["notifications"]["channel"] == "default"
-    schedule = recipe["wake"]["schedules"][0]
+    from jigga.runtime.recipes import load_recipe
+
+    recipe = load_recipe(Path(__file__).resolve().parents[1] / "examples" / "recipes"
+                         / "personal-admin-team.md")
+    briefing = next(s for s in recipe.agents if s.get("id") == "daily_briefing_agent")["agent"]
+    assert briefing["notifications"]["channel"] == "default"
+    schedule = briefing["wake"]["schedules"][0]
     assert "notifications.send" in schedule["message"]
-    assert "notifications.send" in recipe["tools"]
+    assert "notifications.send" in briefing["tools"]
 
 
 def test_agent_yaml_notifications_field_roundtrips() -> None:

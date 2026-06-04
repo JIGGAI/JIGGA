@@ -66,7 +66,14 @@ from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
-from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
+from jigga.runtime.recipes import (
+    find_recipe,
+    list_recipes,
+    load_recipe,
+    recipe_summary,
+    scaffold_agent,
+    scaffold_team,
+)
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import (
@@ -475,6 +482,22 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_due = scheduler_sub.add_parser("due", help="List due events for the current time")
     scheduler_due.add_argument("--at", help="Evaluate due events at an ISO timestamp")
 
+    recipes_cmd = sub.add_parser(
+        "recipes", help="List, inspect, and scaffold recipes (agents + teams + workflows from one template)")
+    recipes_sub = recipes_cmd.add_subparsers(dest="recipes_command", required=True)
+    recipes_list = recipes_sub.add_parser("list", help="List available recipes (~/.jigga/recipes + bundled examples)")
+    recipes_list.add_argument("--json", action="store_true", dest="json_output")
+    recipes_show = recipes_sub.add_parser("show", help="Inspect a recipe: what it would scaffold")
+    recipes_show.add_argument("recipe", help="Recipe name or path to a .md recipe")
+    recipes_show.add_argument("--json", action="store_true", dest="json_output")
+    recipes_scaffold = recipes_sub.add_parser(
+        "scaffold", help="Scaffold a recipe: agent yamls + team + workflows + workspace")
+    recipes_scaffold.add_argument("recipe", help="Recipe name (e.g. marketing-team) or path to a .md recipe")
+    recipes_scaffold.add_argument("--id", dest="override_id",
+                                  help="Override the scaffolded team/agent id (default: the recipe's id)")
+    recipes_scaffold.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
+    recipes_scaffold.add_argument("--json", action="store_true", dest="json_output")
+
     team = sub.add_parser("team", help="Run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
     team_run = team_sub.add_parser("run")
@@ -492,13 +515,6 @@ def build_parser() -> argparse.ArgumentParser:
     team_init.add_argument("--json", action="store_true", dest="json_output")
     team_ws = team_sub.add_parser("workspace", help="Show a team's workspace path and files")
     team_ws.add_argument("team_id")
-    team_scaffold = team_sub.add_parser("scaffold", help="Scaffold a team + member agents + workspace from a recipe")
-    team_scaffold.add_argument("recipe", help="Recipe name (e.g. marketing-team) or path to a .md recipe")
-    team_scaffold.add_argument("--team-id", dest="team_id", help="Team id to create (default: the recipe's id)")
-    team_scaffold.add_argument("--overwrite", action="store_true", help="Overwrite existing agent/team files")
-    team_scaffold.add_argument("--json", action="store_true", dest="json_output")
-    team_recipes = team_sub.add_parser("recipes", help="List available team recipes")
-    team_recipes.add_argument("--json", action="store_true", dest="json_output")
     team_run.add_argument("team_id")
 
     model = sub.add_parser("model", help="Inspect and test model execution")
@@ -1210,48 +1226,91 @@ def _cmd_team(args: argparse.Namespace) -> int:
             if path.is_file():
                 print(f"  {path.relative_to(root)}")
         return 0
-    if args.team_command == "recipes":
-        recipes = list_recipes(paths.home)
-        if args.json_output:
-            print_json(recipes)
-        elif not recipes:
-            print("No recipes found.")
+    return 0
+
+
+def _recipes_list(paths: Any, *, json_output: bool) -> int:
+    recipes = list_recipes(paths.home)
+    if json_output:
+        print_json(recipes)
+    elif not recipes:
+        print("No recipes found.")
+    else:
+        for r in recipes:
+            print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
+    return 0
+
+
+def _recipes_scaffold(paths: Any, name: str, *, override_id: str | None,
+                      overwrite: bool, json_output: bool) -> int:
+    recipe_path = find_recipe(paths.home, name)
+    if recipe_path is None:
+        print(f"Recipe not found: {name!r}. List options with: jigga recipes list")
+        return 1
+    recipe = load_recipe(recipe_path)
+    if recipe.kind == "agent":
+        summary = scaffold_agent(paths.home, recipe, agent_id=override_id,
+                                 overwrite=overwrite, agents_dir=paths.agents,
+                                 workflows_dir=paths.workflows)
+        if json_output:
+            print_json(summary)
         else:
-            for r in recipes:
-                print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
+            print(f"Scaffolded agent {summary['agent_id']!r}"
+                  + ("" if summary["written"] else "  (exists, skipped)")
+                  + ("  [scheduled]" if summary["scheduled"] else ""))
+            if summary.get("workflows_written"):
+                print(f"  workflows: {', '.join(summary['workflows_written'])}")
+            if summary.get("files_written"):
+                print(f"  files:     {', '.join(summary['files_written'])}")
         return 0
-    if args.team_command == "scaffold":
+    summary = scaffold_team(paths.home, recipe, team_id=override_id,
+                            overwrite=overwrite, agents_dir=paths.agents, teams_dir=paths.teams,
+                            workflows_dir=paths.workflows)
+    if json_output:
+        print_json(summary)
+    else:
+        print(f"Scaffolded team {summary['team_id']!r} (lead: {summary['lead']})")
+        print(f"  team:      {summary['team_file']}{'' if summary['team_written'] else '  (exists, skipped)'}")
+        print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
+              + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
+        if summary.get("workflows_written"):
+            print(f"  workflows: {', '.join(summary['workflows_written'])}")
+        print(f"  workspace: {summary['workspace']}")
+        if summary.get("files_written"):
+            print(f"  files:     {', '.join(summary['files_written'])}")
+        print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
+    return 0
+
+
+def _cmd_recipes(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.recipes_command == "list":
+        return _recipes_list(paths, json_output=args.json_output)
+    if args.recipes_command == "show":
         recipe_path = find_recipe(paths.home, args.recipe)
         if recipe_path is None:
-            print(f"Recipe not found: {args.recipe!r}. List options with: jigga team recipes")
+            print(f"Recipe not found: {args.recipe!r}. List options with: jigga recipes list")
             return 1
-        recipe = load_recipe(recipe_path)
-        if recipe.kind == "agent":
-            summary = scaffold_agent(paths.home, recipe, agent_id=args.team_id,
-                                     overwrite=args.overwrite, agents_dir=paths.agents)
-            if args.json_output:
-                print_json(summary)
-            else:
-                print(f"Scaffolded agent {summary['agent_id']!r}"
-                      + ("" if summary["written"] else "  (exists, skipped)")
-                      + ("  [scheduled]" if summary["scheduled"] else ""))
-                if summary.get("files_written"):
-                    print(f"  files:     {', '.join(summary['files_written'])}")
-            return 0
-        summary = scaffold_team(paths.home, recipe, team_id=args.team_id,
-                                overwrite=args.overwrite, agents_dir=paths.agents, teams_dir=paths.teams)
+        summary = recipe_summary(load_recipe(recipe_path))
         if args.json_output:
             print_json(summary)
         else:
-            print(f"Scaffolded team {summary['team_id']!r} (lead: {summary['lead']})")
-            print(f"  team:      {summary['team_file']}{'' if summary['team_written'] else '  (exists, skipped)'}")
-            print(f"  agents:    {', '.join(summary['agents_written']) or '(none new)'}"
-                  + (f"  | skipped: {', '.join(summary['agents_skipped'])}" if summary['agents_skipped'] else ""))
-            print(f"  workspace: {summary['workspace']}")
-            if summary.get("files_written"):
-                print(f"  files:     {', '.join(summary['files_written'])}")
-            print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
+            print(f"{summary['id']} ({summary['kind']})  {summary.get('version') or ''}".rstrip())
+            print(f"  {summary.get('description') or summary.get('purpose') or ''}".rstrip())
+            print(f"  source: {summary['source']}")
+            print("  agents:")
+            for member in summary["agents"]:
+                marker = "scaffolds" if member["scaffolded"] else "membership-only"
+                req = "" if member.get("required", True) else ", optional"
+                print(f"    {member['id']:32} {member['role']}  ({marker}{req})")
+            if summary["workflows"]:
+                print(f"  workflows: {', '.join(summary['workflows'])}")
+            if summary["files"]:
+                print(f"  files:     {', '.join(summary['files'])}")
         return 0
+    if args.recipes_command == "scaffold":
+        return _recipes_scaffold(paths, args.recipe, override_id=args.override_id,
+                                 overwrite=args.overwrite, json_output=args.json_output)
     return 0
 
 
@@ -1368,6 +1427,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "sessions": _cmd_sessions,
     "scheduler": _cmd_scheduler,
     "team": _cmd_team,
+    "recipes": _cmd_recipes,
     "model": _cmd_model,
     "run": _cmd_run,
     "supervisor": _cmd_supervisor,

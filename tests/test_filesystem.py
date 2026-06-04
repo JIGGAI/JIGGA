@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from jigga.commands.init import init_runtime
-from jigga.core.io import write_yaml
+from jigga.core.io import read_yaml, write_yaml
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.filesystem import (
@@ -350,13 +350,9 @@ def test_workflow_round_trip_write_then_read(tmp_path: Path) -> None:
     target = paths.memory / "summaries" / "status.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     agent_yaml = paths.agents / "daily_briefing_agent.yaml"
-    agent_yaml.write_text(
-        agent_yaml.read_text(encoding="utf-8").replace(
-            "- ~/.jigga/memory/summaries",
-            f"- ~/.jigga/memory/summaries\n      - {paths.home}",
-        ),
-        encoding="utf-8",
-    )
+    agent_doc = read_yaml(agent_yaml)
+    agent_doc["permissions"]["filesystem"]["allow"].append(str(paths.home))
+    write_yaml(agent_yaml, agent_doc)
     write_yaml(
         paths.workflows / "rw.yaml",
         {

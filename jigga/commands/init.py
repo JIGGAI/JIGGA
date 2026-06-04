@@ -100,22 +100,17 @@ def init_runtime(home: str | Path | None = None, examples: bool = False):
         )
 
     if examples:
+        # Examples ARE recipes: each bundled team recipe is a self-contained
+        # installable unit (agents + team + workflows + workspace). Scaffolding
+        # is create-only — like the old copy_if_missing, re-init never clobbers
+        # the user's edits. Same path as `jigga recipes scaffold <name>`.
+        from jigga.runtime.recipes import load_recipe, scaffold_team
+
         ex = examples_dir()
-        for source, target in [
-            (ex / "agents" / "daily_briefing_agent.yaml", paths.agents / "daily_briefing_agent.yaml"),
-            (ex / "agents" / "content_strategist.yaml", paths.agents / "content_strategist.yaml"),
-            (ex / "agents" / "marketing_lead.yaml", paths.agents / "marketing_lead.yaml"),
-            (ex / "agents" / "copywriter.yaml", paths.agents / "copywriter.yaml"),
-            (ex / "agents" / "seo_editor.yaml", paths.agents / "seo_editor.yaml"),
-            (ex / "teams" / "marketing_team.yaml", paths.teams / "marketing_team.yaml"),
-            (ex / "workflows" / "team_launch.yaml", paths.workflows / "team_launch.yaml"),
-            (ex / "teams" / "personal_admin_team.yaml", paths.teams / "personal_admin_team.yaml"),
-            (ex / "teams" / "social_content_team.yaml", paths.teams / "social_content_team.yaml"),
-            (ex / "workflows" / "morning_day_summary.yaml", paths.workflows / "morning_day_summary.yaml"),
-            (ex / "workflows" / "meeting_reminders.yaml", paths.workflows / "meeting_reminders.yaml"),
-            (ex / "workflows" / "social_content_syndication.yaml", paths.workflows / "social_content_syndication.yaml"),
-            (ex / "memory" / "memory_scopes.yaml", paths.memory / "memory_scopes.yaml"),
-        ]:
-            copy_if_missing(source, target)
+        for name in ("personal-admin-team", "marketing-team", "social-content-team"):
+            recipe = load_recipe(ex / "recipes" / f"{name}.md")
+            scaffold_team(paths.home, recipe, agents_dir=paths.agents, teams_dir=paths.teams,
+                          workflows_dir=paths.workflows)
+        copy_if_missing(ex / "memory" / "memory_scopes.yaml", paths.memory / "memory_scopes.yaml")
 
     return paths
