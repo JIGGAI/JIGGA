@@ -101,3 +101,36 @@ def test_cli_team_init_and_workspace(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "team", "workspace", "marketing_team"]) == 0
     listing = capsys.readouterr().out
     assert "TEAM.md" in listing and "shared-context/priorities.md" in listing
+
+
+def test_scaffold_gives_every_member_soul_and_memory_starters(tmp_path: Path) -> None:
+    """Every agent has SOUL + MEMORY at minimum (AGENTS/TOOLS layers are
+    generated live so they can't go stale). Flows to recipe scaffolds, team
+    init, and solo agents — they all come through scaffold_workspace."""
+    from jigga.commands.init import init_runtime
+    from jigga.core.config import load_teams
+    from jigga.runtime.workspaces import read_file, scaffold_workspace
+
+    paths = init_runtime(tmp_path, examples=True)  # scaffolds the example team recipes
+    for member in ("marketing_lead", "copywriter", "seo_editor"):
+        memory = read_file(paths.home, "marketing_team", f"roles/{member}/MEMORY.md")
+        assert memory and "Curate your durable notes" in memory
+        assert read_file(paths.home, "marketing_team", f"roles/{member}/SOUL.md")
+
+    # create-only: a member's curated memory survives re-scaffold
+    target = (tmp_path / "workspaces" / "marketing_team" / "roles" / "copywriter" / "MEMORY.md")
+    target.write_text("MINE", encoding="utf-8")
+    scaffold_workspace(paths.home, load_teams(paths.teams)["marketing_team"])
+    assert target.read_text(encoding="utf-8") == "MINE"
+
+
+def test_solo_agent_recipe_scaffold_gets_memory_starter(tmp_path: Path) -> None:
+    from jigga.commands.init import init_runtime
+    from jigga.runtime.recipes import find_recipe, load_recipe, scaffold_agent
+    from jigga.runtime.workspaces import read_file
+
+    paths = init_runtime(tmp_path)
+    recipe = load_recipe(find_recipe(paths.home, "researcher"))
+    scaffold_agent(paths.home, recipe, agents_dir=paths.agents)
+    memory = read_file(paths.home, "researcher", "roles/researcher/MEMORY.md")
+    assert memory and "Curate your durable notes" in memory
