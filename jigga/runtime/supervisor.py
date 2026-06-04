@@ -51,6 +51,34 @@ def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
         append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc))
 
 
+def _mail_wake_targets(home: Path, agents: dict[str, Any], *, skip: set[str]) -> list[str]:
+    """Agents that need a mail wake: unread inbox messages, no pending tasks
+    (`skip` = agents already in the tick's wake targets), and no mail-wake task
+    already queued (a throttled wake must not stack a new task every tick)."""
+    from jigga.core.config import load_teams
+    from jigga.runtime.mailbox import unread_messages
+    from jigga.runtime.tasks import list_tasks
+
+    membership: dict[str, str] = {}
+    for team in load_teams(Path(home) / "teams").values():
+        for member in team.agents or []:
+            member_id = member.get("id") if isinstance(member, dict) else None
+            if member_id and member_id not in membership:
+                membership[member_id] = team.id
+    queued_mail_wakes = {
+        task.assignee for task in list_tasks(Path(home) / "tasks")
+        if task.state in ("pending", "claimed", "running") and (task.metadata or {}).get("mail_wake")
+    }
+    woken: list[str] = []
+    for agent_id in agents:
+        if agent_id in skip or agent_id in queued_mail_wakes:
+            continue
+        workspace = membership.get(agent_id, agent_id)
+        if unread_messages(home, workspace, agent_id):
+            woken.append(agent_id)
+    return woken
+
+
 def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:
     # One trace per tick: every event this tick produces — agent runs, workflow
     # runs, and the subagents they spawn — shares this id, so `jigga trace <id>`
@@ -134,6 +162,25 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
             deduped_events.append(event_dict)
 
     targets, pending_task_count = pending_summary(paths.tasks)
+    # Mail wake (W6 follow-up): an unread inbox message wakes its recipient
+    # within a tick — like task assignment — instead of waiting for some other
+    # reason to wake. Implemented as a created task so it rides the normal
+    # pipeline: the wake-throttle below still applies (loop guard for two
+    # agents pinging each other), the context pack surfaces the inbox, and a
+    # successful run marks the mail read. Agents that already have pending
+    # tasks need nothing — any run delivers their inbox.
+    for agent_id in _mail_wake_targets(paths.home, agents, skip=set(targets)):
+        create_task(
+            paths.tasks,
+            title="Unread mailbox messages",
+            description=("You have unread messages — see the 'Your inbox' section of your "
+                         "context. Act on them or note what matters in your MEMORY.md."),
+            assignee=agent_id,
+            metadata={"mail_wake": True},
+        )
+        append_event(paths.logs, "supervisor.mail_wake", agent=agent_id)
+        targets.append(agent_id)
+        pending_task_count += 1
     append_event(
         paths.logs,
         "supervisor.tick",
