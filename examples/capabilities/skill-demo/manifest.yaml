@@ -6,3 +6,4 @@ actions:
   - skill.draft_outline
 instructions: instructions.md
 risk_level: low
+when_to_use: When asked for an outline, brief structure, or talking points — not for full drafts.

@@ -80,7 +80,12 @@ def _build_tool_schemas(actions: list[str], registry: CapabilityRegistry) -> lis
                 "type": "function",
                 "function": {
                     "name": _to_tool_name(action),
-                    "description": f"{capability.summary} (capability: {capability.name})",
+                    # summary + when_to_use IS the routing signal — the model
+                    # picks tools/skills from this line alone (instructions
+                    # load only on dispatch, costing zero resident context).
+                    "description": (f"{capability.summary} (capability: {capability.name})"
+                                    + (f" When to use: {capability.when_to_use}"
+                                       if capability.when_to_use else "")),
                     # We don't ship per-action parameter schemas yet; accept an
                     # open object and let the capability handler validate input.
                     "parameters": {"type": "object", "properties": {}, "additionalProperties": True},

@@ -241,3 +241,46 @@ def test_mcp_capability_appears_in_registry_with_typed_metadata(tmp_path: Path) 
     entry = next(c for c in index["capabilities"] if c["name"] == "mcp-echo")
     assert entry["type"] == "mcp_server"
     assert entry["transport"] == "stdio"
+
+
+def test_when_to_use_parses_and_lands_in_tool_schema(tmp_path) -> None:
+    """`when_to_use` is the routing signal: appended to the function-schema
+    description (the only place the model picks skills/tools from)."""
+    from jigga.commands.init import init_runtime
+    from jigga.core.io import write_yaml
+    from jigga.runtime.agent import _build_tool_schemas
+    from jigga.runtime.capabilities import CapabilityRegistry, record_approval, load_capability_manifest
+
+    paths = init_runtime(tmp_path)
+    pack = paths.capabilities / "skill-outline"
+    pack.mkdir(parents=True)
+    write_yaml(pack / "manifest.yaml", {
+        "name": "skill-outline", "version": "0.1.0",
+        "summary": "Drafts a 3-point brief outline.",
+        "type": "skill_pack", "actions": ["skill.draft_outline"],
+        "when_to_use": "When asked for an outline or talking points — not full drafts.",
+    })
+    (pack / "instructions.md").write_text("# skill", encoding="utf-8")
+    record_approval(paths.policies, load_capability_manifest(pack / "manifest.yaml"))
+    registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                       approvals_dir=paths.policies)
+
+    cap = registry.resolve_action("skill.draft_outline")
+    assert cap.when_to_use and "talking points" in cap.when_to_use
+
+    schemas = _build_tool_schemas(["skill.draft_outline"], registry)
+    description = schemas[0]["function"]["description"]
+    assert "Drafts a 3-point brief outline." in description
+    assert "When to use: When asked for an outline" in description
+
+
+def test_schema_description_unchanged_without_when_to_use(tmp_path) -> None:
+    from jigga.commands.init import init_runtime
+    from jigga.runtime.agent import _build_tool_schemas
+    from jigga.runtime.capabilities import CapabilityRegistry
+
+    paths = init_runtime(tmp_path)
+    registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                       approvals_dir=paths.policies)
+    schemas = _build_tool_schemas(["notifications.send"], registry)
+    assert "When to use:" not in schemas[0]["function"]["description"]
