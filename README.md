@@ -90,6 +90,7 @@ Local Filesystem + Indexes
 8. **Safe autonomy** — Agents may act independently, but only within explicit permissions.
 9. **Workflow-aware** — Repeated work becomes reusable playbooks that can be invoked, proposed, reviewed, and approved.
 10. **Agent-to-agent activation** — Agents can delegate tasks and wake other agents through the supervisor.
+11. **Minimal dependencies** — The core runtime is standard library + PyYAML, and stays that way unless a dependency is absolutely needed: installs can't fail on resolution/wheels/compilers, and the supply-chain surface of a system holding your credentials stays auditable. Opt-in capabilities (e.g. `gog`) and the UI may bring their own.
 
 ## Example Agent
 
