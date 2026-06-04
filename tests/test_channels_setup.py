@@ -54,10 +54,58 @@ def test_channels_setup_grants_channel_tools_to_routed_agent(tmp_path: Path) -> 
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
 
     agent = load_agents(paths.agents)["assistant"]
-    assert "telegram.send_message" in agent.tools   # can reply
-    assert "telegram.poll_messages" in agent.tools  # full action set granted
+    assert "telegram.send_message" in agent.tools       # can reply
+    assert "telegram.poll_messages" not in agent.tools  # ingest is runtime-only (supervisor's job)
     assert "filesystem.read" in agent.tools         # existing tools preserved
     # network egress to the channel host is also granted (targeted, not blanket)
     net = agent.permissions["network"]
     assert net["mode"] != "allow"                       # NOT opened to all egress
     assert "https://api.telegram.org" in net["allow"]   # just the channel host
+
+
+def test_grant_excludes_runtime_only_poll(tmp_path: Path) -> None:
+    """The routed agent gets send/reply tools, NEVER the ingest poll — Telegram
+    allows one getUpdates consumer; an agent polling collides with the
+    supervisor's long-poll or steals the update offset (dropped messages)."""
+    paths = init_runtime(tmp_path, examples=True)
+    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111",
+               "daily_briefing_agent", "1"]
+    _channels_setup(paths, prompt=_scripted(answers), echo=lambda _m: None)
+
+    tools = read_yaml(paths.agents / "daily_briefing_agent.yaml")["tools"]
+    assert "telegram.send_message" in tools
+    assert "telegram.poll_messages" not in tools
+
+
+def test_runtime_only_action_denied_when_agent_invokes(tmp_path: Path) -> None:
+    """Defense in depth for installs that granted poll before the distinction
+    existed (the #78 grant-all): an AGENT invoking a runtime-only action is
+    denied at dispatch — only the supervisor's ingest path may poll."""
+    import json
+
+    import pytest as _pytest
+
+    from jigga.commands.install import install_capability
+    from jigga.core.models import AgentConfig, WorkflowStep
+    from jigga.runtime.dispatcher import dispatch_action
+    from jigga.runtime.runtime_context import RuntimeContext
+
+    paths = init_runtime(tmp_path)
+    install_capability(paths, "telegram",
+                       input_fn=_scripted(["123456789:AAEdummytokendummytokendummytoken00",
+                                           "n", "111", "assistant"]),
+                       print_fn=lambda *a, **k: None)
+    registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                       approvals_dir=paths.policies)
+    agent = AgentConfig(id="assistant", name="A", role="r",
+                        tools=["telegram.poll_messages"])      # legacy grant still present
+    runtime = RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs,
+                             sessions_dir=paths.home / "sessions")
+
+    with _pytest.raises(ValueError, match="runtime-only"):
+        dispatch_action(WorkflowStep(id="s", action="telegram.poll_messages"), {}, {},
+                        runtime, registry, paths.logs, run_id="r1")
+
+    events = [json.loads(line) for line in (paths.logs / "events.jsonl").read_text().splitlines()]
+    denied = [e for e in events if e["type"] == "capability.invocation.denied"]
+    assert denied and denied[-1]["details"]["action"] == "telegram.poll_messages"

@@ -181,11 +181,12 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
 
 
 def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, list[str]] | None:
-    """Grant the channel capability's full action set (poll + send + any future
-    ones) to the channel's routed agent — its configured `default_agent`, else
-    the install's default agent — so it can both see and reply on the channel.
-    Persists the agent yaml. Returns (agent_id, newly_added_actions), or None if
-    there's no agent to grant to or it already has them all."""
+    """Grant the channel capability's agent-facing actions (send/reply + any
+    future ones — NEVER runtime-only ingest actions like poll, which belong to
+    the supervisor) to the channel's routed agent — its configured
+    `default_agent`, else the install's default agent — so it can reply on the
+    channel. Persists the agent yaml. Returns (agent_id, newly_added_actions),
+    or None if there's no agent to grant to or it already has them all."""
     routed = (config.get("channels", {}).get(channel, {}) or {}).get("default_agent") \
         or resolve_default_agent(paths.agents)
     if not routed:
@@ -196,7 +197,8 @@ def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, l
     capability_name = _CHANNEL_CATALOG.get(channel, (channel,))[0]
     registry = CapabilityRegistry.load(user_capabilities=paths.capabilities, approvals_dir=paths.policies)
     capability = registry.get(capability_name)
-    actions = list(capability.actions) if capability else [f"{channel}.send_message"]
+    actions = ([a for a in capability.actions if not capability.is_runtime_only(a)]
+               if capability else [f"{channel}.send_message"])
     doc = read_yaml(agent_path)
     granted: list[str] = []
 

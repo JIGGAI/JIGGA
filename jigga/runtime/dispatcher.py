@@ -230,6 +230,15 @@ def dispatch_action(
     capability = registry.resolve_action(step.action)
     if capability is None:
         raise ValueError(f"No capability registered for action: {step.action}")
+    # Runtime-only actions (e.g. channel ingest) are never agent-callable —
+    # defense in depth on top of the grant-time exclusion, covering installs
+    # that granted them before the distinction existed.
+    if capability.is_runtime_only(step.action) and runtime.agent is not None:
+        append_event(logs_dir, "capability.invocation.denied", run_id=run_id, step=step.id,
+                     action=step.action, capability=capability.name, status="deny",
+                     reason="runtime-only action — the supervisor owns this; agents must not call it")
+        raise ValueError(
+            f"{step.action} is runtime-only (the supervisor owns it); agents cannot call it.")
 
     append_event(
         logs_dir,

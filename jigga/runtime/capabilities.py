@@ -44,6 +44,15 @@ class CapabilityManifest:
     source: str | None = None
     manifest_hash: str | None = None
     bundled: bool = False
+    # Actions only the RUNTIME may invoke — never granted to or callable by an
+    # agent. Channel ingest (telegram.poll_messages) lives here: Telegram's
+    # getUpdates allows ONE consumer per bot token, and an agent polling would
+    # collide with the supervisor's long-poll or steal the update offset
+    # (silently eating inbound messages).
+    runtime_only_actions: list[str] = field(default_factory=list)
+
+    def is_runtime_only(self, action: str) -> bool:
+        return action in (self.runtime_only_actions or [])
 
     @classmethod
     def from_dict(
@@ -106,6 +115,7 @@ class CapabilityManifest:
             source=source,
             manifest_hash=manifest_hash,
             bundled=bundled,
+            runtime_only_actions=[str(a) for a in (data.get("runtime_only_actions") or [])],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +137,7 @@ class CapabilityManifest:
             "source": self.source,
             "manifest_hash": self.manifest_hash,
             "bundled": self.bundled,
+            "runtime_only_actions": self.runtime_only_actions,
         }
 
 
