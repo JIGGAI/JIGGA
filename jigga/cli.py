@@ -852,17 +852,58 @@ _DOCTOR_GLYPH = {"ok": "✓", "warn": "⚠", "fail": "✗"}
 
 
 
+def _edited_footer(edited: list[dict]) -> None:
+    """The blunt-instrument escape hatch for kept files: re-scaffolding a
+    recipe with --overwrite replaces ALL of its files (the per-file path is
+    the picker)."""
+    recipe = next((e.get("recipe") for e in edited if e.get("recipe")), None)
+    if recipe:
+        print("  Replace a recipe's files wholesale later (loses your edits):")
+        print(f"    jigga recipes scaffold {recipe} --overwrite")
+
+
+def _offer_edited_overwrites(paths: Any, plan: dict) -> dict | None:
+    """Per-item picker over edited-divergent files (default: none). Selected
+    files are backed up to state/backups/<date>/ before being replaced."""
+    from jigga.runtime.update import overwrite_edited
+
+    edited = plan.get("edited") or []
+    if not edited or not supports_picker():
+        if edited:
+            _edited_footer(edited)
+        return None
+    print(f"\n{len(edited)} file(s) have local edits AND shipped updates.")
+    options = [Option(label=e["path"], detail=f"recipe: {e.get('recipe') or e.get('record')}")
+               for e in edited]
+    picked = multi_select("Select any to REPLACE (their edits are backed up, then lost)", options)
+    if not picked:
+        print("  ~ kept all edited files.")
+        _edited_footer(edited)
+        return None
+    results = overwrite_edited(paths, plan, [edited[i]["path"] for i in picked])
+    for rel in results["replaced"]:
+        print(f"  ✓ replaced {rel}")
+    for backup in results["backups"]:
+        print(f"    backup: {backup}")
+    for error in results["errors"]:
+        print(f"  ! {error}")
+    if len(picked) < len(edited):
+        _edited_footer([e for i, e in enumerate(edited) if i not in set(picked)])
+    return results
+
+
 def _cmd_update(args: argparse.Namespace) -> int:
     """Plan → review → confirm. Interactive runs end with an apply prompt so
-    no --apply re-run is needed; --apply skips the prompt (automation),
-    --dry-run never prompts or applies."""
+    no --apply re-run is needed (--apply skips it for automation; --dry-run
+    never prompts or applies), then a per-item picker for files with local
+    edits + shipped updates (never auto-replaced; backed up when chosen)."""
     import sys as _sys
 
     from jigga.runtime.update import apply_update, plan_update
 
     paths = get_paths(args.home)
     plan = plan_update(paths)
-    actions, notices = plan["actions"], plan["notices"]
+    actions, notices, edited = plan["actions"], plan["notices"], plan.get("edited") or []
 
     if args.json_output and args.dry_run:
         print_json(plan)
@@ -877,29 +918,41 @@ def _cmd_update(args: argparse.Namespace) -> int:
                 print(f"  • {action['description']}")
         for notice in notices:
             print(f"  ~ {notice}")
-        if not actions:
-            return 0
     if args.dry_run:
+        if edited:
+            _edited_footer(edited)
         print("\n(dry run — apply with: jigga update --apply)")
         return 0
 
-    do_apply = args.apply
-    if not do_apply:
-        if not _sys.stdin.isatty():  # piped/scripted without --apply: never guess
+    interactive = _sys.stdin.isatty()
+    do_apply = bool(actions) and args.apply
+    if actions and not do_apply:
+        if not interactive:  # piped/scripted without --apply: never guess
             if not args.json_output:
                 print("\nNot applied (non-interactive). Apply with: jigga update --apply")
+                _edited_footer(edited)
             else:
                 print_json({**plan, "applied": False})
             return 0
         do_apply = _confirm("\nApply these changes?", default=True)
-    if not do_apply:
-        print("Not applied.")
-        return 0
 
-    results = apply_update(paths, plan)
+    results = {"applied": [], "errors": []}
+    if actions and do_apply:
+        results = apply_update(paths, plan)
+    elif actions:
+        print("Not applied.")
+
+    overwrite_results = None
+    if edited and (interactive or args.json_output is False):
+        if interactive:
+            overwrite_results = _offer_edited_overwrites(paths, plan)
+        else:
+            _edited_footer(edited)
+
     if args.json_output:
-        print_json({**plan, "applied": True, "results": results})
-    else:
+        print_json({**plan, "applied": bool(actions and do_apply), "results": results,
+                    "overwrites": overwrite_results})
+    elif actions and do_apply:
         for item in results["applied"]:
             print(f"  ✓ {item}")
         for error in results["errors"]:
