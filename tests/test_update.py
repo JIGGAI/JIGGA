@@ -275,10 +275,13 @@ def test_cli_picker_replaces_selected_and_prints_footer(tmp_path: Path, monkeypa
     monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
     monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
     monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [0])
+    monkeypatch.setattr("jigga.cli._confirm", lambda *a, **k: True)
 
     assert main(["--home", str(tmp_path), "update"]) == 0
     out = capsys.readouterr().out
-    assert "replaced agents/researcher.yaml" in out and "backup:" in out
+    # selection happens during review, BEFORE the apply confirm; mutation after
+    assert out.index("replace agents/researcher.yaml") < out.index("✓ replaced agents/researcher.yaml")
+    assert "backup:" in out
     assert "# my custom note" not in agent_yaml.read_text(encoding="utf-8")
 
 
@@ -288,10 +291,12 @@ def test_cli_picker_declined_keeps_files_and_prints_example(tmp_path: Path, monk
     monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
     monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
     monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [])
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no confirm when nothing to apply"))  # noqa: E731
+    monkeypatch.setattr("jigga.cli._confirm", boom)
 
     assert main(["--home", str(tmp_path), "update"]) == 0
     out = capsys.readouterr().out
-    assert "kept all edited files" in out
+    assert "keeping all edited files" in out and "Nothing to apply." in out
     assert "jigga recipes scaffold researcher --overwrite" in out   # the example command
     assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
 
@@ -305,3 +310,19 @@ def test_cli_non_interactive_edited_prints_example_only(tmp_path: Path, monkeypa
     out = capsys.readouterr().out
     assert "jigga recipes scaffold researcher --overwrite" in out
     assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
+
+
+def test_cli_declining_confirm_rolls_back_nothing_including_selection(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The single confirm covers replacements too: declining after selecting
+    must leave the edited file untouched (nothing mutates before consent)."""
+    paths = _paths(tmp_path)
+    agent_yaml = _make_edited(paths)
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [0])
+    monkeypatch.setattr("jigga.cli._confirm", lambda *a, **k: False)
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    assert "Not applied." in capsys.readouterr().out
+    assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
+    assert not (paths.home / "state" / "backups").exists()

@@ -862,34 +862,25 @@ def _edited_footer(edited: list[dict]) -> None:
         print(f"    jigga recipes scaffold {recipe} --overwrite")
 
 
-def _offer_edited_overwrites(paths: Any, plan: dict) -> dict | None:
-    """Per-item picker over edited-divergent files (default: none). Selected
-    files are backed up to state/backups/<date>/ before being replaced."""
-    from jigga.runtime.update import overwrite_edited
-
-    edited = plan.get("edited") or []
+def _select_edited_replacements(edited: list[dict]) -> list[str]:
+    """Per-item picker over edited-divergent files (default: none) — runs
+    DURING plan review, before the apply confirm, so the user sees and decides
+    everything in one place and nothing mutates until they confirm."""
     if not edited or not supports_picker():
         if edited:
             _edited_footer(edited)
-        return None
+        return []
     print(f"\n{len(edited)} file(s) have local edits AND shipped updates.")
     options = [Option(label=e["path"], detail=f"recipe: {e.get('recipe') or e.get('record')}")
                for e in edited]
-    picked = multi_select("Select any to REPLACE (their edits are backed up, then lost)", options)
+    picked = multi_select("Select any to REPLACE (their edits are backed up)", options)
     if not picked:
-        print("  ~ kept all edited files.")
+        print("  ~ keeping all edited files.")
         _edited_footer(edited)
-        return None
-    results = overwrite_edited(paths, plan, [edited[i]["path"] for i in picked])
-    for rel in results["replaced"]:
-        print(f"  ✓ replaced {rel}")
-    for backup in results["backups"]:
-        print(f"    backup: {backup}")
-    for error in results["errors"]:
-        print(f"  ! {error}")
+        return []
     if len(picked) < len(edited):
         _edited_footer([e for i, e in enumerate(edited) if i not in set(picked)])
-    return results
+    return [edited[i]["path"] for i in picked]
 
 
 def _cmd_update(args: argparse.Namespace) -> int:
@@ -925,41 +916,63 @@ def _cmd_update(args: argparse.Namespace) -> int:
         return 0
 
     interactive = _sys.stdin.isatty()
-    do_apply = bool(actions) and args.apply
-    if actions and not do_apply:
-        if not interactive:  # piped/scripted without --apply: never guess
-            if not args.json_output:
-                print("\nNot applied (non-interactive). Apply with: jigga update --apply")
-                _edited_footer(edited)
-            else:
-                print_json({**plan, "applied": False})
-            return 0
-        do_apply = _confirm("\nApply these changes?", default=True)
 
-    results = {"applied": [], "errors": []}
-    if actions and do_apply:
-        results = apply_update(paths, plan)
-    elif actions:
-        print("Not applied.")
-
-    overwrite_results = None
-    if edited and (interactive or args.json_output is False):
-        if interactive:
-            overwrite_results = _offer_edited_overwrites(paths, plan)
+    # Non-interactive without --apply: show everything, mutate nothing.
+    if not args.apply and not interactive:
+        if args.json_output:
+            print_json({**plan, "applied": False})
         else:
+            print("\nNot applied (non-interactive). Apply with: jigga update --apply")
             _edited_footer(edited)
+        return 0
+
+    # Review phase, BEFORE any confirm: choose which edited files to replace,
+    # so the single apply confirm below covers the whole picture and the slow
+    # bits (service restart) come last.
+    selected: list[str] = []
+    if edited and interactive and not args.apply:
+        selected = _select_edited_replacements(edited)
+        for rel in selected:
+            print(f"  • replace {rel} (your edits are backed up first)")
+    elif edited:
+        _edited_footer(edited)
+
+    if not actions and not selected:
+        print("\nNothing to apply.")
+        return 0
+
+    do_apply = args.apply or _confirm("\nApply these changes?", default=True)
+    if not do_apply:
+        print("Not applied.")
+        return 0
+
+    # Mutate: replacements first, then the planned actions — the planner puts
+    # service refresh/restart last, so the daemon comes back on final state.
+    from jigga.runtime.update import overwrite_edited
+
+    overwrite_results = overwrite_edited(paths, plan, selected) if selected else None
+    results = apply_update(paths, plan) if actions else {"applied": [], "errors": []}
 
     if args.json_output:
-        print_json({**plan, "applied": bool(actions and do_apply), "results": results,
-                    "overwrites": overwrite_results})
-    elif actions and do_apply:
+        print_json({**plan, "applied": True, "results": results, "overwrites": overwrite_results})
+    else:
+        if overwrite_results:
+            for rel in overwrite_results["replaced"]:
+                print(f"  ✓ replaced {rel}")
+            for backup in overwrite_results["backups"]:
+                print(f"    backup: {backup}")
+            for error in overwrite_results["errors"]:
+                print(f"  ! {error}")
         for item in results["applied"]:
             print(f"  ✓ {item}")
         for error in results["errors"]:
             print(f"  ! {error}")
-        print(f"\n✓ Applied {len(results['applied'])} change(s)."
-              + (f"  {len(results['errors'])} error(s)." if results["errors"] else ""))
-    return 1 if results["errors"] else 0
+        total = len(results["applied"]) + len((overwrite_results or {}).get("replaced", []))
+        all_errors = results["errors"] + list((overwrite_results or {}).get("errors", []))
+        print(f"\n✓ Applied {total} change(s)."
+              + (f"  {len(all_errors)} error(s)." if all_errors else ""))
+    all_errors = results["errors"] + list((overwrite_results or {}).get("errors", []))
+    return 1 if all_errors else 0
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
