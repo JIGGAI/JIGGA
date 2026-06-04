@@ -20,6 +20,7 @@ from jigga.runtime.handlers import (
     _generic_handler,
     _mcp_server_handler,
     _notifications_dry_run_handler,
+    _mailbox_handler,
     _notifications_handler,
     _remember_handler,
     _search_memory_handler,
@@ -53,7 +54,7 @@ __all__ = [
 # Filesystem and network use their own structured evaluators. Memory is handled
 # separately via memory_scope. Secrets are handled explicitly because their
 # manifest shape is `{required: [...]}`. Delegation is enforced inside spawn_subagent.
-SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications")
+SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications", "mailbox")
 
 
 def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
@@ -148,6 +149,7 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.email": _email_handler,
     "dry_run.notifications": _notifications_dry_run_handler,
     "runtime.notifications": _notifications_handler,
+    "runtime.mailbox": _mailbox_handler,
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,

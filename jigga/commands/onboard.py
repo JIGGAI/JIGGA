@@ -180,6 +180,7 @@ def run_onboarding(
                 "calendar": "read",
                 "email": "read",
                 "notifications": "send",
+                "mailbox": "send",
                 "delegation": "spawn_subagent",
                 "network": {"mode": "ask"},
             },

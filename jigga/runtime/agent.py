@@ -28,6 +28,7 @@ from jigga.runtime.policy import NON_EXECUTING_MODES, resolve_permission_mode
 from jigga.runtime.handoffs import fire_handoffs
 from jigga.runtime.tasks import set_task_state, tasks_for_agent
 from jigga.runtime.context_pack import assemble_agent_context
+from jigga.runtime.mailbox import mark_read, unread_messages
 from jigga.runtime.workspaces import (
     append_agent_output,
     append_daily_memory,
@@ -381,6 +382,10 @@ def _run_agent(
     # task below and injected as the system prompt so the agent wakes grounded.
     ws_team_id = ensure_agent_workspace(home, home / "teams", agent)
     append_event(logs_dir, "workspace.ensured", agent=agent_id, run_id=run_id, workspace=ws_team_id)
+    # Inbox snapshot (W6/#62): these unread messages are surfaced in the context
+    # pack below; mark them read only after a SUCCESSFUL run, so a failed run
+    # re-sees them on the next wake.
+    inbox_snapshot = [m["id"] for m in unread_messages(home, ws_team_id, agent_id)]
 
     processed: list[dict[str, Any]] = []
     for task in pending:
@@ -433,6 +438,12 @@ def _run_agent(
                                 f"Completed “{task.title}”." + (f" {final_text}" if final_text else ""))
             # Execute any team handoffs this completion triggers (file-first).
             _maybe_fire_handoffs(home, logs_dir, tasks_dir, task, agent_id)
+            # Surfaced inbox messages are now considered delivered (W6/#62).
+            if inbox_snapshot:
+                marked = mark_read(home, ws_team_id, agent_id, inbox_snapshot)
+                if marked:
+                    append_event(logs_dir, "mailbox.read", agent=agent_id, run_id=run_id, count=marked)
+                inbox_snapshot = []
         elif loop["state"] == "needs_approval":
             append_event(logs_dir, "task.needs_approval", status="ask", agent=agent_id, task_id=task.id,
                          run_id=run_id, reason=(loop["halted"] or {}).get("reason"))

@@ -466,6 +466,19 @@ def build_parser() -> argparse.ArgumentParser:
     channels_sub.add_parser("status", help="List enabled channels and their config")
     channels_sub.add_parser("setup", help="Interactive: pick a channel, authenticate, set activation, enable")
 
+    mailbox = sub.add_parser("mailbox", help="File-backed agent mailbox: send/list durable messages (W6)")
+    mailbox_sub = mailbox.add_subparsers(dest="mailbox_command", required=True)
+    mailbox_send = mailbox_sub.add_parser("send", help="Send a message to an agent's inbox (read on its next wake)")
+    mailbox_send.add_argument("to", help="Recipient agent id")
+    mailbox_send.add_argument("--body", required=True)
+    mailbox_send.add_argument("--subject")
+    mailbox_send.add_argument("--sender", default="human", help="Sender label (default: human)")
+    mailbox_send.add_argument("--json", action="store_true", dest="json_output")
+    mailbox_list = mailbox_sub.add_parser("list", help="List an agent's inbox")
+    mailbox_list.add_argument("member", help="Agent id whose inbox to list")
+    mailbox_list.add_argument("--unread", action="store_true", help="Unread only")
+    mailbox_list.add_argument("--json", action="store_true", dest="json_output")
+
     approvals = sub.add_parser("approvals", help="Review and resolve pending action approvals")
     approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
     approvals_list = approvals_sub.add_parser("list", help="List pending approvals")
@@ -1454,6 +1467,48 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def _cmd_mailbox(args: argparse.Namespace) -> int:
+    from jigga.runtime.audit import append_event
+    from jigga.runtime.mailbox import list_messages, send_message
+    from jigga.runtime.workspaces import find_agent_teams
+
+    paths = get_paths(args.home)
+
+    def _workspace_for(member: str) -> str:
+        teams = find_agent_teams(paths.teams, member)
+        return teams[0].id if teams else member
+
+    if args.mailbox_command == "send":
+        ws = _workspace_for(args.to)
+        message = send_message(paths.home, ws, args.to, args.body,
+                               sender=args.sender, subject=args.subject)
+        append_event(paths.logs, "mailbox.sent", sender=args.sender, to=args.to,
+                     workspace=ws, message_id=message["id"], subject=message.get("subject"))
+        if args.json_output:
+            print_json(message)
+        else:
+            print(f"Sent {message['id']} to {args.to!r} (workspace {ws}) — "
+                  "they'll see it on their next wake.")
+        return 0
+    if args.mailbox_command == "list":
+        ws = _workspace_for(args.member)
+        messages = list_messages(paths.home, ws, args.member, unread_only=args.unread)
+        if args.json_output:
+            print_json(messages)
+        elif not messages:
+            print("Inbox empty." if not args.unread else "No unread messages.")
+        else:
+            for m in messages:
+                flag = " " if m.get("read_at") else "*"
+                subject = f"  {m['subject']}" if m.get("subject") else ""
+                print(f"{flag} {m['id']}  {str(m.get('created_at') or '')[:16]}  "
+                      f"from {m.get('from', '?')}{subject}")
+                print(f"    {str(m.get('body') or '')[:120]}")
+        return 0
+    return 0
+
+
 def _cmd_model(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.model_command == "test":
@@ -1568,6 +1623,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "scheduler": _cmd_scheduler,
     "team": _cmd_team,
     "recipes": _cmd_recipes,
+    "mailbox": _cmd_mailbox,
     "model": _cmd_model,
     "run": _cmd_run,
     "supervisor": _cmd_supervisor,
