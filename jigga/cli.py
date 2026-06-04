@@ -862,25 +862,37 @@ def _edited_footer(edited: list[dict]) -> None:
         print(f"    jigga recipes scaffold {recipe} --overwrite")
 
 
-def _select_edited_replacements(edited: list[dict]) -> list[str]:
-    """Per-item picker over edited-divergent files (default: none) — runs
-    DURING plan review, before the apply confirm, so the user sees and decides
-    everything in one place and nothing mutates until they confirm."""
-    if not edited or not supports_picker():
+def _select_recipe_changes(plan: dict) -> tuple[list[dict], list[str]]:
+    """ONE picker over every recipe-file change, during plan review (before the
+    apply confirm): pristine updates arrive PRE-selected (safe — deselect to
+    keep your copy as-is); edited-divergent files arrive UNselected (opting in
+    replaces them, with a backup first). Returns (chosen artifact actions,
+    chosen edited paths)."""
+    artifact_actions = [a for a in plan.get("actions", []) if str(a.get("kind", "")).startswith("artifact.")]
+    edited = plan.get("edited") or []
+    if not artifact_actions and not edited:
+        return [], []
+    if not supports_picker():
+        # No raw-mode picker here (dumb term): pristine updates stay in the
+        # plan under the apply confirm; edited files are kept, footer printed.
         if edited:
             _edited_footer(edited)
-        return []
-    print(f"\n{len(edited)} file(s) have local edits AND shipped updates.")
-    options = [Option(label=e["path"], detail=f"recipe: {e.get('recipe') or e.get('record')}")
-               for e in edited]
-    picked = multi_select("Select any to REPLACE (their edits are backed up)", options)
-    if not picked:
-        print("  ~ keeping all edited files.")
-        _edited_footer(edited)
-        return []
-    if len(picked) < len(edited):
-        _edited_footer([e for i, e in enumerate(edited) if i not in set(picked)])
-    return [edited[i]["path"] for i in picked]
+        return artifact_actions, []
+    options = ([Option(label=a["detail"]["path"], detail=a["description"], selected=True)
+                for a in artifact_actions]
+               + [Option(label=e["path"],
+                         detail=f"local edits — backed up if replaced (recipe: {e.get('recipe')})",
+                         selected=False)
+                  for e in edited])
+    print()
+    picked = multi_select("Recipe file changes — select what to apply", options) or []
+    chosen_actions = [artifact_actions[i] for i in picked if i < len(artifact_actions)]
+    chosen_paths = [edited[i - len(artifact_actions)]["path"]
+                    for i in picked if i >= len(artifact_actions)]
+    kept = [e for e in edited if e["path"] not in set(chosen_paths)]
+    if kept:
+        _edited_footer(kept)
+    return chosen_actions, chosen_paths
 
 
 def _cmd_update(args: argparse.Namespace) -> int:
@@ -896,6 +908,14 @@ def _cmd_update(args: argparse.Namespace) -> int:
     plan = plan_update(paths)
     actions, notices, edited = plan["actions"], plan["notices"], plan.get("edited") or []
 
+    artifact_actions = [a for a in actions if str(a.get("kind", "")).startswith("artifact.")]
+    other_actions = [a for a in actions if not str(a.get("kind", "")).startswith("artifact.")]
+    interactive = _sys.stdin.isatty()
+    # Recipe-file changes route through the picker on interactive runs — they
+    # appear there, not in the flat plan list (RJ: any recipe change is a
+    # selection option, then the apply confirm).
+    picker_mode = interactive and not args.apply and not args.dry_run
+
     if args.json_output and args.dry_run:
         print_json(plan)
         return 0
@@ -903,9 +923,10 @@ def _cmd_update(args: argparse.Namespace) -> int:
         if not actions and not notices:
             print("✓ Everything up to date — nothing to reconcile.")
             return 0
-        if actions:
+        listed = other_actions if picker_mode else actions
+        if listed:
             print("Planned changes:")
-            for action in actions:
+            for action in listed:
                 print(f"  • {action['description']}")
         for notice in notices:
             print(f"  ~ {notice}")
@@ -914,8 +935,6 @@ def _cmd_update(args: argparse.Namespace) -> int:
             _edited_footer(edited)
         print("\n(dry run — apply with: jigga update --apply)")
         return 0
-
-    interactive = _sys.stdin.isatty()
 
     # Non-interactive without --apply: show everything, mutate nothing.
     if not args.apply and not interactive:
@@ -926,18 +945,19 @@ def _cmd_update(args: argparse.Namespace) -> int:
             _edited_footer(edited)
         return 0
 
-    # Review phase, BEFORE any confirm: choose which edited files to replace,
-    # so the single apply confirm below covers the whole picture and the slow
-    # bits (service restart) come last.
+    # Review phase, BEFORE any confirm: every recipe-file change is a picker
+    # option (pristine pre-selected, edited opt-in). The single apply confirm
+    # below then covers the selections + the remaining plan.
+    chosen_actions: list[dict] = list(artifact_actions)
     selected: list[str] = []
-    if edited and interactive and not args.apply:
-        selected = _select_edited_replacements(edited)
+    if picker_mode:
+        chosen_actions, selected = _select_recipe_changes(plan)
+        for action in chosen_actions:
+            print(f"  • {action['description']}")
         for rel in selected:
             print(f"  • replace {rel} (your edits are backed up first)")
-    elif edited:
-        _edited_footer(edited)
 
-    if not actions and not selected:
+    if not other_actions and not chosen_actions and not selected:
         print("\nNothing to apply.")
         return 0
 
@@ -950,8 +970,9 @@ def _cmd_update(args: argparse.Namespace) -> int:
     # service refresh/restart last, so the daemon comes back on final state.
     from jigga.runtime.update import overwrite_edited
 
+    apply_plan = {**plan, "actions": other_actions + chosen_actions}
     overwrite_results = overwrite_edited(paths, plan, selected) if selected else None
-    results = apply_update(paths, plan) if actions else {"applied": [], "errors": []}
+    results = apply_update(paths, apply_plan) if apply_plan["actions"] else {"applied": [], "errors": []}
 
     if args.json_output:
         print_json({**plan, "applied": True, "results": results, "overwrites": overwrite_results})

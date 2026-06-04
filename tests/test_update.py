@@ -296,7 +296,7 @@ def test_cli_picker_declined_keeps_files_and_prints_example(tmp_path: Path, monk
 
     assert main(["--home", str(tmp_path), "update"]) == 0
     out = capsys.readouterr().out
-    assert "keeping all edited files" in out and "Nothing to apply." in out
+    assert "Nothing to apply." in out
     assert "jigga recipes scaffold researcher --overwrite" in out   # the example command
     assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
 
@@ -326,3 +326,63 @@ def test_cli_declining_confirm_rolls_back_nothing_including_selection(tmp_path: 
     assert "Not applied." in capsys.readouterr().out
     assert "# my custom note" in agent_yaml.read_text(encoding="utf-8")
     assert not (paths.home / "state" / "backups").exists()
+
+
+def test_cli_pristine_updates_are_picker_options_preselected(tmp_path: Path, monkeypatch, capsys) -> None:
+    """RJ: any recipe change is a selection option — pristine updates arrive
+    PRE-selected in the picker (safe default), then the apply confirm runs."""
+    paths = _paths(tmp_path)
+    _scaffold_researcher(paths)
+    original = find_recipe(paths.home, "researcher").read_text(encoding="utf-8")
+    _retarget_record_to_local_recipe(paths, original.replace("Gathers", "Hunts"))  # pristine file, recipe changed
+
+    captured: dict = {}
+
+    def fake_picker(title, options, **k):
+        captured["preselected"] = [o.selected for o in options]
+        captured["labels"] = [o.label for o in options]
+        return [i for i, o in enumerate(options) if o.selected]   # accept defaults
+
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", fake_picker)
+    monkeypatch.setattr("jigga.cli._confirm", lambda *a, **k: True)
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    out = capsys.readouterr().out
+    assert captured["preselected"] == [True]                      # pristine = pre-selected
+    assert captured["labels"] == ["agents/researcher.yaml"]
+    # picker echo precedes the apply; the artifact is NOT in the flat plan list
+    assert "Planned changes" not in out.split("update agents/researcher.yaml")[0]
+    assert "Hunts" in (paths.agents / "researcher.yaml").read_text(encoding="utf-8")
+
+
+def test_cli_deselecting_pristine_update_keeps_current_file(tmp_path: Path, monkeypatch, capsys) -> None:
+    paths = _paths(tmp_path)
+    _scaffold_researcher(paths)
+    original = find_recipe(paths.home, "researcher").read_text(encoding="utf-8")
+    _retarget_record_to_local_recipe(paths, original.replace("Gathers", "Hunts"))
+    config = read_yaml(paths.config)
+    config["channels"] = {"telegram": {"enabled": True}}          # one non-recipe action remains
+    write_yaml(paths.config, config)
+
+    monkeypatch.setattr("sys.stdin", type("T", (), {"isatty": staticmethod(lambda: True)})())
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [])  # deselect everything
+    monkeypatch.setattr("jigga.cli._confirm", lambda *a, **k: True)
+
+    assert main(["--home", str(tmp_path), "update"]) == 0
+    assert "Hunts" not in (paths.agents / "researcher.yaml").read_text(encoding="utf-8")  # kept
+    assert read_yaml(paths.config)["channels"]["default"] == "telegram"                   # rest applied
+
+
+def test_cli_apply_flag_still_applies_pristine_without_picker(tmp_path: Path, monkeypatch) -> None:
+    paths = _paths(tmp_path)
+    _scaffold_researcher(paths)
+    original = find_recipe(paths.home, "researcher").read_text(encoding="utf-8")
+    _retarget_record_to_local_recipe(paths, original.replace("Gathers", "Hunts"))
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no picker with --apply"))  # noqa: E731
+    monkeypatch.setattr("jigga.cli.multi_select", boom)
+
+    assert main(["--home", str(tmp_path), "update", "--apply"]) == 0
+    assert "Hunts" in (paths.agents / "researcher.yaml").read_text(encoding="utf-8")
