@@ -204,3 +204,100 @@ def test_messages_are_searchable(tmp_path: Path) -> None:
                  sender="chief")
     results = search_memory(paths.memory, "quarterly zebra budget", rebuild=True)
     assert results and results[0]["layer"] == "role:helper"
+
+
+# --- mail wake: unread mail wakes an idle recipient within a tick --------------
+
+
+def test_supervisor_wakes_idle_agent_with_unread_mail(tmp_path: Path) -> None:
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    send_message(paths.home, "helper", "helper", "ping: status on the aurora copy?", sender="chief")
+
+    with patch("jigga.runtime.agent.call_model", _ok_model):
+        supervisor_tick(paths.home)
+
+    mail_tasks = [t for t in list_tasks(paths.tasks) if (t.metadata or {}).get("mail_wake")]
+    assert len(mail_tasks) == 1 and mail_tasks[0].state == "completed"
+    assert unread_messages(paths.home, "helper", "helper") == []        # delivered + marked read
+    events = [json.loads(line) for line in (paths.logs / "events.jsonl").read_text().splitlines()]
+    assert any(e["type"] == "supervisor.mail_wake" for e in events)
+
+
+def test_mail_wake_does_not_stack_tasks_while_throttled(tmp_path: Path) -> None:
+    """A throttled wake leaves the mail task pending — the next tick must NOT
+    queue another one (no task pileup from one message)."""
+    from jigga.core.io import read_yaml, write_yaml
+    from jigga.runtime.loop_guard import load_loop_state, now_utc, record_wake, save_loop_state
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    config = read_yaml(paths.config)
+    config["supervisor"] = {"max_wakes_per_agent_per_hour": 1}
+    write_yaml(paths.config, config)
+    state = load_loop_state(paths.home)
+    record_wake(state, "helper", now_utc())               # exhaust the throttle
+    save_loop_state(paths.home, state)
+    send_message(paths.home, "helper", "helper", "you there?", sender="chief")
+
+    with patch("jigga.runtime.agent.call_model", _ok_model):
+        supervisor_tick(paths.home)
+        supervisor_tick(paths.home)                        # second tick: task pending, throttled
+
+    mail_tasks = [t for t in list_tasks(paths.tasks) if (t.metadata or {}).get("mail_wake")]
+    assert len(mail_tasks) == 1                            # no pileup
+    assert mail_tasks[0].state == "pending"                # still waiting for the throttle window
+
+
+def test_agent_with_pending_work_gets_no_extra_mail_task(tmp_path: Path) -> None:
+    """An agent that's waking anyway delivers its inbox through that run — no
+    synthetic mail task needed."""
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    create_task(paths.tasks, "real work", assignee="helper")
+    send_message(paths.home, "helper", "helper", "fyi: deadline moved", sender="chief")
+
+    with patch("jigga.runtime.agent.call_model", _ok_model):
+        supervisor_tick(paths.home)
+
+    assert not any((t.metadata or {}).get("mail_wake") for t in list_tasks(paths.tasks))
+    assert unread_messages(paths.home, "helper", "helper") == []        # still delivered
+
+
+def test_no_unread_mail_no_wake(tmp_path: Path) -> None:
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    supervisor_tick(paths.home)
+    assert not any((t.metadata or {}).get("mail_wake") for t in list_tasks(paths.tasks))
+
+
+def test_mail_wake_not_duplicated_over_crash_leftover_task(tmp_path: Path) -> None:
+    """A claimed/running mail task (e.g. a crashed run's leftover) is invisible
+    to pending_summary — the queued-mail-wakes guard must still prevent a
+    duplicate synthetic task."""
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks, set_task_state
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    send_message(paths.home, "helper", "helper", "you there?", sender="chief")
+    leftover = create_task(paths.tasks, "Unread mailbox messages", assignee="helper",
+                           metadata={"mail_wake": True})
+    set_task_state(paths.tasks, leftover.id, "claimed")    # crash mid-run leftover
+
+    with patch("jigga.runtime.agent.call_model", _ok_model):
+        supervisor_tick(paths.home)
+
+    mail_tasks = [t for t in list_tasks(paths.tasks) if (t.metadata or {}).get("mail_wake")]
+    assert len(mail_tasks) == 1                             # the leftover only — no duplicate
