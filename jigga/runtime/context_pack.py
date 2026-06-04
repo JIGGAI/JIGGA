@@ -16,14 +16,24 @@ Layers, in order (★ = private — omitted in a restricted/shared context for
 prompt-injection / leak safety, mirroring OpenClaw's "MEMORY.md only in main
 session" rule; the `restricted_memory` flag is set on group/channel tasks):
 
+  STABLE (byte-identical across calls → provider prefix-caching covers it):
     USER.md ★    home `~/.jigga/USER.md` (per-member override) — the principal
     identity     generated from the agent config — always present
     SOUL.md      `roles/<id>/SOUL.md` — persona/voice/principles (authored)
     AGENTS.md    role charter + teammates roster (authored-or-generated)
     TEAM.md      the team charter (workspace)
-    TOOLS.md     tool-usage policy (authored-or-generated from capabilities)
-    MEMORY ★     role MEMORY.md + today/yesterday daily logs + pinned/recent team facts + scoped memory
-    shared-ctx   lead-curated plan + priorities + recent team outputs
+    TOOLS        compact usage policy (full tool specs already ship in the
+                 API request's function schemas — never duplicated here)
+    MEMORY ★     the agent's curated `roles/<id>/MEMORY.md`
+  ── volatile boundary (comment marker) ──
+  VOLATILE (changes per day/run — kept LAST so it can't break the cached prefix):
+    recent ★     today/yesterday daily logs + pinned/recent team facts + scoped memory
+    shared-ctx   lead-curated plan + priorities
+
+Sizing follows the Hermes model (see docs research, 2026-06-04): a small fixed
+resident baseline with hard per-layer caps — recall beyond it goes through the
+zero-token `memory.search` tool (#96) — rather than per-message conditional
+stripping, which would thrash the provider prompt cache.
 """
 
 from __future__ import annotations
@@ -38,9 +48,27 @@ from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.team_memory import read_pinned, read_team_memory
 from jigga.runtime.workspaces import read_file
 
-_LAYER_LIMIT = 2000
-_TOTAL_LIMIT = 12000
+_LAYER_LIMIT = 2000  # fallback for layers without a specific cap
+# Per-layer resident caps (chars; ~4 chars/token). Tightened per the Hermes
+# pattern: the always-resident slice stays small, everything else is one
+# `memory.search` call away. MEMORY.md's cap is enforced by nudge at >80%
+# (consolidate at write time) rather than surprise mid-thought truncation.
+_LAYER_LIMITS = {
+    "USER": 1400,
+    "identity": 600,
+    "SOUL": 1500,
+    "AGENTS": 1500,
+    "TEAM": 1000,
+    "TOOLS": 1200,
+    "MEMORY": 1200,
+    "recent": 1200,
+    "shared-context": 1000,
+}
+_TOTAL_LIMIT = 9000
 _RECENT_FACTS = 8
+# Everything above this marker is byte-stable across calls (provider prefix
+# caching covers it); everything below may change per day/run.
+VOLATILE_BOUNDARY = "<!-- context: stable layers above · volatile below -->"
 
 
 def _clip(text: str, limit: int = _LAYER_LIMIT) -> str:
@@ -82,9 +110,9 @@ def _gen_agents(agent: AgentConfig, team_id: str, teams: dict[str, Any]) -> str:
 
 def _tools_layer(home: Path, team_id: str, member: str, agent: AgentConfig,
                  registry: CapabilityRegistry) -> str:
-    """The generated grant list ALWAYS ships (it's the agent's live, enforced
-    allowlist — an authored file must never blind the agent to its grants);
-    an authored `roles/<id>/TOOLS.md` contributes usage NOTES on top."""
+    """The generated policy ALWAYS ships; an authored `roles/<id>/TOOLS.md`
+    contributes usage NOTES on top — it must never blind the agent to its
+    grants (the #78 failure mode)."""
     generated = _gen_tools(agent, registry)
     notes = read_file(home, team_id, f"roles/{member}/TOOLS.md")
     if notes and notes.strip():
@@ -93,24 +121,34 @@ def _tools_layer(home: Path, team_id: str, member: str, agent: AgentConfig,
 
 
 def _gen_tools(agent: AgentConfig, registry: CapabilityRegistry) -> str:
-    # Effective tool allowlist, filtered to actions that resolve to a capability.
+    """Compact tool POLICY — never the catalog. Every granted tool already
+    ships in the API request as a function schema (name + description), so
+    listing them here would pay for each one twice (#86: the old per-tool list
+    was 54% of a fresh install's entire context). Resident text carries only
+    what the schemas don't: the count, which calls are elevated-risk, and the
+    don't-improvise rule."""
     allowed = list(agent.tools or [])
     perms = agent.permissions or {}
     tools_perm = perms.get("tools") if isinstance(perms, dict) else None
     if isinstance(tools_perm, dict):
         allowed += list(tools_perm.get("allow") or [])
-    lines = ["Tools available to you (the runtime enforces permissions — these are what you may call):"]
-    seen: set[str] = set()
+    resolved: list[str] = []
+    risky: list[str] = []
     for action in dict.fromkeys(allowed):
         cap = registry.resolve_action(action)
-        if cap is None or action in seen:
+        if cap is None:
             continue
-        seen.add(action)
-        risk = f" [risk: {cap.risk_level}]" if cap.risk_level and cap.risk_level != "low" else ""
-        lines.append(f"- `{action}` — {cap.summary}{risk}")
-    if len(lines) == 1:
-        lines.append("- (no tools configured — work from your own reasoning and report back)")
-    lines.append("\nIf you lack a tool you need, say so in your summary rather than improvising.")
+        resolved.append(action)
+        if cap.risk_level and cap.risk_level not in ("low", None):
+            risky.append(f"`{action}` [{cap.risk_level}]")
+    if not resolved:
+        return ("No tools configured — work from your own reasoning and report back. "
+                "If you lack a tool you need, say so in your summary rather than improvising.")
+    lines = [f"You have {len(resolved)} callable tools — their names and descriptions are in "
+             "your function specs. The runtime enforces permissions."]
+    if risky:
+        lines.append("Elevated-risk (may require approval): " + ", ".join(risky) + ".")
+    lines.append("If you lack a tool you need, say so in your summary rather than improvising.")
     return "\n".join(lines)
 
 
@@ -123,12 +161,30 @@ def _dated_memory(home: Path, team_id: str, member: str, today: date) -> str:
     return "\n\n".join(parts)
 
 
-def _memory_layer(home: Path, team_id: str, member: str, memory_context: dict[str, Any] | None,
-                  today: date) -> str:
-    parts: list[str] = []
+def _curated_memory(home: Path, team_id: str, member: str) -> str | None:
+    """The agent's own `roles/<id>/MEMORY.md` — STABLE layer (changes only when
+    the agent deliberately curates it). At >80% of its resident cap, a usage
+    nudge tells the agent to consolidate at write time — the Hermes pattern —
+    so the file self-limits instead of getting truncated mid-thought here."""
     role_mem = read_file(home, team_id, f"roles/{member}/MEMORY.md")
-    if role_mem and role_mem.strip() and "(empty)" not in role_mem:
-        parts.append("### Your long-term memory\n" + _clip(role_mem))
+    if not role_mem or not role_mem.strip() or "(empty)" in role_mem:
+        return None
+    limit = _LAYER_LIMITS["MEMORY"]
+    usage = len(role_mem) / limit
+    if usage <= 0.8:
+        return _clip(role_mem, limit)
+    nudge = (f"\n\n_(MEMORY.md is at {min(int(usage * 100), 100)}% of its context budget — "
+             "consolidate/prune entries before adding new ones.)_")
+    # Leave room for the nudge inside the layer cap — the assembly loop clips
+    # the whole block to the layer limit again, and must never cut the nudge.
+    return _clip(role_mem, max(200, limit - len(nudge) - 20)) + nudge
+
+
+def _recent_memory(home: Path, team_id: str, member: str, memory_context: dict[str, Any] | None,
+                   today: date) -> str:
+    """VOLATILE memory — changes per day/run, so it lives below the cache
+    boundary: dated daily logs, pinned/recent team facts, scoped includes."""
+    parts: list[str] = []
     dated = _dated_memory(home, team_id, member, today)
     if dated:
         parts.append("### Recent daily log\n" + _clip(dated))
@@ -177,27 +233,34 @@ def assemble_agent_context(
         text = read_file(home, team_id, relpath)
         return text if text and text.strip() else None
 
-    # (title, body, name, private)
-    candidates: list[tuple[str, str | None, str, bool]] = [
-        ("About your principal", (authored(f"roles/{member}/USER.md") or _home_user(home)), "USER", True),
-        ("Who you are", _identity(agent), "identity", False),
-        ("Your persona", authored(f"roles/{member}/SOUL.md"), "SOUL", False),
-        ("Your role on the team", authored(f"roles/{member}/AGENTS.md") or _gen_agents(agent, team_id, teams), "AGENTS", False),
-        ("Team charter", authored("TEAM.md"), "TEAM", False),
-        ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False),
-        ("What you know and have done", _memory_layer(home, team_id, member, memory_context, today), "MEMORY", True),
-        ("Team shared context", _shared_context(home, team_id), "shared-context", False),
+    # (title, body, name, private, volatile) — stable layers first, byte-stable
+    # across calls; volatile layers last, below the boundary marker, so a new
+    # day or a new team fact can't invalidate the provider's cached prefix.
+    candidates: list[tuple[str, str | None, str, bool, bool]] = [
+        ("About your principal", (authored(f"roles/{member}/USER.md") or _home_user(home)), "USER", True, False),
+        ("Who you are", _identity(agent), "identity", False, False),
+        ("Your persona", authored(f"roles/{member}/SOUL.md"), "SOUL", False, False),
+        ("Your role on the team", authored(f"roles/{member}/AGENTS.md") or _gen_agents(agent, team_id, teams), "AGENTS", False, False),
+        ("Team charter", authored("TEAM.md"), "TEAM", False, False),
+        ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False, False),
+        ("Your long-term memory", _curated_memory(home, team_id, member), "MEMORY", True, False),
+        ("What you've done recently", _recent_memory(home, team_id, member, memory_context, today), "recent", True, True),
+        ("Team shared context", _shared_context(home, team_id), "shared-context", False, True),
     ]
 
     sections: list[str] = []
     loaded: list[str] = []
     total = 0
-    for title, body, name, private in candidates:
+    boundary_emitted = False
+    for title, body, name, private, volatile in candidates:
         if private and restricted:
             continue
         if not body or not body.strip():
             continue
-        block = f"## {title}\n{_clip(body)}"
+        if volatile and not boundary_emitted:
+            sections.append(VOLATILE_BOUNDARY)
+            boundary_emitted = True
+        block = f"## {title}\n{_clip(body, _LAYER_LIMITS.get(name, _LAYER_LIMIT))}"
         if total + len(block) > _TOTAL_LIMIT:
             block = block[: max(0, _TOTAL_LIMIT - total)]
         sections.append(block)

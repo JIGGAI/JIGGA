@@ -48,16 +48,20 @@ def test_context_includes_all_layers_in_private_session(tmp_path: Path) -> None:
     assert "You are **Writer**" in text                # identity
     assert "lead" in text                              # AGENTS roster (teammate)
     assert "Marketing" in text                         # TEAM charter
-    assert "memory.search" in text                     # TOOLS (generated)
-    assert "indie devs" in text                        # team memory
-    assert {"USER", "identity", "SOUL", "AGENTS", "TEAM", "TOOLS", "MEMORY"}.issubset(set(layers))
+    assert "callable tools" in text                    # TOOLS (compact policy — specs carry the catalog)
+    assert "indie devs" in text                        # team memory (volatile 'recent' layer)
+    assert {"USER", "identity", "SOUL", "AGENTS", "TEAM", "TOOLS", "recent"}.issubset(set(layers))
+    # stable → volatile cache boundary sits between the two groups
+    from jigga.runtime.context_pack import VOLATILE_BOUNDARY
+    assert text.index("callable tools") < text.index(VOLATILE_BOUNDARY) < text.index("indie devs")
 
 
 def test_restricted_session_omits_private_layers(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
     _setup(paths)
     text, layers = _assemble(paths, restricted=True)
-    assert "USER" not in layers and "MEMORY" not in layers   # private layers withheld
+    assert "USER" not in layers and "recent" not in layers   # private layers withheld
+    assert "MEMORY" not in layers
     assert "RJ" not in text and "indie devs" not in text
     # but the agent still knows who it is / its role / tools / team
     assert {"identity", "SOUL", "AGENTS", "TEAM", "TOOLS"}.issubset(set(layers))
@@ -65,17 +69,15 @@ def test_restricted_session_omits_private_layers(tmp_path: Path) -> None:
 
 def test_authored_tools_md_adds_notes_but_never_hides_grants(tmp_path: Path) -> None:
     """An authored TOOLS.md contributes usage NOTES on top of the generated
-    grant list — it must never replace it (an agent blinded to its own grants
-    is the #78 Telegram failure mode)."""
+    policy — it must never blind the agent to its tools (the #78 failure mode)."""
     paths = init_runtime(tmp_path)
     _setup(paths)
     (workspace_dir(paths.home, "mt") / "roles" / "writer" / "TOOLS.md").write_text(
         "# AUTHORED TOOLS POLICY\nNever fabricate stats.", encoding="utf-8")
-    text, layers = _assemble(paths)
-    assert "TOOLS" in layers
+    text, _ = _assemble(paths)
     assert "AUTHORED TOOLS POLICY" in text           # authored notes appended...
     assert "Your tool notes" in text
-    assert "`memory.search`" in text                 # ...but the live grant list still ships
+    assert "callable tools" in text                  # ...but the generated policy still ships
 
 
 def test_missing_layers_are_skipped(tmp_path: Path) -> None:
@@ -124,3 +126,73 @@ def test_run_agent_restricted_task_withholds_private_context(tmp_path: Path) -> 
     assert "indie devs" not in captured["system"]  # private memory withheld
     assert "You are **Writer**" in captured["system"]   # identity still present
 
+
+# --- #86: resident-context budget --------------------------------------------
+
+
+def test_curated_memory_stable_and_recent_volatile_split(tmp_path: Path) -> None:
+    from jigga.core.io import ensure_dir
+    from jigga.runtime.context_pack import VOLATILE_BOUNDARY
+
+    paths = init_runtime(tmp_path)
+    _setup(paths)
+    role_dir = workspace_dir(paths.home, "mt") / "roles" / "writer"
+    ensure_dir(role_dir)
+    (role_dir / "MEMORY.md").write_text("# MEMORY\nRJ prefers concise replies.", encoding="utf-8")
+
+    text, layers = _assemble(paths)
+    assert "MEMORY" in layers and "recent" in layers
+    # curated MEMORY.md is STABLE (above boundary); team learnings are volatile (below)
+    assert text.index("concise replies") < text.index(VOLATILE_BOUNDARY) < text.index("indie devs")
+
+
+def test_memory_md_over_budget_gets_consolidation_nudge(tmp_path: Path) -> None:
+    from jigga.core.io import ensure_dir
+    from jigga.runtime.context_pack import _LAYER_LIMITS
+
+    paths = init_runtime(tmp_path)
+    _setup(paths)
+    role_dir = workspace_dir(paths.home, "mt") / "roles" / "writer"
+    ensure_dir(role_dir)
+    big = "# MEMORY\n" + ("fact line\n" * (_LAYER_LIMITS["MEMORY"] // 10))
+    (role_dir / "MEMORY.md").write_text(big, encoding="utf-8")
+
+    text, _ = _assemble(paths)
+    assert "consolidate/prune entries" in text       # >80% → write-time nudge
+    small = "# MEMORY\njust one fact."
+    (role_dir / "MEMORY.md").write_text(small, encoding="utf-8")
+    text, _ = _assemble(paths)
+    assert "consolidate/prune" not in text           # under budget → no nudge
+
+
+def test_tools_layer_is_compact_not_a_catalog(tmp_path: Path) -> None:
+    """The per-tool catalog already ships as API function schemas — the resident
+    text must stay a compact policy (this was 54% of a fresh install's context)."""
+    paths = init_runtime(tmp_path)
+    _setup(paths)
+    text, _ = _assemble(paths)
+    tools_block = text.split("## Your tools\n", 1)[1].split("\n\n## ", 1)[0]
+    assert len(tools_block) < 500
+    assert "function specs" in tools_block
+    assert "memory.search —" not in tools_block      # no per-tool listing
+
+
+def test_resident_baseline_under_budget(tmp_path: Path) -> None:
+    """The whole fresh-team resident context stays under the tightened budget
+    (~6k chars ≈ 1.5k tokens) — the #86 regression guard."""
+    paths = init_runtime(tmp_path)
+    _setup(paths)
+    text, _ = _assemble(paths)
+    assert len(text) < 6000
+
+
+def test_per_layer_caps_clip_oversized_layers(tmp_path: Path) -> None:
+    from jigga.runtime.context_pack import _LAYER_LIMITS
+
+    paths = init_runtime(tmp_path)
+    _setup(paths)
+    (paths.home / "USER.md").write_text("# USER\n" + "RJ fact. " * 500, encoding="utf-8")  # ~4.5KB
+    text, _ = _assemble(paths)
+    user_block = text.split("## About your principal\n", 1)[1].split("\n\n## ", 1)[0]
+    assert len(user_block) <= _LAYER_LIMITS["USER"] + 50          # clipped to the USER cap
+    assert "…(truncated)" in user_block
