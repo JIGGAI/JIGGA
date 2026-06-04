@@ -873,7 +873,7 @@ def _select_edited_replacements(edited: list[dict]) -> list[str]:
     print(f"\n{len(edited)} file(s) have local edits AND shipped updates.")
     options = [Option(label=e["path"], detail=f"recipe: {e.get('recipe') or e.get('record')}")
                for e in edited]
-    picked = multi_select("Select any to REPLACE (their edits are backed up, then lost)", options)
+    picked = multi_select("Select any to REPLACE (their edits are backed up)", options)
     if not picked:
         print("  ~ keeping all edited files.")
         _edited_footer(edited)
