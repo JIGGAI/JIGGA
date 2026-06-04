@@ -75,7 +75,7 @@ from jigga.runtime.recipes import (
     scaffold_agent,
     scaffold_team,
 )
-from jigga.runtime.term_select import Option, multi_select, supports_picker
+from jigga.runtime.term_select import Option, multi_select, select_one, supports_picker
 from jigga.runtime.workspaces import scaffold_workspace, workspace_dir
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.core.config import (
@@ -121,13 +121,18 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
     (auth + config + approval, reused from `capabilities install`) → set the
     activation mode → enable. Pluggable via `_CHANNEL_CATALOG`."""
     names = sorted(_CHANNEL_CATALOG)
-    echo("Set up a channel:")
-    for i, name in enumerate(names, 1):
-        echo(f"  {i}) {name} — {_CHANNEL_CATALOG[name][1]}")
-    choice = prompt("> ").strip()
-    name = names[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(names) else (
-        choice if choice in _CHANNEL_CATALOG else None
-    )
+    if supports_picker():
+        picked = select_one("Set up a channel",
+                            [Option(label=n, detail=_CHANNEL_CATALOG[n][1]) for n in names])
+        name = names[picked] if picked is not None else None
+    else:
+        echo("Set up a channel:")
+        for i, name in enumerate(names, 1):
+            echo(f"  {i}) {name} — {_CHANNEL_CATALOG[name][1]}")
+        choice = prompt("> ").strip()
+        name = names[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(names) else (
+            choice if choice in _CHANNEL_CATALOG else None
+        )
     if name is None:
         echo("No channel selected.")
         return
@@ -137,14 +142,23 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
     if install_capability(paths, capability, input_fn=prompt, print_fn=echo) != 0:
         return
 
-    echo("\nActivation mode — when should the bot respond?")
-    echo("  1) always              (every allowed message)")
-    echo("  2) mention             (DMs always; groups only when @mentioned)")
-    echo("  3) direct_message_only (only 1:1 chats)")
-    echo("  4) disabled            (polled but inert)")
-    mode = {"1": "always", "2": "mention", "3": "direct_message_only", "4": "disabled"}.get(
-        prompt("> ").strip(), "always"
-    )
+    activation = [
+        ("always", "every allowed message"),
+        ("mention", "DMs always; groups only when @mentioned"),
+        ("direct_message_only", "only 1:1 chats"),
+        ("disabled", "polled but inert"),
+    ]
+    if supports_picker():
+        picked = select_one("Activation mode — when should the bot respond?",
+                            [Option(label=key, detail=blurb) for key, blurb in activation])
+        mode = activation[picked][0] if picked is not None else "always"
+    else:
+        echo("\nActivation mode — when should the bot respond?")
+        for i, (key, blurb) in enumerate(activation, 1):
+            echo(f"  {i}) {key:20} ({blurb})")
+        mode = {str(i): key for i, (key, _) in enumerate(activation, 1)}.get(
+            prompt("> ").strip(), "always"
+        )
     config = read_yaml(paths.config)
     entry = config.setdefault("channels", {}).setdefault(name, {})
     entry["enabled"] = True
@@ -221,10 +235,21 @@ def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, l
 def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
     """Interactive onboarding: pick a provider, then (for ChatGPT) authenticate."""
     from jigga.runtime.chatgpt_auth import login_state
-    echo("Select a model provider:")
-    echo("  1) ChatGPT subscription  (no API key, runs on your ChatGPT plan)")
-    echo("  2) Dry-run               (no model; canned responses)")
-    if prompt("> ").strip() in ("2", "dry_run", "dry-run"):
+    if supports_picker():
+        picked = select_one("Select a model provider", [
+            Option(label="ChatGPT subscription", detail="no API key, runs on your ChatGPT plan"),
+            Option(label="Dry-run", detail="no model; canned responses"),
+        ])
+        if picked is None:
+            echo("Skipped model setup. Run `jigga model setup` later.")
+            return
+        wants_dry_run = picked == 1
+    else:
+        echo("Select a model provider:")
+        echo("  1) ChatGPT subscription  (no API key, runs on your ChatGPT plan)")
+        echo("  2) Dry-run               (no model; canned responses)")
+        wants_dry_run = prompt("> ").strip() in ("2", "dry_run", "dry-run")
+    if wants_dry_run:
         _set_model_provider(paths, "dry_run", None)
         echo("Provider set to dry_run.")
         return
@@ -232,11 +257,21 @@ def _model_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
     if login_state(paths.home).get("logged_in"):
         echo("Provider set to chatgpt — an existing login was found. Done.")
         return
-    echo("\nAuthenticate your ChatGPT subscription:")
-    echo("  1) Browser    (open a URL, paste the return URL back)")
-    echo("  2) Device code (enter a short code at a URL — best for headless/remote)")
-    echo("  3) Skip       (use an existing `codex login` if present)")
-    choice = prompt("> ").strip()
+    login_methods = [
+        ("browser", "open a URL, paste the return URL back"),
+        ("device", "enter a short code at a URL — best for headless/remote"),
+        ("skip", "use an existing `codex login` if present"),
+    ]
+    if supports_picker():
+        picked = select_one("Authenticate your ChatGPT subscription",
+                            [Option(label=key.title(), detail=blurb) for key, blurb in login_methods])
+        choice = login_methods[picked][0] if picked is not None else "skip"
+    else:
+        echo("\nAuthenticate your ChatGPT subscription:")
+        echo("  1) Browser    (open a URL, paste the return URL back)")
+        echo("  2) Device code (enter a short code at a URL — best for headless/remote)")
+        echo("  3) Skip       (use an existing `codex login` if present)")
+        choice = prompt("> ").strip()
     from jigga.runtime.chatgpt_login import browser_login, device_login
     if choice in ("1", "browser"):
         browser_login(paths.home)
