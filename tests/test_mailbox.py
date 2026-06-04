@@ -280,3 +280,24 @@ def test_no_unread_mail_no_wake(tmp_path: Path) -> None:
     _agent(paths)
     supervisor_tick(paths.home)
     assert not any((t.metadata or {}).get("mail_wake") for t in list_tasks(paths.tasks))
+
+
+def test_mail_wake_not_duplicated_over_crash_leftover_task(tmp_path: Path) -> None:
+    """A claimed/running mail task (e.g. a crashed run's leftover) is invisible
+    to pending_summary — the queued-mail-wakes guard must still prevent a
+    duplicate synthetic task."""
+    from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks, set_task_state
+
+    paths = init_runtime(tmp_path)
+    _agent(paths)
+    send_message(paths.home, "helper", "helper", "you there?", sender="chief")
+    leftover = create_task(paths.tasks, "Unread mailbox messages", assignee="helper",
+                           metadata={"mail_wake": True})
+    set_task_state(paths.tasks, leftover.id, "claimed")    # crash mid-run leftover
+
+    with patch("jigga.runtime.agent.call_model", _ok_model):
+        supervisor_tick(paths.home)
+
+    mail_tasks = [t for t in list_tasks(paths.tasks) if (t.metadata or {}).get("mail_wake")]
+    assert len(mail_tasks) == 1                             # the leftover only — no duplicate
