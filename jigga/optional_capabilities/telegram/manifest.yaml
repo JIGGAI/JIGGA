@@ -11,3 +11,8 @@ permissions:
     target: https://api.telegram.org
 risk_level: medium
 handler: runtime.telegram
+# Polling is the supervisor's job — getUpdates allows one consumer per bot
+# token; an agent polling would collide with (or steal updates from) the
+# supervisor's long-poll. Never granted to agents, denied if invoked.
+runtime_only_actions:
+  - telegram.poll_messages
