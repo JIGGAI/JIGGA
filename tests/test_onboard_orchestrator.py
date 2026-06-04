@@ -129,3 +129,76 @@ def test_onboard_interactive_decline_start_now(tmp_path: Path, monkeypatch, _no_
     monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
     assert main(["--home", str(tmp_path), "onboard"]) == 0
     assert _no_real_service == []  # declined -> not installed
+
+
+# --- example-recipe selection (--examples) ----------------------------------
+
+
+def test_examples_setup_installs_only_the_selection(tmp_path: Path) -> None:
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+
+    paths = init_runtime(tmp_path)
+    installed = _examples_setup(paths, interactive=True, echo=lambda *a, **k: None,
+                                prompt=lambda _p: "personal_admin_team")
+    assert installed == ["personal_admin_team"]
+    agents = load_agents(paths.agents)
+    assert "daily_briefing_agent" in agents
+    assert "marketing_lead" not in agents                      # unselected recipe not installed
+    assert not (paths.teams / "marketing_team.yaml").exists()
+
+
+def test_examples_setup_by_number_and_all_and_none(tmp_path: Path) -> None:
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+    from jigga.runtime.recipes import list_recipes
+
+    paths = init_runtime(tmp_path)
+    # Enter → none installed
+    assert _examples_setup(paths, interactive=True, echo=lambda *a, **k: None,
+                           prompt=lambda _p: "") == []
+    assert not load_agents(paths.agents)
+
+    # "2" → exactly the second listed recipe
+    second = list_recipes(paths.home)[1]["id"]
+    assert _examples_setup(paths, interactive=True, echo=lambda *a, **k: None,
+                           prompt=lambda _p: "2") == [second]
+
+    # "all" → everything in the folder (deduped against ids already returned)
+    installed = _examples_setup(paths, interactive=True, echo=lambda *a, **k: None,
+                                prompt=lambda _p: "all")
+    assert set(installed) == {r["id"] for r in list_recipes(paths.home)}
+
+
+def test_examples_setup_unknown_token_is_skipped_with_notice(tmp_path: Path) -> None:
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+
+    paths = init_runtime(tmp_path)
+    notices: list[str] = []
+    installed = _examples_setup(paths, interactive=True, echo=lambda msg="", *a, **k: notices.append(str(msg)),
+                                prompt=lambda _p: "researcher, nope")
+    assert installed == ["researcher"]
+    assert any("nope" in n for n in notices)
+
+
+def test_onboard_examples_non_interactive_installs_all(tmp_path: Path) -> None:
+    rc = main(["--home", str(tmp_path), "onboard", "--non-interactive", "--examples",
+               "--skip-model", "--skip-channels"])
+    assert rc == 0
+    agents = load_agents(tmp_path / "agents")
+    assert {"daily_briefing_agent", "marketing_lead", "content_strategist", "researcher"} <= set(agents)
+
+
+def test_onboard_examples_interactive_prompts_selection(tmp_path: Path, monkeypatch) -> None:
+    # First answer feeds the examples picker; everything after defaults ("") —
+    # setup wizard defaults, model/channel confirms, start-now (service stubbed).
+    answers = iter(["personal_admin_team"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
+    monkeypatch.setattr("jigga.cli._model_setup", lambda paths, **k: None)
+    monkeypatch.setattr("jigga.cli._channels_setup", lambda paths, **k: None)
+    rc = main(["--home", str(tmp_path), "onboard", "--examples"])
+    assert rc == 0
+    agents = load_agents(tmp_path / "agents")
+    assert "daily_briefing_agent" in agents
+    assert "marketing_lead" not in agents
