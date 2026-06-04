@@ -279,7 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="Create a local runtime directory")
-    init.add_argument("--examples", action="store_true", help="Copy bundled example agents and teams")
+    init.add_argument("--examples", action="store_true",
+                      help="Also scaffold the bundled example recipes (personal admin, marketing, social teams)")
     init.add_argument(
         "--no-prompt",
         action="store_true",
@@ -293,7 +294,8 @@ def build_parser() -> argparse.ArgumentParser:
         "onboard",
         help="Guided end-to-end setup: init -> assistant -> model -> channel -> always-on service",
     )
-    onboard.add_argument("--examples", action="store_true", help="Also copy bundled example agents and teams")
+    onboard.add_argument("--examples", action="store_true",
+                         help="Offer the example recipes for selection (installs all with --non-interactive)")
     onboard.add_argument("--overwrite", action="store_true", help="Overwrite an existing default agent / USER.md")
     onboard.add_argument("--install-daemon", action="store_true",
                          help="Install the supervisor as an always-on user service (launchd/systemd) at the end")
@@ -628,6 +630,60 @@ def _confirm(question: str, *, default: bool, echo=print) -> bool:
     return answer in {"y", "yes"}
 
 
+def _examples_setup(paths: Any, *, interactive: bool, echo: Callable[..., None] = print,
+                    prompt: Callable[[str], str] | None = None) -> list[str]:
+    """Offer the available example recipes (whatever is in the user + bundled
+    recipe folders) and scaffold the selection. Non-interactive installs all —
+    there's no one to ask. Returns the installed recipe ids."""
+    if prompt is None:
+        prompt = input  # resolved at call time so tests patching builtins.input work
+    recipes = list_recipes(paths.home)
+    if not recipes:
+        echo("• No example recipes found.")
+        return []
+    if interactive:
+        echo("\nExample recipes available:")
+        for index, entry in enumerate(recipes, 1):
+            echo(f"  {index}) {entry['id']:24} {entry['kind']:6} {entry.get('description') or ''}")
+        _drain_stdin()
+        raw = _sanitize_answer(prompt("Install which? [numbers/names, 'all', Enter for none]: "))
+        if raw in {"", "none", "n"}:
+            echo("• Skipped examples. Install any later with `jigga recipes scaffold <name>`.")
+            return []
+        if raw in {"all", "a", "*"}:
+            chosen = list(recipes)
+        else:
+            chosen = []
+            for token in [t for t in re.split(r"[,\s]+", raw) if t]:
+                if token.isdigit() and 1 <= int(token) <= len(recipes):
+                    chosen.append(recipes[int(token) - 1])
+                    continue
+                match = next((r for r in recipes
+                              if r["id"] == token or Path(r["source"]).stem == token), None)
+                if match is not None:
+                    chosen.append(match)
+                else:
+                    echo(f"  ! Unknown selection {token!r} (skipped)")
+    else:
+        chosen = list(recipes)
+
+    installed: list[str] = []
+    for entry in chosen:
+        if entry["id"] in installed:
+            continue
+        recipe = load_recipe(Path(entry["source"]))
+        if recipe.kind == "agent":
+            scaffold_agent(paths.home, recipe, agents_dir=paths.agents,
+                           workflows_dir=paths.workflows)
+        else:
+            scaffold_team(paths.home, recipe, agents_dir=paths.agents, teams_dir=paths.teams,
+                          workflows_dir=paths.workflows)
+        installed.append(entry["id"])
+    if installed:
+        echo(f"✓ Installed: {', '.join(installed)}")
+    return installed
+
+
 def _cmd_onboard(args: argparse.Namespace) -> int:
     """Guided end-to-end setup, OpenClaw-`onboard`-style: one command takes a
     fresh clone from an empty runtime to a configured (optionally always-on)
@@ -637,8 +693,13 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
     interactive model/channel wizards; --install-daemon still runs since it's
     flag-driven."""
     interactive = not args.non_interactive
-    paths = init_runtime(args.home, examples=args.examples)
+    paths = init_runtime(args.home)
     print(f"\n=== JIGGA onboarding === (home: {paths.home})")
+
+    # 0. Example recipes — list whatever's in the recipe folders and install
+    #    the user's selection (everything, when there's no one to ask).
+    if args.examples:
+        _examples_setup(paths, interactive=interactive)
 
     # 1. Who the assistant works for + the default agent (USER.md + agent yaml).
     run_onboarding(
