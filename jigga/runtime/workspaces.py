@@ -91,9 +91,12 @@ def scaffold_workspace(home: Path, team: TeamConfig) -> dict[str, Any]:
             f"# Priorities — {team.name}\n\n_Lead-curated ({lead or 'unassigned'})._\n"
         ),
     }
-    # Per-member SOUL.md starter (authored persona — the agent's voice/principles,
-    # injected into its context pack). create-only; edit to give each member a
-    # distinct persona. AGENTS.md / TOOLS.md are generated at run time instead.
+    # Per-member identity starters (injected into the context pack; create-only).
+    # SOUL.md: authored persona — edit for a distinct voice. MEMORY.md: the
+    # agent's OWN curated notes (stable facts, lasting decisions, lessons) —
+    # the agent maintains it; the >80%-budget nudge keeps it consolidated.
+    # AGENTS / TOOLS layers are generated at run time instead: they render the
+    # live roster and tool grants, which an authored starter would freeze.
     roles = {str(a.get("id")): a.get("role") for a in team.agents if isinstance(a, dict) and a.get("id")}
     for member in member_ids:
         role = roles.get(member) or "team member"
@@ -103,6 +106,13 @@ def scaffold_workspace(home: Path, team: TeamConfig) -> dict[str, Any]:
             "team's plan and priorities. Prefer evidence over assertion and say when you're "
             "unsure. Write so a teammate can act on your output without asking you to clarify.\n\n"
             "_(Edit this to give the agent a distinct voice, beliefs, and a decision framework.)_\n"
+        )
+        starters[f"roles/{member}/MEMORY.md"] = (
+            f"# MEMORY — {member}\n\n"
+            "_Curate your durable notes here: stable facts about your principal and team,\n"
+            "decisions with lasting consequences, lessons learned. Keep it short and\n"
+            "current — prune what stops being true. This file is injected into your\n"
+            "context every wake; the structured memory system records everything else._\n"
         )
     created = [rel for rel, content in starters.items() if _write_if_absent(root / rel, content)]
     return {"workspace": str(root), "members": member_ids, "lead": lead, "created": created}
