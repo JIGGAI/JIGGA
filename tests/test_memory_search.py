@@ -77,3 +77,94 @@ def test_cli_memory_search_json(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "memory", "search", "dashboard", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert any("dashboard" in (r["snippet"] or "").lower() for r in payload)
+
+
+# --- #96: task history + workspace coverage -----------------------------------
+
+
+def test_search_finds_channel_task_history(tmp_path: Path) -> None:
+    """Every channel chat is a task — 'what did RJ ask me yesterday' must be
+    one zero-token search away (the Hermes contract behind #86's small
+    resident baseline)."""
+    from jigga.runtime.tasks import create_task, set_task_state
+
+    paths = init_runtime(tmp_path)
+    task = create_task(paths.tasks, "telegram message from RJ",
+                       description="Message received via telegram: can you book the dentist for Thursday?",
+                       assignee="assistant", metadata={"channel": "telegram", "sender": "RJ"})
+    set_task_state(paths.tasks, task.id, "completed")
+
+    results = search_memory(paths.memory, "dentist Thursday", rebuild=True)
+    assert results and results[0]["layer"] == "tasks"
+    assert "dentist" in results[0]["snippet"].lower()
+
+
+def test_search_finds_archived_tasks(tmp_path: Path) -> None:
+    import json as _json
+
+    paths = init_runtime(tmp_path)
+    archive = paths.tasks / "archive"
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "task_old.json").write_text(_json.dumps({
+        "id": "task_old", "title": "telegram message from RJ",
+        "description": "remind me about the quarterly tax filing",
+        "assignee": "assistant", "state": "completed", "metadata": {}}), encoding="utf-8")
+
+    results = search_memory(paths.memory, "quarterly tax filing", rebuild=True)
+    assert results and results[0]["layer"] == "tasks"
+
+
+def test_search_finds_workspace_daily_logs_outputs_and_decisions(tmp_path: Path) -> None:
+    from jigga.core.io import ensure_dir
+
+    paths = init_runtime(tmp_path)
+    ws = paths.home / "workspaces" / "mt"
+    ensure_dir(ws / "roles" / "writer" / "memory")
+    ensure_dir(ws / "shared-context" / "agent-outputs")
+    (ws / "roles" / "writer" / "memory" / "2026-06-01.md").write_text(
+        "Drafted the solstice launch tweet.", encoding="utf-8")
+    (ws / "shared-context" / "agent-outputs" / "writer.md").write_text(
+        "## output\nFinal launch copy: midnight aurora edition.", encoding="utf-8")
+    (ws / "shared-context" / "handoffs.jsonl").write_text(
+        '{"from": "writer", "to": "editor", "when": "draft_ready", "evidence": "aurora copy v2"}\n',
+        encoding="utf-8")
+
+    daily = search_memory(paths.memory, "solstice launch tweet", team="mt", rebuild=True)
+    assert any(r["layer"] == "role:writer" for r in daily) is False  # role:writer ≠ team mt gate
+    daily_unscoped = search_memory(paths.memory, "solstice launch tweet", rebuild=True)
+    assert any(r["layer"] == "role:writer" for r in daily_unscoped)
+
+    outputs = search_memory(paths.memory, "midnight aurora", team="mt")
+    assert any(r["layer"] == "team:mt" for r in outputs)
+    decisions = search_memory(paths.memory, "draft_ready aurora", team="mt")
+    assert any(r["layer"] == "team:mt" for r in decisions)
+
+
+def test_team_gate_still_hides_other_teams(tmp_path: Path) -> None:
+    """#96 must not weaken scoping: another team's workspace stays invisible
+    to a team-filtered search; tasks are global like the memory tree."""
+    from jigga.core.io import ensure_dir
+
+    paths = init_runtime(tmp_path)
+    other = paths.home / "workspaces" / "other_team" / "shared-context" / "memory"
+    ensure_dir(other)
+    (other / "team.jsonl").write_text('{"text": "secret zebra initiative"}\n', encoding="utf-8")
+
+    hidden = search_memory(paths.memory, "secret zebra initiative", team="mt", rebuild=True)
+    assert hidden == []
+    visible = search_memory(paths.memory, "secret zebra initiative", team="other_team")
+    assert visible and visible[0]["layer"] == "team:other_team"
+
+
+def test_tasks_visible_to_team_filtered_search(tmp_path: Path) -> None:
+    """Agents search with their team filter set (the memory.search handler
+    passes team=<agent's team>) — task history must be visible through it,
+    like the global memory tree."""
+    from jigga.runtime.tasks import create_task
+
+    paths = init_runtime(tmp_path)
+    create_task(paths.tasks, "telegram message from RJ",
+                description="please order more espresso beans",
+                assignee="assistant", metadata={"channel": "telegram"})
+    results = search_memory(paths.memory, "espresso beans", team="assistant", rebuild=True)
+    assert results and results[0]["layer"] == "tasks"
