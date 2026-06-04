@@ -61,6 +61,7 @@ _LAYER_LIMITS = {
     "TEAM": 1000,
     "TOOLS": 1200,
     "MEMORY": 1200,
+    "inbox": 1500,
     "recent": 1200,
     "shared-context": 1000,
 }
@@ -200,6 +201,14 @@ def _recent_memory(home: Path, team_id: str, member: str, memory_context: dict[s
     return "\n\n".join(parts)
 
 
+
+def _inbox_layer(home: Path, team_id: str, member: str) -> str:
+    """Unread mailbox messages (W6/#62) — VOLATILE + private: surfaced on wake,
+    marked read by the runtime after a successful run."""
+    from jigga.runtime.mailbox import render_unread, unread_messages
+
+    return render_unread(unread_messages(home, team_id, member))
+
 def _shared_context(home: Path, team_id: str) -> str:
     parts: list[str] = []
     plan = read_file(home, team_id, "notes/plan.md")
@@ -244,6 +253,7 @@ def assemble_agent_context(
         ("Team charter", authored("TEAM.md"), "TEAM", False, False),
         ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False, False),
         ("Your long-term memory", _curated_memory(home, team_id, member), "MEMORY", True, False),
+        ("Your inbox", _inbox_layer(home, team_id, member), "inbox", True, True),
         ("What you've done recently", _recent_memory(home, team_id, member, memory_context, today), "recent", True, True),
         ("Team shared context", _shared_context(home, team_id), "shared-context", False, True),
     ]

@@ -116,6 +116,9 @@ def _iter_documents(memory_dir: Path) -> Iterator[tuple[str, Path, str]]:
                     daily = role_dir / "memory"                              # dated logs (#96)
                     if daily.exists():
                         role_files += sorted(daily.glob("*.md"))
+                    inbox = role_dir / "inbox"                                # mailbox (#62)
+                    if inbox.exists():
+                        role_files += sorted(inbox.glob("msg_*.json"))
                     for path in role_files:
                         if path.is_file():
                             try:

@@ -272,6 +272,37 @@ def _notifications_handler(
     }
 
 
+
+def _mailbox_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """`mailbox.send` — append a durable message file to a teammate's inbox
+    (W6/#62). Delivery goes to the RECIPIENT's home workspace (their team, or
+    their own solo workspace), so cross-team sends land where the recipient
+    actually wakes. The recipient sees unread messages in its context pack on
+    the next run; the runtime marks them read after a successful run."""
+    from jigga.runtime.mailbox import send_message
+    from jigga.runtime.workspaces import find_agent_teams
+
+    payload = resolved_input if isinstance(resolved_input, dict) else {}
+    to = str(payload.get("to") or "").strip()
+    body = str(payload.get("body") or payload.get("message") or "").strip()
+    subject = payload.get("subject")
+    sender = runtime.agent.id if runtime.agent else "system"
+    recipient_teams = find_agent_teams(runtime.home / "teams", to) if to else []
+    recipient_ws = recipient_teams[0].id if recipient_teams else to
+    message = send_message(runtime.home, recipient_ws, to, body,
+                           sender=sender, subject=subject)
+    append_event(runtime.logs_dir, "mailbox.sent", sender=sender, to=to,
+                 workspace=recipient_ws, message_id=message["id"],
+                 subject=message.get("subject"))
+    return {"source": "capability.mailbox", "sent": message, "workspace": recipient_ws}
+
+
 def _summarization_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,

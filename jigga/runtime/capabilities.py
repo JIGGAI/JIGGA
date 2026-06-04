@@ -159,6 +159,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.notifications",
     },
     {
+        "name": "mailbox",
+        "version": "0.1.0",
+        "summary": "File-backed agent mailbox — send durable messages to a teammate's inbox (read on their next wake).",
+        "actions": ["mailbox.send"],
+        "permissions": {"mailbox": "send"},
+        "risk_level": "low",
+        "handler": "runtime.mailbox",
+    },
+    {
         "name": "summarization",
         "version": "0.1.0",
         "summary": "MVP text/context summarization actions.",
