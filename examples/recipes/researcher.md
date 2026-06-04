@@ -7,7 +7,7 @@ description: A standalone research agent that gathers and summarizes information
 agent:
   role: Gathers and summarizes information on a topic.
   model: profile:default
-  tools: [summarize_relevant_context]
+  tools: [summarize_relevant_context, memory.search]
   permissions:
     network: {mode: ask}
     shell: {mode: deny}

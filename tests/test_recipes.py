@@ -538,3 +538,17 @@ def test_cli_recipes_installed_and_list_marker(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "recipes", "installed"]) == 0
     out = capsys.readouterr().out
     assert "personal_admin_team" in out and "1 agents, 2 workflows" in out
+
+
+def test_every_bundled_recipe_agent_can_search_memory() -> None:
+    """Policy (RJ 2026-06-04): all agents get memory.search. The #97 context
+    architecture keeps the resident baseline small BECAUSE recall beyond it is
+    one search away — an agent without the tool is memory-blind by design."""
+    bundled = Path(__file__).resolve().parents[1] / "examples" / "recipes"
+    for recipe_path in sorted(bundled.glob("*.md")):
+        recipe = load_recipe(recipe_path)
+        definitions = ([recipe.meta["agent"]] if recipe.kind == "agent"
+                       else [s["agent"] for s in recipe.agents if isinstance(s.get("agent"), dict)])
+        for definition in definitions:
+            assert "memory.search" in (definition.get("tools") or []), \
+                f"{recipe_path.name}: an agent definition lacks memory.search"
