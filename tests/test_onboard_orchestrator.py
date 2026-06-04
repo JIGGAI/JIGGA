@@ -202,3 +202,45 @@ def test_onboard_examples_interactive_prompts_selection(tmp_path: Path, monkeypa
     agents = load_agents(tmp_path / "agents")
     assert "daily_briefing_agent" in agents
     assert "marketing_lead" not in agents
+
+
+def test_examples_setup_uses_picker_on_a_real_terminal(tmp_path: Path, monkeypatch) -> None:
+    """On a TTY the arrow-key picker drives selection; the typed prompt is
+    never consulted."""
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+    from jigga.runtime.recipes import list_recipes
+
+    paths = init_runtime(tmp_path)
+    target = next(i for i, r in enumerate(list_recipes(paths.home))
+                  if r["id"] == "personal_admin_team")
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: [target])
+    boom = lambda _p: (_ for _ in ()).throw(AssertionError("typed prompt must not run"))  # noqa: E731
+
+    installed = _examples_setup(paths, interactive=True, echo=lambda *a, **k: None, prompt=boom)
+    assert installed == ["personal_admin_team"]
+    assert "daily_briefing_agent" in load_agents(paths.agents)
+
+
+def test_examples_setup_picker_cancel_installs_nothing(tmp_path: Path, monkeypatch) -> None:
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+
+    paths = init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
+    monkeypatch.setattr("jigga.cli.multi_select", lambda title, options, **k: None)
+    assert _examples_setup(paths, interactive=True, echo=lambda *a, **k: None) == []
+    assert not load_agents(paths.agents)
+
+
+def test_examples_setup_falls_back_to_typed_prompt_without_tty(tmp_path: Path, monkeypatch) -> None:
+    """No TTY (pipes, tests) → the typed numbers/names prompt still works."""
+    from jigga.cli import _examples_setup
+    from jigga.commands.init import init_runtime
+
+    paths = init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: False)
+    installed = _examples_setup(paths, interactive=True, echo=lambda *a, **k: None,
+                                prompt=lambda _p: "personal_admin_team")
+    assert installed == ["personal_admin_team"]
