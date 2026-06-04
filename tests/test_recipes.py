@@ -8,7 +8,14 @@ import pytest
 from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_teams
-from jigga.runtime.recipes import find_recipe, list_recipes, load_recipe, scaffold_agent, scaffold_team
+from jigga.runtime.recipes import (
+    find_recipe,
+    list_recipes,
+    load_recipe,
+    recipe_summary,
+    scaffold_agent,
+    scaffold_team,
+)
 
 RECIPE = """---
 id: marketing-team
@@ -19,12 +26,14 @@ routing:
   lead: lead
 agents:
   - role: lead
-    name: "{{teamName}} Lead"
-    description: Distills the product for {{teamId}}.
-    tools: [draft_with_model]
+    agent:
+      name: "{{teamName}} Lead"
+      role: Distills the product for {{teamId}}.
+      tools: [draft_with_model]
   - role: copywriter
-    name: Copywriter
-    tools: [draft_with_model]
+    agent:
+      name: Copywriter
+      tools: [draft_with_model]
 ---
 
 # body ignored by the scaffolder
@@ -85,26 +94,34 @@ def test_bundled_recipe_resolves_and_scaffolds_via_cli(tmp_path: Path, capsys) -
     init_runtime(tmp_path)
     # bundled examples/recipes/marketing-team.md is discoverable by name
     assert find_recipe(tmp_path, "marketing-team") is not None
-    assert any(r["id"] == "marketing-team" for r in list_recipes(tmp_path))
+    assert any(r["id"] == "marketing_team" for r in list_recipes(tmp_path))
 
-    assert main(["--home", str(tmp_path), "team", "scaffold", "marketing-team",
-                 "--team-id", "acme-mktg", "--json"]) == 0
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "marketing-team",
+                 "--id", "acme-mktg", "--json"]) == 0
     summary = json.loads(capsys.readouterr().out)
-    assert summary["lead"] == "acme-mktg-lead"
-    assert "acme-mktg-editor" in summary["agents_written"]
-    # the scaffolded team + agents are loadable
+    # bundled members pin explicit agent ids; --id only overrides the team id
+    assert summary["lead"] == "marketing_lead"
+    assert "seo_editor" in summary["agents_written"]
+    assert "team_launch" in summary["workflows_written"]
     assert "acme-mktg" in load_teams((tmp_path / "teams"))
-    assert "acme-mktg-copywriter" in load_agents((tmp_path / "agents"))
+    assert "copywriter" in load_agents((tmp_path / "agents"))
 
 
 def test_scaffold_team_rejects_agent_kind(tmp_path: Path) -> None:
     path = tmp_path / "solo.md"
-    path.write_text("---\nid: solo\nname: Solo\nkind: agent\n---\n", encoding="utf-8")
+    path.write_text("---\nid: solo\nname: Solo\nkind: agent\nagent: {role: x}\n---\n", encoding="utf-8")
     with pytest.raises(ValueError):
         scaffold_team(tmp_path, load_recipe(path))
 
 
-# --- W4 follow-ups: cronJobs + kind: agent ---------------------------------
+def test_scaffold_agent_requires_agent_map(tmp_path: Path) -> None:
+    path = tmp_path / "bare.md"
+    path.write_text("---\nid: bare\nname: Bare\nkind: agent\n---\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="agent"):
+        scaffold_agent(tmp_path, load_recipe(path))
+
+
+# --- cronJobs + kind: agent --------------------------------------------------
 
 CRON_RECIPE = """---
 id: ops-team
@@ -113,17 +130,18 @@ kind: team
 routing: {lead: lead}
 agents:
   - role: lead
-    name: Lead
-    tools: [draft_with_model]
-    cronJobs:
-      - id: triage
-        schedule: "*/30 7-23 * * 1-5"
-        enabledByDefault: true
-        message: "Triage {{teamId}} work."
-      - id: nightly
-        schedule: "0 2 * * *"
-        enabledByDefault: false
-        message: "off by default"
+    agent:
+      name: Lead
+      tools: [draft_with_model]
+      cronJobs:
+        - id: triage
+          schedule: "*/30 7-23 * * 1-5"
+          enabledByDefault: true
+          message: "Triage {{teamId}} work."
+        - id: nightly
+          schedule: "0 2 * * *"
+          enabledByDefault: false
+          message: "off by default"
 ---
 """
 
@@ -131,19 +149,19 @@ AGENT_RECIPE = """---
 id: researcher
 name: Researcher
 kind: agent
-model: profile:default
-tools: [summarize_relevant_context]
-cronJobs:
-  - id: morning
-    schedule: "0 8 * * 1-5"
-    enabledByDefault: true
-    message: "Do the morning briefing."
+agent:
+  model: profile:default
+  tools: [summarize_relevant_context]
+  cronJobs:
+    - id: morning
+      schedule: "0 8 * * 1-5"
+      enabledByDefault: true
+      message: "Do the morning briefing."
 ---
 """
 
 
 def test_cronjobs_become_wake_schedules(tmp_path: Path) -> None:
-    from jigga.core.config import load_agents
     paths = init_runtime(tmp_path)
     recipe_path = tmp_path / "ops.md"
     recipe_path.write_text(CRON_RECIPE, encoding="utf-8")
@@ -157,7 +175,6 @@ def test_cronjobs_become_wake_schedules(tmp_path: Path) -> None:
 
 
 def test_scaffold_agent_kind(tmp_path: Path) -> None:
-    from jigga.core.config import load_agents
     paths = init_runtime(tmp_path)
     recipe_path = tmp_path / "r.md"
     recipe_path.write_text(AGENT_RECIPE, encoding="utf-8")
@@ -169,15 +186,180 @@ def test_scaffold_agent_kind(tmp_path: Path) -> None:
 
 
 def test_cli_scaffold_kind_agent(tmp_path: Path, capsys) -> None:
-    from jigga.core.config import load_agents
     init_runtime(tmp_path)  # bundled researcher.md recipe
-    assert main(["--home", str(tmp_path), "team", "scaffold", "researcher", "--team-id", "rr", "--json"]) == 0
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "researcher", "--id", "rr", "--json"]) == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["kind"] == "agent" and summary["agent_id"] == "rr"
     assert "rr" in load_agents((tmp_path / "agents"))
 
 
-# --- W4 follow-up: files / templates ---------------------------------------
+# --- full-fidelity member specs ----------------------------------------------
+
+FIDELITY_RECIPE = """---
+id: admin-team
+name: Admin Team
+kind: team
+memory_scope: manager_view
+routing:
+  lead: briefing
+  handoffs:
+    - from: briefer
+      to: prepper
+      when: briefing_done
+default_workflows:
+  - daily_flow
+policies:
+  approvals:
+    required_for: [send_email]
+agents:
+  - role: briefing
+    id: briefer
+    required: true
+    agent:
+      name: Briefer
+      role: Briefs the user.
+      memory_scope: manager_view
+      tools: [notifications.send]
+      notifications:
+        channel: default
+      wake:
+        events: [task.assigned.briefer]
+        accepts_agent_requests: true
+      delegation:
+        enabled: true
+        allowed_backends: [dry_run]
+      permissions:
+        notifications: send
+        network: {mode: deny}
+        shell: {mode: deny}
+  - role: meeting prep
+    id: prepper
+    required: false
+workflows:
+  - id: daily_flow
+    name: Daily Flow
+    status: approved
+    trigger: {manual: true}
+    steps:
+      - id: notify
+        agent: briefer
+        action: notifications.send
+        input: {content: "hello {{teamId}}"}
+---
+"""
+
+
+def test_member_agent_map_passes_through_full_agent_yaml(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    summary = scaffold_team(paths.home, load_recipe(recipe_path),
+                            agents_dir=paths.agents, teams_dir=paths.teams,
+                            workflows_dir=paths.workflows)
+
+    # Explicit member id wins over <teamId>-<role>
+    assert summary["agents_written"] == ["briefer"]
+    briefer = load_agents(paths.agents)["briefer"]
+    # Full passthrough: every AgentConfig field from the recipe lands in the yaml
+    assert briefer.notifications == {"channel": "default"}
+    assert briefer.memory_scope == "manager_view"
+    assert briefer.wake["events"] == ["task.assigned.briefer"]
+    assert briefer.wake["accepts_agent_requests"] is True
+    assert briefer.delegation["enabled"] is True
+    assert briefer.permissions["notifications"] == "send"
+
+
+def test_membership_only_members_listed_but_not_scaffolded(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    summary = scaffold_team(paths.home, load_recipe(recipe_path),
+                            agents_dir=paths.agents, teams_dir=paths.teams,
+                            workflows_dir=paths.workflows)
+
+    assert "prepper" not in summary["agents_written"]
+    assert not (paths.agents / "prepper.yaml").exists()              # no yaml generated
+    team = load_teams(paths.teams)["admin-team"]
+    prepper = next(m for m in team.agents if m["id"] == "prepper")   # ...but on the roster
+    assert prepper["required"] is False
+
+
+def test_team_yaml_passthrough_and_lead_resolution(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path),
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+
+    team = load_teams(paths.teams)["admin-team"]
+    assert team.memory_scope == "manager_view"
+    assert team.default_workflows == ["daily_flow"]
+    assert team.policies["approvals"]["required_for"] == ["send_email"]
+    # routing.lead names the ROLE; resolved to that member's explicit id
+    assert team.routing["default_assignee"] == "briefer"
+    assert team.routing["handoffs"][0]["to"] == "prepper"
+
+
+def test_embedded_workflows_written_create_only(tmp_path: Path) -> None:
+    from jigga.core.config import load_workflows
+
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    summary = scaffold_team(paths.home, load_recipe(recipe_path),
+                            agents_dir=paths.agents, teams_dir=paths.teams,
+                            workflows_dir=paths.workflows)
+
+    assert summary["workflows_written"] == ["daily_flow"]
+    flow = load_workflows(paths.workflows)["daily_flow"]
+    assert flow.steps[0].input["content"] == "hello admin-team"      # {{teamId}} templated
+
+    # create-only: a hand-edit survives re-scaffold
+    (paths.workflows / "daily_flow.yaml").write_text(
+        "id: daily_flow\nname: EDITED\nsteps: []\n", encoding="utf-8")
+    again = scaffold_team(paths.home, load_recipe(recipe_path),
+                          agents_dir=paths.agents, teams_dir=paths.teams,
+                          workflows_dir=paths.workflows)
+    assert again["workflows_written"] == [] and again["workflows_skipped"] == ["daily_flow"]
+    assert load_workflows(paths.workflows)["daily_flow"].name == "EDITED"
+
+
+# --- recipes CLI ---------------------------------------------------------------
+
+
+def test_cli_recipes_list_and_show(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "list", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    ids = {r["id"] for r in listed}
+    assert {"marketing_team", "personal_admin_team", "social_content_team", "researcher"} <= ids
+
+    assert main(["--home", str(tmp_path), "recipes", "show", "personal-admin-team", "--json"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["id"] == "personal_admin_team" and shown["kind"] == "team"
+    briefing = next(a for a in shown["agents"] if a["id"] == "daily_briefing_agent")
+    assert briefing["scaffolded"] is True
+    prep = next(a for a in shown["agents"] if a["id"] == "meeting_prep_agent")
+    assert prep["scaffolded"] is False and prep["required"] is False
+    assert "morning_day_summary" in shown["workflows"]
+
+
+def test_cli_recipes_show_unknown_recipe_fails(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "show", "nope"]) == 1
+    assert "not found" in capsys.readouterr().out.lower()
+
+
+def test_recipe_summary_shapes() -> None:
+    bundled = Path(__file__).resolve().parents[1] / "examples" / "recipes"
+    team = recipe_summary(load_recipe(bundled / "social-content-team.md"))
+    assert team["kind"] == "team"
+    assert any(a["id"] == "linkedin_writer" and not a["scaffolded"] for a in team["agents"])
+    solo = recipe_summary(load_recipe(bundled / "researcher.md"))
+    assert solo["kind"] == "agent" and solo["agents"][0]["scaffolded"] is True
+
+
+# --- files / templates --------------------------------------------------------
 
 FILES_RECIPE = """---
 id: docs-team
@@ -196,8 +378,9 @@ files:
     content: "nope"
 agents:
   - role: lead
-    name: Lead
-    tools: [draft_with_model]
+    agent:
+      name: Lead
+      tools: [draft_with_model]
 ---
 """
 

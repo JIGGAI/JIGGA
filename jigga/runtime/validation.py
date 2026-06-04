@@ -3,7 +3,7 @@
 The runtime *tolerates* malformed config (a bad cron simply never fires; a
 malformed `routing.handoffs` is ignored) so a single bad file can't crash the
 supervisor tick. This module is the other half: catch those problems at
-**authoring time** — `jigga validate` reports them, and `jigga team scaffold`
+**authoring time** — `jigga validate` reports them, and `jigga recipes scaffold`
 refuses to write a recipe that produces them — so the author gets a clear error
 instead of an agent that mysteriously never wakes or never hands off.
 

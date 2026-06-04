@@ -5,7 +5,7 @@ from pathlib import Path
 from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_workflows
-from jigga.core.io import write_yaml
+from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.subagents import SpawnSubagentInput, SubagentSession, _restricted_env, _truncate_summary, list_sessions, read_session, spawn_subagent, write_session
 from jigga.runtime.workflow import plan_workflow, run_workflow
@@ -91,13 +91,9 @@ def test_claude_code_requires_global_flag_even_when_on_agent_allowlist(tmp_path:
     # Add claude_code to the agent's allowed_backends; the global flag should
     # still be required.
     agent_yaml = paths.agents / "content_strategist.yaml"
-    agent_yaml.write_text(
-        agent_yaml.read_text(encoding="utf-8").replace(
-            "allowed_backends:\n    - dry_run",
-            "allowed_backends:\n    - dry_run\n    - claude_code",
-        ),
-        encoding="utf-8",
-    )
+    agent_doc = read_yaml(agent_yaml)
+    agent_doc["delegation"]["allowed_backends"].append("claude_code")
+    write_yaml(agent_yaml, agent_doc)
     agent = load_agents(paths.agents)["content_strategist"]
     try:
         spawn_subagent(paths.home, paths.logs, paths.sessions, agent, _spawn_payload(backend="claude_code"))

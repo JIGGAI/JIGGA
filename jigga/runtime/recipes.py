@@ -7,21 +7,30 @@ describes a team and its member roles; `scaffold_team` generates the JIGGA agent
 `jigga init --examples` (file copy) and `jigga team init` (workspace only) are
 not — actual generation of new agents/teams from a template.
 
-Recipe shape (frontmatter):
-    id / name / kind: team / version / description / purpose
-    routing: {lead: <role>}
+Recipe shape (frontmatter) — recipes are THE example/install format
+(`jigga recipes list|show|scaffold`):
+    id / name / kind: team|agent / version / description / purpose
+    memory_scope / default_workflows / policies   # team-yaml passthrough
+    routing:                       # team-yaml passthrough (incl. handoffs);
+      lead: <role>                 # `lead:` is sugar → routing.default_assignee
     agents:
-      - role: lead
-        name: "{{teamName}} Lead"
-        description: ...
-        tools: [draft_with_model]
-        model: profile:default        # optional
-        permissions: {...}            # optional
+      - role: strategy             # team-membership role key
+        id: marketing_lead         # explicit agent id (default: <teamId>-<role>)
+        required: true
+        agent: {...}               # full agent-yaml passthrough (every AgentConfig
+                                   # field: wake, notifications, delegation, ...)
+                                   # + `cronJobs` sugar → wake.schedules
+      - role: meeting prep         # no `agent:` map → membership-only: listed
+        id: meeting_prep_agent     # on the team, no agent yaml generated
+        required: false
+    workflows: [{id: ..., steps: [...]}, ...]
+                                   # full workflow docs written to workflows/ at
+                                   # scaffold time — a recipe is a self-contained
+                                   # installable unit
+    files: / templates:            # extra workspace files, templated, createOnly
 
-Now also supported: `cronJobs` (scheduled work-loops → agent `wake.schedules`),
-per-role `permissions`/`tools`, `kind: agent` single-agent recipes, and
-`files:`/`templates:` (extra workspace files written at scaffold time, templated,
-create-only by default). This completes the W4 recipe surface.
+`kind: agent` recipes define one top-level `agent:` map instead of `agents:`;
+the solo agent gets its own workspace.
 """
 
 from __future__ import annotations
@@ -180,18 +189,30 @@ def _wake_from_cronjobs(cronjobs: Any, ctx: dict[str, str]) -> dict[str, Any]:
     return {"schedules": schedules} if schedules else {}
 
 
-def _agent_doc(*, agent_id: str, name: str, role: str, tools: Any, model: Any,
-               permissions: Any, cronjobs: Any, ctx: dict[str, str]) -> dict[str, Any]:
-    doc = {
-        "id": agent_id,
-        "name": _template(name, ctx),
-        "role": _template(role, ctx),
-        "memory_scope": "task_only",
-        "model": model or "profile:default",
-        "tools": _template(list(tools or []), ctx),
-        "permissions": dict(permissions or {"network": {"mode": "ask"}, "shell": {"mode": "deny"}}),
-    }
-    wake = _wake_from_cronjobs(cronjobs, ctx)
+def defines_agent(spec: dict[str, Any]) -> bool:
+    """True when a team-recipe member spec defines an agent to scaffold (it
+    carries an `agent:` map). A member with only id/role/required is
+    membership-only: listed on the team, no agent yaml written — how a team
+    references optional roles the user staffs later (e.g. meeting_prep_agent)."""
+    return isinstance(spec.get("agent"), dict)
+
+
+def _finalize_agent_doc(agent_id: str, definition: dict[str, Any],
+                        ctx: dict[str, str]) -> dict[str, Any]:
+    """Template the `agent:` definition (full agent-yaml passthrough — every
+    AgentConfig field), apply scaffold defaults, and fold `cronJobs` sugar into
+    `wake.schedules` (merged with any `wake:` the definition already carries —
+    events, accepts_agent_requests, explicit schedules)."""
+    doc: dict[str, Any] = {"id": agent_id}
+    doc.update(_template({k: v for k, v in definition.items() if k != "cronJobs"}, ctx))
+    doc.setdefault("memory_scope", "task_only")
+    doc.setdefault("model", "profile:default")
+    doc.setdefault("tools", [])
+    doc.setdefault("permissions", {"network": {"mode": "ask"}, "shell": {"mode": "deny"}})
+    wake = dict(doc.get("wake") or {})
+    cron_wake = _wake_from_cronjobs(definition.get("cronJobs"), ctx)
+    if cron_wake:
+        wake["schedules"] = list(wake.get("schedules") or []) + cron_wake["schedules"]
     if wake:
         doc["wake"] = wake
         # Fail fast on a malformed cron in the recipe rather than scaffolding an
@@ -205,26 +226,74 @@ def _agent_doc(*, agent_id: str, name: str, role: str, tools: Any, model: Any,
     return doc
 
 
+def _write_recipe_workflows(workflows_dir: Path, recipe: Recipe, ctx: dict[str, str],
+                            *, overwrite: bool) -> dict[str, list[str]]:
+    """Write the recipe's embedded `workflows:` (full workflow documents in the
+    frontmatter) into the runtime workflows dir — a recipe is a self-contained
+    installable unit: agents + team + the workflows they run. Templated;
+    create-only unless `overwrite` (same contract as agents/teams)."""
+    written: list[str] = []
+    skipped: list[str] = []
+    for doc in recipe.meta.get("workflows") or []:
+        if not isinstance(doc, dict) or not doc.get("id"):
+            continue
+        doc = _template(doc, ctx)
+        path = workflows_dir / f"{doc['id']}.yaml"
+        if path.exists() and not overwrite:
+            skipped.append(str(doc["id"]))
+            continue
+        ensure_dir(workflows_dir)
+        write_yaml(path, doc)
+        written.append(str(doc["id"]))
+    return {"written": written, "skipped": skipped}
+
+
+def recipe_summary(recipe: Recipe) -> dict[str, Any]:
+    """What a recipe would scaffold — for `jigga recipes show` (and the UI)."""
+    summary: dict[str, Any] = {
+        "id": recipe.id, "name": recipe.name, "kind": recipe.kind,
+        "version": recipe.version, "description": recipe.description,
+        "purpose": recipe.purpose, "source": recipe.source,
+        "workflows": [str(w["id"]) for w in recipe.meta.get("workflows") or []
+                      if isinstance(w, dict) and w.get("id")],
+        "files": [str(f["path"]) for f in recipe.meta.get("files") or []
+                  if isinstance(f, dict) and f.get("path")],
+    }
+    if recipe.kind == "agent":
+        summary["agents"] = [{"id": recipe.id, "role": "solo", "scaffolded": True}]
+    else:
+        summary["agents"] = [
+            {"id": str(spec.get("id") or "{{teamId}}-" + str(spec.get("role") or "?")),
+             "role": str(spec.get("role") or spec.get("id") or "?"),
+             "required": bool(spec.get("required", True)),
+             "scaffolded": defines_agent(spec)}
+            for spec in recipe.agents
+        ]
+    return summary
+
+
 def scaffold_agent(
     home: Path, recipe: Recipe, *, agent_id: str | None = None, overwrite: bool = False,
-    agents_dir: Path | None = None,
+    agents_dir: Path | None = None, workflows_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Scaffold a single agent from a `kind: agent` recipe (its top-level
-    frontmatter defines the agent). Create-only unless `overwrite`."""
+    `agent:` map defines the agent), plus any embedded `workflows:`.
+    Create-only unless `overwrite`."""
     if recipe.kind != "agent":
         raise ValueError(f"scaffold_agent requires kind: agent (got {recipe.kind!r})")
+    agent_map = recipe.meta.get("agent")
+    if not isinstance(agent_map, dict):
+        raise ValueError(f"Recipe {recipe.id!r} (kind: agent) needs an `agent:` map defining the agent")
     home = Path(home)
     agent_id = agent_id or recipe.id
     agents_dir = agents_dir or home / "agents"
+    workflows_dir = workflows_dir or home / "workflows"
     ensure_dir(agents_dir)
     ctx = {"agentId": agent_id, "agentName": recipe.name, "teamId": agent_id, "teamName": recipe.name}
-    meta = recipe.meta
-    doc = _agent_doc(
-        agent_id=agent_id, name=recipe.name,
-        role=meta.get("description") or recipe.description or recipe.name,
-        tools=meta.get("tools"), model=meta.get("model"), permissions=meta.get("permissions"),
-        cronjobs=meta.get("cronJobs"), ctx=ctx,
-    )
+    definition = dict(agent_map)
+    definition.setdefault("name", recipe.name)
+    definition.setdefault("role", recipe.description or recipe.name)
+    doc = _finalize_agent_doc(agent_id, definition, ctx)
     path = agents_dir / f"{agent_id}.yaml"
     written = overwrite or not path.exists()
     if written:
@@ -236,26 +305,34 @@ def scaffold_agent(
                                       "routing": {"default_assignee": agent_id}})
     workspace = scaffold_workspace(home, solo_team)
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
+    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
     return {"kind": "agent", "agent_id": agent_id, "agent_file": str(path), "written": written,
             "scheduled": bool(doc.get("wake")), "workspace": workspace["workspace"],
-            "files_written": files["written"], "files_skipped": files["skipped"]}
+            "files_written": files["written"], "files_skipped": files["skipped"],
+            "workflows_written": workflows["written"], "workflows_skipped": workflows["skipped"]}
 
 
 def scaffold_team(
     home: Path, recipe: Recipe, *, team_id: str | None = None, overwrite: bool = False,
     agents_dir: Path | None = None, teams_dir: Path | None = None,
+    workflows_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Generate `<teamId>-<role>` agent YAMLs + a team YAML from a recipe, then
-    scaffold the workspace. Existing files are skipped unless `overwrite`."""
+    """Generate agent YAMLs + a team YAML + embedded workflows from a recipe,
+    then scaffold the workspace. Members default to `<teamId>-<role>` ids; an
+    explicit `id:` pins one. Members without an agent definition are
+    membership-only (listed on the team, no yaml). Existing files are skipped
+    unless `overwrite`."""
     if recipe.kind != "team":
         raise ValueError(f"scaffold_team requires kind: team (got {recipe.kind!r})")
     home = Path(home)
     team_id = team_id or recipe.id
     agents_dir = agents_dir or home / "agents"
     teams_dir = teams_dir or home / "teams"
+    workflows_dir = workflows_dir or home / "workflows"
     ensure_dir(agents_dir)
     ensure_dir(teams_dir)
     ctx = {"teamId": team_id, "teamName": recipe.name}
+    meta = recipe.meta
 
     lead_role = recipe.routing.get("lead") or (recipe.agents[0].get("role") if recipe.agents else None)
     members: list[dict[str, Any]] = []
@@ -263,29 +340,41 @@ def scaffold_team(
     skipped: list[str] = []
     for spec in recipe.agents:
         role = str(spec.get("role") or spec.get("id"))
-        agent_id = f"{team_id}-{role}"
-        agent_doc = _agent_doc(
-            agent_id=agent_id, name=spec.get("name") or role.title(),
-            role=spec.get("description") or spec.get("role") or role,
-            tools=spec.get("tools"), model=spec.get("model"), permissions=spec.get("permissions"),
-            cronjobs=spec.get("cronJobs"), ctx=ctx,
-        )
+        agent_id = str(spec.get("id") or f"{team_id}-{role}")
+        members.append({"id": agent_id, "role": role, "required": bool(spec.get("required", True))})
+        if not defines_agent(spec):
+            continue  # membership-only: on the roster, staffed later
+        definition = dict(spec["agent"])
+        definition.setdefault("name", role.title())
+        definition.setdefault("role", role)
+        agent_doc = _finalize_agent_doc(agent_id, definition, ctx)
         path = agents_dir / f"{agent_id}.yaml"
         if path.exists() and not overwrite:
             skipped.append(agent_id)
         else:
             write_yaml(path, agent_doc)
             written.append(agent_id)
-        members.append({"id": agent_id, "role": role, "required": True})
 
-    lead_id = f"{team_id}-{lead_role}" if lead_role else (members[0]["id"] if members else None)
-    team_doc = {
+    lead_id = None
+    if lead_role:
+        lead_id = next((m["id"] for m in members if m["role"] == str(lead_role)),
+                       f"{team_id}-{lead_role}")
+    elif members:
+        lead_id = members[0]["id"]
+    # `routing:` passes through whole (default_assignee, handoffs, ...);
+    # `lead:` is recipe-only sugar resolved to default_assignee above.
+    routing = _template({k: v for k, v in dict(meta.get("routing") or {}).items() if k != "lead"}, ctx)
+    routing.setdefault("default_assignee", lead_id)
+    team_doc: dict[str, Any] = {
         "id": team_id,
         "name": _template(recipe.name, ctx),
         "purpose": _template(recipe.purpose, ctx) if recipe.purpose else None,
         "agents": members,
-        "routing": {"default_assignee": lead_id},
+        "routing": routing,
     }
+    for key in ("memory_scope", "default_workflows", "policies"):
+        if meta.get(key) is not None:
+            team_doc[key] = _template(meta[key], ctx)
     team_path = teams_dir / f"{team_id}.yaml"
     team_written = overwrite or not team_path.exists()
     if team_written:
@@ -293,9 +382,11 @@ def scaffold_team(
 
     workspace = scaffold_workspace(home, TeamConfig.from_dict(team_doc))
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
+    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
     return {
         "team_id": team_id, "team_file": str(team_path), "team_written": team_written,
         "agents_written": written, "agents_skipped": skipped, "lead": lead_id,
         "workspace": workspace["workspace"],
         "files_written": files["written"], "files_skipped": files["skipped"],
+        "workflows_written": workflows["written"], "workflows_skipped": workflows["skipped"],
     }
