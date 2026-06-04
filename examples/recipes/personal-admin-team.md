@@ -32,6 +32,7 @@ agents:
         - email.search
         - notifications.send
         - memory.write_summary
+        - memory.search
       # Where notifications.send reaches the user: "default" = the user's default
       # connected channel (config channels.default, set when they connect one), or
       # a specific channel name, or "desktop" for desktop-notification only.
