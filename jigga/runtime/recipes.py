@@ -41,8 +41,11 @@ from typing import Any
 
 import yaml
 
-from jigga.core.io import ensure_dir, write_yaml
-from jigga.core.models import TeamConfig
+import hashlib
+import re
+
+from jigga.core.io import ensure_dir, read_json, write_json, write_yaml
+from jigga.core.models import TeamConfig, now_iso
 from jigga.core.paths import examples_dir
 from jigga.runtime.workspaces import scaffold_workspace
 
@@ -248,6 +251,91 @@ def _write_recipe_workflows(workflows_dir: Path, recipe: Recipe, ctx: dict[str, 
     return {"written": written, "skipped": skipped}
 
 
+# --- install records ---------------------------------------------------------
+# Scaffolding writes a provenance record per install: which recipe (id/version/
+# source), what it created, and each artifact's content hash AS WRITTEN. This
+# is what `jigga recipes installed` reads, and the pristine-vs-locally-edited
+# signal `jigga update` (#88) reconciles against.
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _records_dir(home: Path) -> Path:
+    return Path(home) / "state" / "recipes"
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _rel_to_home(path: Path, home: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(Path(home).resolve()))
+    except ValueError:
+        return str(path)
+
+
+def _record_install(home: Path, recipe: Recipe, *, scaffold_id: str,
+                    managed: list[Path], written: list[Path]) -> dict[str, Any]:
+    """Write/merge the install record. `managed` is every artifact the recipe
+    owns; hashes are refreshed only for files `written` THIS run, so a re-
+    scaffold that skips a user-edited file keeps the as-installed hash (the
+    edit stays detectable as drift)."""
+    home = Path(home)
+    records_dir = _records_dir(home)
+    ensure_dir(records_dir)
+    record_path = records_dir / f"{_SAFE_NAME.sub('_', scaffold_id)}.json"
+    existing = read_json(record_path) if record_path.exists() else {}
+    hashes = dict(existing.get("hashes") or {})
+    for path in written:
+        digest = _sha256(path)
+        if digest:
+            hashes[_rel_to_home(path, home)] = digest
+    record = {
+        "recipe_id": recipe.id,
+        "kind": recipe.kind,
+        "version": recipe.version,
+        "source": recipe.source,
+        "scaffold_id": scaffold_id,
+        "installed_at": existing.get("installed_at") or now_iso(),
+        "updated_at": now_iso(),
+        "artifacts": sorted({_rel_to_home(p, home) for p in managed}),
+        "hashes": hashes,
+    }
+    write_json(record_path, record)
+    return record
+
+
+def installed_recipes(home: Path) -> list[dict[str, Any]]:
+    """All install records, each annotated with current drift: `modified`
+    (content no longer matches the as-written hash) and `missing` (artifact
+    deleted). The CLI and the UI read this; `jigga update` (#88) will act on it."""
+    home = Path(home)
+    records_dir = _records_dir(home)
+    if not records_dir.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(records_dir.glob("*.json")):
+        record = read_json(path)
+        if not isinstance(record, dict):
+            continue
+        modified: list[str] = []
+        missing: list[str] = []
+        for rel, digest in (record.get("hashes") or {}).items():
+            artifact = home / rel
+            if not artifact.exists():
+                missing.append(rel)
+            elif _sha256(artifact) != digest:
+                modified.append(rel)
+        record["modified"] = sorted(modified)
+        record["missing"] = sorted(missing)
+        records.append(record)
+    return records
+
+
 def recipe_summary(recipe: Recipe) -> dict[str, Any]:
     """What a recipe would scaffold — for `jigga recipes show` (and the UI)."""
     summary: dict[str, Any] = {
@@ -306,6 +394,11 @@ def scaffold_agent(
     workspace = scaffold_workspace(home, solo_team)
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
     workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
+    managed = [path] + [workflows_dir / f"{wid}.yaml"
+                        for wid in workflows["written"] + workflows["skipped"]]
+    written_paths = ([path] if written else []) + [workflows_dir / f"{wid}.yaml"
+                                                   for wid in workflows["written"]]
+    _record_install(home, recipe, scaffold_id=agent_id, managed=managed, written=written_paths)
     return {"kind": "agent", "agent_id": agent_id, "agent_file": str(path), "written": written,
             "scheduled": bool(doc.get("wake")), "workspace": workspace["workspace"],
             "files_written": files["written"], "files_skipped": files["skipped"],
@@ -383,6 +476,12 @@ def scaffold_team(
     workspace = scaffold_workspace(home, TeamConfig.from_dict(team_doc))
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
     workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
+    managed = ([agents_dir / f"{aid}.yaml" for aid in written + skipped] + [team_path]
+               + [workflows_dir / f"{wid}.yaml" for wid in workflows["written"] + workflows["skipped"]])
+    written_paths = ([agents_dir / f"{aid}.yaml" for aid in written]
+                     + ([team_path] if team_written else [])
+                     + [workflows_dir / f"{wid}.yaml" for wid in workflows["written"]])
+    _record_install(home, recipe, scaffold_id=team_id, managed=managed, written=written_paths)
     return {
         "team_id": team_id, "team_file": str(team_path), "team_written": team_written,
         "agents_written": written, "agents_skipped": skipped, "lead": lead_id,

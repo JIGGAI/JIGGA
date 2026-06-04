@@ -438,3 +438,103 @@ def test_scheduled_workloop_message_becomes_task_description(tmp_path: Path) -> 
         supervisor_tick(paths.home)
     looper_tasks = [t for t in list_tasks(paths.tasks) if t.assignee == "looper"]
     assert looper_tasks and looper_tasks[0].description == "do the loop work"
+
+
+# --- install records (recipes installed) --------------------------------------
+
+
+def test_scaffold_writes_install_record_with_hashes(tmp_path: Path) -> None:
+    from jigga.runtime.recipes import installed_recipes
+
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path),
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+
+    records = installed_recipes(paths.home)
+    record = next(r for r in records if r["scaffold_id"] == "admin-team")
+    assert record["recipe_id"] == "admin-team" and record["kind"] == "team"
+    assert "agents/briefer.yaml" in record["artifacts"]
+    assert "teams/admin-team.yaml" in record["artifacts"]
+    assert "workflows/daily_flow.yaml" in record["artifacts"]
+    # membership-only members own no artifact
+    assert not any("prepper" in a for a in record["artifacts"])
+    # pristine right after install
+    assert record["modified"] == [] and record["missing"] == []
+    assert set(record["hashes"]) == set(record["artifacts"])
+
+
+def test_installed_recipes_reports_local_edits_and_missing(tmp_path: Path) -> None:
+    from jigga.runtime.recipes import installed_recipes
+
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path),
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+
+    (paths.agents / "briefer.yaml").write_text("id: briefer\nname: EDITED\nrole: x\n", encoding="utf-8")
+    (paths.workflows / "daily_flow.yaml").unlink()
+
+    record = installed_recipes(paths.home)[0]
+    assert record["modified"] == ["agents/briefer.yaml"]
+    assert record["missing"] == ["workflows/daily_flow.yaml"]
+
+
+def test_rescaffold_skip_preserves_drift_detection(tmp_path: Path) -> None:
+    """A re-scaffold that SKIPS a user-edited file must not re-hash it — the
+    as-installed hash stays, so the edit remains detectable as drift."""
+    from jigga.runtime.recipes import installed_recipes
+
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "admin.md"
+    recipe_path.write_text(FIDELITY_RECIPE, encoding="utf-8")
+    scaffold_team(paths.home, load_recipe(recipe_path),
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+    (paths.agents / "briefer.yaml").write_text("id: briefer\nname: EDITED\nrole: x\n", encoding="utf-8")
+
+    scaffold_team(paths.home, load_recipe(recipe_path),  # create-only: skips the edited file
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+    record = installed_recipes(paths.home)[0]
+    assert record["modified"] == ["agents/briefer.yaml"]
+
+    # --overwrite re-writes it → pristine again
+    scaffold_team(paths.home, load_recipe(recipe_path), overwrite=True,
+                  agents_dir=paths.agents, teams_dir=paths.teams, workflows_dir=paths.workflows)
+    record = installed_recipes(paths.home)[0]
+    assert record["modified"] == []
+
+
+def test_agent_kind_scaffold_writes_record(tmp_path: Path) -> None:
+    from jigga.runtime.recipes import installed_recipes
+
+    paths = init_runtime(tmp_path)
+    recipe_path = tmp_path / "r.md"
+    recipe_path.write_text(AGENT_RECIPE, encoding="utf-8")
+    scaffold_agent(paths.home, load_recipe(recipe_path), agent_id="rsx", agents_dir=paths.agents)
+    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "rsx")
+    assert record["kind"] == "agent" and record["recipe_id"] == "researcher"
+    assert record["artifacts"] == ["agents/rsx.yaml"]
+
+
+def test_cli_recipes_installed_and_list_marker(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "installed", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == []                 # nothing yet
+
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "personal-admin-team"]) == 0
+    capsys.readouterr()
+
+    assert main(["--home", str(tmp_path), "recipes", "installed", "--json"]) == 0
+    records = json.loads(capsys.readouterr().out)
+    assert [r["recipe_id"] for r in records] == ["personal_admin_team"]
+
+    assert main(["--home", str(tmp_path), "recipes", "list", "--json"]) == 0
+    listed = {r["id"]: r["installed"] for r in json.loads(capsys.readouterr().out)}
+    assert listed["personal_admin_team"] is True
+    assert listed["marketing_team"] is False
+
+    assert main(["--home", str(tmp_path), "recipes", "installed"]) == 0
+    out = capsys.readouterr().out
+    assert "personal_admin_team" in out and "1 agents, 2 workflows" in out
