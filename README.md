@@ -39,7 +39,7 @@ Three things make it distinctive in practice:
 - **Always-on supervisor daemon** — cron/event/channel-driven; wakes temporary agents; loop-prevention (wake throttle + cron dedup).
 - **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
-- **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga recipes scaffold`), and **file-first handoffs** with an auditable decision log.
+- **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga recipes scaffold`), **file-first handoffs** with an auditable decision log, and an **agent mailbox** — durable agent→agent / human→agent messages that wake the recipient on the next tick (`jigga mailbox send`).
 - **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation** (incl. **local `codex` / `claude` CLI backends**, run directly instead of via API), **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
 - **Channels** — a normalized **Telegram** gateway (supervisor-polled, activation modes, `jigga channels setup`) with an **approval queue routed back to the channel** (`approve <code>`).
 - **Model routing** — dry-run, any OpenAI-compatible endpoint, and **ChatGPT-subscription (OAuth, no API key)**, with provider fallback.
@@ -50,7 +50,7 @@ Three things make it distinctive in practice:
 
 **Agents as infrastructure.** You declare agents, teams, workflows, and policies as code — versioned, diffable, reproducible, scaffolded from recipes, and rolled out with `jigga plan` / `apply`. You manage your AI workforce the way you manage infrastructure, not by clicking around a UI.
 
-**File-first.** Everything lives as plain files on disk under `~/.jigga/` — config, memory, tasks, logs, and coordination (handoffs, decisions). No hidden database, no ephemeral message bus. If it happened, there's a file for it: readable, greppable, version-controllable, and auditable.
+**File-first.** Everything lives as plain files on disk under `~/.jigga/` — config, memory, tasks, logs, and coordination (handoffs, decisions, mailbox messages). No hidden database, no ephemeral message bus. If it happened, there's a file for it: readable, greppable, version-controllable, and auditable.
 
 **You own your data, and it's portable.** Your agents, memory, history, and config are your files — copy, back up, or version the `~/.jigga/` directory and your entire AI workforce moves with it to another machine. JIGGA never *requires* your personal details to live on a third-party server; you bring your own model and credentials, which stay local.
 
@@ -249,6 +249,7 @@ jigga doctor                       # health check: runtime, config, model, chann
 jigga plan | apply | validate      # show, gate, and apply config changes (agents-as-code)
 jigga recipes scaffold <recipe>    # create agents + team + workflows + workspace from a recipe
 jigga team run|handoff|decisions   # run a team / fire a handoff / read the decision log
+jigga mailbox send|list            # message an agent's inbox (it wakes and reads on the next tick)
 jigga workflow plan|run <id>       # plan or run a workflow
 jigga run agent <id>               # run one agent
 jigga supervisor start|tick        # the always-on daemon (or a single tick)

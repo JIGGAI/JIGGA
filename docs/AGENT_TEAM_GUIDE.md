@@ -204,6 +204,32 @@ jigga team handoff acme --from acme-lead --signal brief_ready   # fire manually
 jigga team decisions acme                                       # read the log
 ```
 
+### Mailbox (free-form messages, file-first)
+Handoffs route *structured* work; the **mailbox** carries everything else —
+ad-hoc notes, questions, FYIs — agent→agent or human→agent. One JSON file per
+message in the recipient's workspace inbox
+(`workspaces/<team>/roles/<member>/inbox/<msg_id>.json`); nothing ephemeral.
+
+The delivery loop:
+1. Send: the `mailbox.send` capability (payload `{to, body, subject?}` —
+   delivery resolves the **recipient's** home workspace, so cross-team sends
+   land where the recipient wakes), or as a human:
+   ```bash
+   jigga mailbox send assistant --body "review the aurora draft" --subject brief
+   jigga mailbox list assistant --unread
+   ```
+2. Wake: an unread message **wakes its recipient within a tick** (~30s) — the
+   supervisor queues a check-your-inbox task, subject to the normal per-agent
+   wake throttle, so two agents can't ping each other into a loop.
+3. Read: unread messages appear in the recipient's context pack ("Your inbox",
+   a private layer — group/channel sessions never see it). After a
+   **successful** run they're marked read (`read_at` annotated in place); a
+   failed run re-sees them next wake.
+
+Messages are never moved or deleted — the inbox is a complete correspondence
+record, greppable and searchable via `memory.search`. Audit events:
+`mailbox.sent`, `mailbox.read`, `supervisor.mail_wake`.
+
 ### Approvals (human-in-the-loop)
 A medium/high-risk action by a non-`autonomous` agent **pauses** for approval:
 JIGGA parks a code-gated approval and asks on the originating channel. Reply
