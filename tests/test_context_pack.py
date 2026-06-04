@@ -63,14 +63,19 @@ def test_restricted_session_omits_private_layers(tmp_path: Path) -> None:
     assert {"identity", "SOUL", "AGENTS", "TEAM", "TOOLS"}.issubset(set(layers))
 
 
-def test_authored_file_overrides_generated(tmp_path: Path) -> None:
+def test_authored_tools_md_adds_notes_but_never_hides_grants(tmp_path: Path) -> None:
+    """An authored TOOLS.md contributes usage NOTES on top of the generated
+    grant list — it must never replace it (an agent blinded to its own grants
+    is the #78 Telegram failure mode)."""
     paths = init_runtime(tmp_path)
     _setup(paths)
     (workspace_dir(paths.home, "mt") / "roles" / "writer" / "TOOLS.md").write_text(
         "# AUTHORED TOOLS POLICY\nNever fabricate stats.", encoding="utf-8")
-    text, _ = _assemble(paths)
-    assert "AUTHORED TOOLS POLICY" in text          # authored wins
-    assert "memory.search —" not in text             # generated list not used
+    text, layers = _assemble(paths)
+    assert "TOOLS" in layers
+    assert "AUTHORED TOOLS POLICY" in text           # authored notes appended...
+    assert "Your tool notes" in text
+    assert "`memory.search`" in text                 # ...but the live grant list still ships
 
 
 def test_missing_layers_are_skipped(tmp_path: Path) -> None:
@@ -118,3 +123,4 @@ def test_run_agent_restricted_task_withholds_private_context(tmp_path: Path) -> 
     assert "RJ" not in captured["system"]          # principal withheld in a public/group session
     assert "indie devs" not in captured["system"]  # private memory withheld
     assert "You are **Writer**" in captured["system"]   # identity still present
+

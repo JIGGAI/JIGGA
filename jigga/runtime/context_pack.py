@@ -80,6 +80,18 @@ def _gen_agents(agent: AgentConfig, team_id: str, teams: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _tools_layer(home: Path, team_id: str, member: str, agent: AgentConfig,
+                 registry: CapabilityRegistry) -> str:
+    """The generated grant list ALWAYS ships (it's the agent's live, enforced
+    allowlist — an authored file must never blind the agent to its grants);
+    an authored `roles/<id>/TOOLS.md` contributes usage NOTES on top."""
+    generated = _gen_tools(agent, registry)
+    notes = read_file(home, team_id, f"roles/{member}/TOOLS.md")
+    if notes and notes.strip():
+        return generated + "\n\n### Your tool notes\n" + _clip(notes)
+    return generated
+
+
 def _gen_tools(agent: AgentConfig, registry: CapabilityRegistry) -> str:
     # Effective tool allowlist, filtered to actions that resolve to a capability.
     allowed = list(agent.tools or [])
@@ -172,7 +184,7 @@ def assemble_agent_context(
         ("Your persona", authored(f"roles/{member}/SOUL.md"), "SOUL", False),
         ("Your role on the team", authored(f"roles/{member}/AGENTS.md") or _gen_agents(agent, team_id, teams), "AGENTS", False),
         ("Team charter", authored("TEAM.md"), "TEAM", False),
-        ("Your tools", authored(f"roles/{member}/TOOLS.md") or _gen_tools(agent, registry), "TOOLS", False),
+        ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False),
         ("What you know and have done", _memory_layer(home, team_id, member, memory_context, today), "MEMORY", True),
         ("Team shared context", _shared_context(home, team_id), "shared-context", False),
     ]
