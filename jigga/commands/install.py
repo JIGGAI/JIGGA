@@ -23,6 +23,7 @@ from typing import Callable
 
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.paths import JiggaPaths
+from jigga.runtime.term_select import Option, select_one, supports_picker
 from jigga.optional_capabilities import (
     OptionalCapability,
     get_optional,
@@ -168,6 +169,10 @@ def _prompt_for_capability(
     if not available:
         print_fn("No optional capabilities available yet.")
         return None
+    if supports_picker():
+        picked = select_one("Install an optional capability",
+                            [Option(label=cap.name, detail=cap.summary) for cap in available])
+        return available[picked] if picked is not None else None
     print_fn("\nAvailable optional capabilities:\n")
     for index, cap in enumerate(available, start=1):
         print_fn(f"  [{index}] {cap.name:24s} {cap.summary}")

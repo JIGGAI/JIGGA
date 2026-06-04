@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from jigga.core.io import write_yaml
 from jigga.core.paths import JiggaPaths
+from jigga.runtime.term_select import Option, select_one, supports_picker
 
 # Both roles get the same powers (all capabilities + cross-team read, per the
 # design); they differ in persona + how aggressively they delegate.
@@ -82,6 +83,13 @@ def _normalize_dirs(raw: str) -> list[str]:
 
 def _choose(input_fn: Callable[[str], str], print_fn: Callable[..., None],
             prompt: str, options: list[tuple[str, str]], default: str) -> str:
+    if supports_picker():
+        default_index = next((i for i, (key, _) in enumerate(options) if key == default), 0)
+        print_fn("")
+        picked = select_one(prompt, [Option(label=label, detail="(default)" if key == default else "")
+                                     for key, label in options],
+                            default_index=default_index)
+        return options[picked][0] if picked is not None else default
     print_fn(f"\n{prompt}")
     for i, (key, label) in enumerate(options, 1):
         marker = "  (default)" if key == default else ""
