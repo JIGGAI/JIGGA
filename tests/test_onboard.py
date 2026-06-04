@@ -80,3 +80,35 @@ def test_onboarding_grants_extra_directories(tmp_path: Path) -> None:
     assert evaluate_filesystem(agent, "~/Projects/site/index.md", "write").status == "allow"
     assert evaluate_filesystem(agent, "/data/reports/q1.csv", "read").status == "allow"
     assert evaluate_filesystem(agent, "~/other/secret.txt").status != "allow"   # not granted
+
+
+def test_onboarding_authors_identity_files_create_only(tmp_path: Path) -> None:
+    """The primary agent gets SOUL/AGENTS/MEMORY at setup (no TOOLS.md — the
+    tool layer is generated live from yaml grants); re-running setup never
+    clobbers the installer's edits."""
+    paths = init_runtime(tmp_path)
+    run_onboarding(paths, input_fn=_scripted(["RJ", "", "", "", ""]),
+                   print_fn=lambda *a, **k: None)
+    agent = load_agents(paths.agents)["chief"]
+    ws = ensure_agent_workspace(paths.home, paths.teams, agent)
+
+    soul = read_file(paths.home, ws, "roles/chief/SOUL.md")
+    charter = read_file(paths.home, ws, "roles/chief/AGENTS.md")
+    memory = read_file(paths.home, ws, "roles/chief/MEMORY.md")
+    assert soul and charter and memory
+    assert "Guardrails (read → act → write)" in charter
+    assert "MEMORY.md" in charter                              # guardrails point at the curated file
+    assert "Curate your durable notes" in memory
+    assert read_file(paths.home, ws, "roles/chief/TOOLS.md") is None
+
+    # create-only: a hand-edit survives a re-run (overwrite stays False)
+    from jigga.runtime.workspaces import workspace_dir
+    (workspace_dir(paths.home, ws) / "roles" / "chief" / "MEMORY.md").write_text("MINE", encoding="utf-8")
+    from jigga.commands.onboard import _write_persona
+    _write_persona(paths.home, "chief",
+                   {"name": "Chief of Staff", "posture": "p", "role": "r"}, "s", "", "")
+    assert read_file(paths.home, ws, "roles/chief/MEMORY.md") == "MINE"
+    _write_persona(paths.home, "chief",
+                   {"name": "Chief of Staff", "posture": "p", "role": "r"}, "s", "", "",
+                   overwrite=True)
+    assert "Curate your durable notes" in (read_file(paths.home, ws, "roles/chief/MEMORY.md") or "")

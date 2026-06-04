@@ -177,7 +177,8 @@ def run_onboarding(
             },
         })
         created = True
-        _write_persona(paths.home, agent_id, spec, _STYLES[style], purpose, call_you)
+        _write_persona(paths.home, agent_id, spec, _STYLES[style], purpose, call_you,
+                       overwrite=overwrite)
 
     echo(f"\n✓ Setup complete. Default agent: {spec['name']} (`{agent_id}`).")
     echo(f"  USER.md: {user_path}")
@@ -201,10 +202,14 @@ def _looks_filled(user_path: Path) -> bool:
 
 
 def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
-                   purpose: str, call_you: str) -> None:
-    """Author the default agent's SOUL.md (persona) + AGENTS.md (charter) in its
-    workspace, so the context pack injects them. Generated from the setup
-    choices — the installer can edit them afterward."""
+                   purpose: str, call_you: str, *, overwrite: bool = False) -> None:
+    """Author the default agent's identity files in its workspace — SOUL.md
+    (persona), AGENTS.md (charter + guardrails), and MEMORY.md (the agent's own
+    curated notes) — so the context pack injects them. No TOOLS.md: the tool
+    layer is generated live from the agent's yaml grants (an authored file
+    would drift; a hand-created TOOLS.md still contributes usage notes via the
+    context pack). Generated from the setup choices; create-only (the
+    installer's edits are theirs) unless `overwrite`."""
     from jigga.core.config import load_agents
     from jigga.core.io import ensure_dir
     from jigga.runtime.workspaces import ensure_agent_workspace, workspace_dir
@@ -216,7 +221,6 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
     role_dir = workspace_dir(home, ws_id) / "roles" / agent_id
     ensure_dir(role_dir)
     soul = (f"# SOUL — {spec['name']}\n{spec['posture']}\n\n{style_line}\n")
-    (role_dir / "SOUL.md").write_text(soul, encoding="utf-8")
     charter = [f"# {spec['name']} — charter", "", spec["role"], ""]
     if purpose:
         charter += [f"**Purpose of this install:** {purpose}", ""]
@@ -225,5 +229,29 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
         "- You can see every team: `team.list`, `team.status`.",
         "- You dispatch work: `task.assign` (to any agent) and `team.run`.",
         "- Commands go through the task queue + audit log — keep them auditable.",
+        "",
+        "## Guardrails (read → act → write)",
+        "Before you act:",
+        "- Read the task fully; check your MEMORY.md for relevant context.",
+        "- Working with a team? Read its `notes/plan.md` and `notes/status.md` first.",
+        "After you act:",
+        "- Put outputs where the task asks (else `shared-context/agent-outputs/`).",
+        "- Record durable lessons in your MEMORY.md; keep work small and reversible.",
     ]
-    (role_dir / "AGENTS.md").write_text("\n".join(charter) + "\n", encoding="utf-8")
+    memory = [
+        f"# MEMORY — {spec['name']}",
+        "",
+        "_Curate your durable notes here: stable facts about your principal,",
+        "decisions with lasting consequences, lessons learned. Keep it short and",
+        "current — prune what stops being true. This file is injected into your",
+        "context every wake; the structured memory system records everything else._",
+    ]
+    files = {
+        "SOUL.md": soul,
+        "AGENTS.md": "\n".join(charter) + "\n",
+        "MEMORY.md": "\n".join(memory) + "\n",
+    }
+    for name, content in files.items():
+        path = role_dir / name
+        if overwrite or not path.exists():
+            path.write_text(content, encoding="utf-8")
