@@ -1,11 +1,18 @@
-"""Keyword search over memory (Milestone D, slice D1).
+"""Keyword search over memory (Milestone D, slice D1; coverage extended #96).
 
-Indexes the memory tree — `raw/` entries + `structured/` and `summaries/` docs —
-into a sqlite **FTS5** table under `memory/indexes/`, and answers
+Indexes into a sqlite **FTS5** table under `memory/indexes/` and answers
 `search_memory(query, scope)` with ranked snippets. The index rebuilds on demand
 and when stale (a source file changed since the last build). If FTS5 isn't
 compiled into sqlite, it falls back to a plain tokenized scan — same results,
 just no persistent index.
+
+Coverage (#96 — the Hermes contract: the resident context baseline (#86) stays
+small because everything beyond it is one zero-token search away):
+- memory tree: `raw/` entries + `structured/` + `summaries/`
+- **task history**: live + archived task records — every channel chat is a
+  task, so "what did RJ ask me yesterday" is searchable
+- team workspaces: team/pinned memory, role MEMORY.md, **dated daily logs**,
+  **agent-outputs**, **status notes**, and the **handoff decision log**
 
 This makes retrieval scale as memory grows (the Milestone D goal) and powers the
 `memory.search` capability + `jigga memory search`.
@@ -28,6 +35,20 @@ _TEXT_SUFFIXES = {".md", ".txt", ".json", ".jsonl"}
 
 def index_path(memory_dir: Path) -> Path:
     return Path(memory_dir) / "indexes" / INDEX_NAME
+
+
+def _render_task(path: Path) -> str:
+    """A task record as searchable text: title + description (channel chats
+    carry the message text here) + assignee/state/channel breadcrumbs."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    meta = data.get("metadata") or {}
+    bits = [str(data.get("title") or ""), str(data.get("description") or ""),
+            str(data.get("assignee") or ""), str(data.get("state") or ""),
+            str(meta.get("channel") or ""), str(meta.get("sender") or "")]
+    return " ".join(b for b in bits if b).strip()
 
 
 def _render_raw(path: Path) -> str:
@@ -59,13 +80,30 @@ def _iter_documents(memory_dir: Path) -> Iterator[tuple[str, Path, str]]:
                     yield (layer, path, path.read_text(encoding="utf-8"))
                 except OSError:
                     continue
+    # Task history (#96) — live + archived (compaction moves old finished tasks
+    # to tasks/archive/, which is where old channel chats end up).
+    tasks_dir = memory_dir.parent / "tasks"
+    for directory in (tasks_dir, tasks_dir / "archive"):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            text = _render_task(path)
+            if text:
+                yield ("tasks", path, text)
     # Per-team / per-role memory lives in the team workspaces (D2). Indexed with
     # a `team:<id>` / `role:<member>` layer so search can be scoped to one team.
     workspaces = memory_dir.parent / "workspaces"
     if workspaces.exists():
         for team_dir in sorted(p for p in workspaces.iterdir() if p.is_dir()):
-            for fname in ("team.jsonl", "pinned.jsonl"):
-                path = team_dir / "shared-context" / "memory" / fname
+            team_files = [team_dir / "shared-context" / "memory" / "team.jsonl",
+                          team_dir / "shared-context" / "memory" / "pinned.jsonl",
+                          team_dir / "shared-context" / "handoffs.jsonl",   # decision log (#96)
+                          team_dir / "notes" / "status.md",                  # ops log (#96)
+                          team_dir / "notes" / "plan.md"]
+            outputs = team_dir / "shared-context" / "agent-outputs"          # deliverables (#96)
+            if outputs.exists():
+                team_files += sorted(p for p in outputs.iterdir() if p.suffix.lower() in _TEXT_SUFFIXES)
+            for path in team_files:
                 if path.is_file():
                     try:
                         yield (f"team:{team_dir.name}", path, path.read_text(encoding="utf-8"))
@@ -74,12 +112,16 @@ def _iter_documents(memory_dir: Path) -> Iterator[tuple[str, Path, str]]:
             roles = team_dir / "roles"
             if roles.exists():
                 for role_dir in sorted(p for p in roles.iterdir() if p.is_dir()):
-                    path = role_dir / "MEMORY.md"
-                    if path.is_file():
-                        try:
-                            yield (f"role:{role_dir.name}", path, path.read_text(encoding="utf-8"))
-                        except OSError:
-                            continue
+                    role_files = [role_dir / "MEMORY.md"]
+                    daily = role_dir / "memory"                              # dated logs (#96)
+                    if daily.exists():
+                        role_files += sorted(daily.glob("*.md"))
+                    for path in role_files:
+                        if path.is_file():
+                            try:
+                                yield (f"role:{role_dir.name}", path, path.read_text(encoding="utf-8"))
+                            except OSError:
+                                continue
 
 
 def fts_available() -> bool:
@@ -142,7 +184,11 @@ def _in_scope(path: str, roots: list[Path]) -> bool:
     return any(resolved == root or root in resolved.parents for root in roots)
 
 
-_GLOBAL_LAYERS = ("raw", "structured", "summaries")
+# `tasks` is global like the memory tree: every agent may recall its own task
+# history, and tasks aren't team-namespaced on disk. Team/role layers stay
+# team-gated; sensitive narrowing uses `scope` (and group sessions are already
+# restricted at the context level).
+_GLOBAL_LAYERS = ("raw", "structured", "summaries", "tasks")
 
 
 def _team_visible(layer: str, team: str) -> bool:
