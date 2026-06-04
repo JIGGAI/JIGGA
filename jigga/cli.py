@@ -68,6 +68,7 @@ from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
 from jigga.runtime.recipes import (
     find_recipe,
+    installed_recipes,
     list_recipes,
     load_recipe,
     recipe_summary,
@@ -490,6 +491,9 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_show = recipes_sub.add_parser("show", help="Inspect a recipe: what it would scaffold")
     recipes_show.add_argument("recipe", help="Recipe name or path to a .md recipe")
     recipes_show.add_argument("--json", action="store_true", dest="json_output")
+    recipes_installed = recipes_sub.add_parser(
+        "installed", help="Show installed recipes (provenance records) and any local edits/drift")
+    recipes_installed.add_argument("--json", action="store_true", dest="json_output")
     recipes_scaffold = recipes_sub.add_parser(
         "scaffold", help="Scaffold a recipe: agent yamls + team + workflows + workspace")
     recipes_scaffold.add_argument("recipe", help="Recipe name (e.g. marketing-team) or path to a .md recipe")
@@ -1231,13 +1235,38 @@ def _cmd_team(args: argparse.Namespace) -> int:
 
 def _recipes_list(paths: Any, *, json_output: bool) -> int:
     recipes = list_recipes(paths.home)
+    installed_ids = {rec.get("recipe_id") for rec in installed_recipes(paths.home)}
+    for r in recipes:
+        r["installed"] = r["id"] in installed_ids
     if json_output:
         print_json(recipes)
     elif not recipes:
         print("No recipes found.")
     else:
         for r in recipes:
-            print(f"{r['id']:24} {r['kind']:6} {r.get('description') or ''}")
+            marker = "installed" if r["installed"] else ""
+            print(f"{r['id']:24} {r['kind']:6} {marker:10} {r.get('description') or ''}")
+    return 0
+
+
+def _recipes_installed(paths: Any, *, json_output: bool) -> int:
+    records = installed_recipes(paths.home)
+    if json_output:
+        print_json(records)
+        return 0
+    if not records:
+        print("No recipes installed. See what's available: jigga recipes list")
+        return 0
+    for rec in records:
+        agents = [a for a in rec.get("artifacts", []) if a.startswith("agents/")]
+        workflows = [a for a in rec.get("artifacts", []) if a.startswith("workflows/")]
+        print(f"{rec['scaffold_id']:24} {rec.get('kind') or '?':6} "
+              f"v{rec.get('version') or '?'}  installed {str(rec.get('installed_at') or '')[:10]}  "
+              f"({len(agents)} agents, {len(workflows)} workflows)")
+        for rel in rec.get("modified", []):
+            print(f"  ~ locally edited: {rel}")
+        for rel in rec.get("missing", []):
+            print(f"  ! missing:        {rel}")
     return 0
 
 
@@ -1311,6 +1340,8 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     if args.recipes_command == "scaffold":
         return _recipes_scaffold(paths, args.recipe, override_id=args.override_id,
                                  overwrite=args.overwrite, json_output=args.json_output)
+    if args.recipes_command == "installed":
+        return _recipes_installed(paths, json_output=args.json_output)
     return 0
 
 
