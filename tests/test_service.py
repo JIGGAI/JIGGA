@@ -174,3 +174,32 @@ def test_status_reflects_unit_presence_and_run_state(tmp_path, monkeypatch):
     active = service.status_service(paths, run_fn=lambda a: _proc(a, stdout="active\n"))
     assert active["installed"] is True
     assert active["running"] is True
+
+
+def test_systemd_install_explicitly_restarts(tmp_path) -> None:
+    """`enable --now` is a no-op on an already-active unit — without an
+    explicit restart, a re-install (jigga update's daemon refresh, plugin
+    re-start) keeps running OLD code/config on systemd."""
+    from unittest.mock import patch
+
+    import subprocess as sp
+
+    from jigga.core.paths import get_paths
+    from jigga.runtime.service import install_app_service, install_service
+
+    paths = get_paths(tmp_path)
+    calls: list[list[str]] = []
+
+    def record(cmd):
+        calls.append(cmd)
+        return sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("jigga.runtime.service.detect_backend", return_value="systemd"), \
+         patch("pathlib.Path.home", return_value=tmp_path):
+        install_service(paths, run_fn=record)
+        assert ["systemctl", "--user", "restart", "jigga-supervisor.service"] in calls
+
+        calls.clear()
+        install_app_service("viewer", ["node", "s.js"], cwd=tmp_path, env={},
+                            logs_dir=paths.logs, run_fn=record)
+        assert ["systemctl", "--user", "restart", "jigga-plugin-viewer.service"] in calls
