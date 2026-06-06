@@ -1458,7 +1458,6 @@ def _cmd_scheduler(args: argparse.Namespace) -> int:
 def _cmd_team(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.team_command == "list":
-        from jigga.core.config import load_teams
         from jigga.runtime.workspaces import members, team_lead
 
         teams = [
