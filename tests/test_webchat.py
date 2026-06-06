@@ -116,6 +116,25 @@ def test_history_merges_chronologically_and_filters_conversation(tmp_path: Path)
     assert [e["text"] for e in webchat.history(paths.home, conversation_id="room2")] == ["other room"]
 
 
+def test_history_interleaves_by_timestamp_not_file_order(tmp_path: Path) -> None:
+    """A reply between two questions must sort between them — the naive
+    inbox-then-outbox concatenation order is wrong for any real conversation."""
+    paths = init_runtime(tmp_path)
+    channel_dir = paths.home / "channels" / "webchat"
+    channel_dir.mkdir(parents=True)
+    rows = [
+        ("inbox.jsonl", "you", "q1", "2026-06-06T10:00:00Z"),
+        ("inbox.jsonl", "you", "q2", "2026-06-06T10:02:00Z"),
+        ("outbox.jsonl", "agent", "a1", "2026-06-06T10:01:00Z"),
+        ("outbox.jsonl", "agent", "a2", "2026-06-06T10:03:00Z"),
+    ]
+    for name, sender, text, ts in rows:
+        with (channel_dir / name).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"id": text, "conversation_id": "web", "sender": sender,
+                                 "text": text, "ts": ts}) + "\n")
+    assert [e["text"] for e in webchat.history(paths.home)] == ["q1", "a1", "q2", "a2"]
+
+
 def test_history_limit_keeps_most_recent(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
     for i in range(5):
