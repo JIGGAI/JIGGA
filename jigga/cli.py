@@ -348,6 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
 
+    config_p = sub.add_parser("config", help="Read and edit runtime config (~/.jigga/config.yaml) by dotted key")
+    config_sub = config_p.add_subparsers(dest="config_command", required=True)
+    config_get = config_sub.add_parser("get", help="Print a value (or the whole config)")
+    config_get.add_argument("key", nargs="?", help="Dotted key, e.g. channels.default")
+    config_get.add_argument("--json", action="store_true", dest="json_output")
+    config_set = config_sub.add_parser("set", help="Set a value (JSON-coerced: true/42/[..]; else string)")
+    config_set.add_argument("key")
+    config_set.add_argument("value")
+    config_set.add_argument("--json", action="store_true", dest="json_output")
+    config_unset = config_sub.add_parser("unset", help="Remove a key")
+    config_unset.add_argument("key")
+    config_unset.add_argument("--json", action="store_true", dest="json_output")
+
     update_p = sub.add_parser(
         "update", help="Reconcile this runtime with the current code: recipes, config keys, service")
     update_p.add_argument("--apply", action="store_true",
@@ -893,6 +906,51 @@ def _select_recipe_changes(plan: dict) -> tuple[list[dict], list[str]]:
     if kept:
         _edited_footer(kept)
     return chosen_actions, chosen_paths
+
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from jigga.runtime.audit import append_event
+    from jigga.runtime.config_edit import coerce_value, get_path, set_path, unset_path
+
+    paths = get_paths(args.home)
+    config = read_yaml(paths.config) if paths.config.exists() else {}
+
+    if args.config_command == "get":
+        value = get_path(config, args.key) if args.key else config
+        if args.json_output:
+            print_json(value)
+        elif isinstance(value, (dict, list)):
+            print(_json.dumps(value, indent=2, default=str))
+        else:
+            print(value)
+        return 0
+    if args.config_command == "set":
+        value = coerce_value(args.value)
+        try:
+            old = set_path(config, args.key, value)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        write_yaml(paths.config, config)
+        append_event(paths.logs, "config.changed", key=args.key, old=old, new=value)
+        if args.json_output:
+            print_json({"key": args.key, "old": old, "new": value})
+        else:
+            print(f"{args.key}: {old!r} → {value!r}")
+        return 0
+    if args.config_command == "unset":
+        old = unset_path(config, args.key)
+        write_yaml(paths.config, config)
+        append_event(paths.logs, "config.changed", key=args.key, old=old, new=None)
+        if args.json_output:
+            print_json({"key": args.key, "old": old, "new": None})
+        else:
+            print(f"{args.key}: {old!r} → (unset)" if old is not None else f"{args.key}: (was not set)")
+        return 0
+    return 0
 
 
 def _cmd_update(args: argparse.Namespace) -> int:
@@ -1758,6 +1816,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "onboard": _cmd_onboard,
     "doctor": _cmd_doctor,
     "update": _cmd_update,
+    "config": _cmd_config,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,
