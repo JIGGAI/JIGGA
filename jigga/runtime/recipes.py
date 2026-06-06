@@ -559,9 +559,8 @@ def staff_member(paths: Any, team_id: str, member_id: str, *,
     user_copy.write_text(emit_recipe(meta, recipe.body), encoding="utf-8")
     load_recipe(user_copy)  # validate the emitted recipe before touching anything else
 
-    record["source"] = str(user_copy)
-    write_json(record_path, record)
-
+    # No explicit record repoint needed: the scaffold's _record_install stamps
+    # the record with the recipe source it ran from — the user copy.
     summary = scaffold_team(home, load_recipe(user_copy), team_id=team_id,
                             agents_dir=home / "agents", teams_dir=home / "teams",
                             workflows_dir=home / "workflows")
