@@ -273,3 +273,188 @@ def status_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
         result["installed"] = False
         result["instructions"] = "No user service manager found on this platform."
     return result
+
+
+# --- plugin (app) services -----------------------------------------------------
+# Plugins are out-of-process supervised sidecars (jiggaview is the reference):
+# same launchd/systemd machinery as the supervisor, parametrized per plugin.
+# One unit per plugin: ai.jigga.plugin.<name> / jigga-plugin-<name>.service.
+
+
+def app_label(name: str) -> str:
+    return f"ai.jigga.plugin.{name}"
+
+
+def app_unit_name(name: str) -> str:
+    return f"jigga-plugin-{name}.service"
+
+
+def app_launchd_path(name: str) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{app_label(name)}.plist"
+
+
+def app_systemd_path(name: str) -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / app_unit_name(name)
+
+
+def render_app_launchd(name: str, argv: list[str], *, cwd: Path, env: dict[str, str],
+                       logs_dir: Path) -> str:
+    args_xml = "\n".join(f"    <string>{_xml_escape(a)}</string>" for a in argv)
+    env_xml = "\n".join(
+        f"    <key>{_xml_escape(k)}</key>\n    <string>{_xml_escape(v)}</string>"
+        for k, v in sorted(env.items())
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{app_label(name)}</string>
+  <key>ProgramArguments</key>
+  <array>
+{args_xml}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+{env_xml}
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>{_xml_escape(str(cwd))}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{_xml_escape(str(logs_dir / f"plugin-{name}.out.log"))}</string>
+  <key>StandardErrorPath</key>
+  <string>{_xml_escape(str(logs_dir / f"plugin-{name}.err.log"))}</string>
+</dict>
+</plist>
+"""
+
+
+def render_app_systemd(name: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> str:
+    exec_start = " ".join(argv)
+    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(env.items()))
+    return f"""[Unit]
+Description=JIGGA plugin: {name}
+After=network-online.target
+
+[Service]
+Type=simple
+{env_lines}
+WorkingDirectory={cwd}
+ExecStart={exec_start}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def install_app_service(name: str, argv: list[str], *, cwd: Path, env: dict[str, str],
+                        logs_dir: Path, dry_run: bool = False,
+                        run_fn: RunFn = _default_run) -> dict:
+    """Register a plugin as an always-on user service (same contract/result
+    shape as the supervisor's install_service)."""
+    backend = detect_backend()
+    result: dict = {"backend": backend, "argv": argv, "dry_run": dry_run, "commands": []}
+    if backend == "unsupported":
+        result["instructions"] = _manual_instructions(argv)
+        return result
+
+    if backend == "launchd":
+        unit_path = app_launchd_path(name)
+        content = render_app_launchd(name, argv, cwd=cwd, env=env, logs_dir=logs_dir)
+        domain = f"gui/{os.getuid()}"
+        target = f"{domain}/{app_label(name)}"
+        commands = [
+            ["launchctl", "bootout", domain, str(unit_path)],   # clear a prior load (ok to fail)
+            ["launchctl", "bootstrap", domain, str(unit_path)],
+            ["launchctl", "enable", target],
+            ["launchctl", "kickstart", "-k", target],
+        ]
+        optional_first = True
+    else:
+        unit_path = app_systemd_path(name)
+        content = render_app_systemd(name, argv, cwd=cwd, env=env)
+        commands = [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", "--now", app_unit_name(name)],
+        ]
+        optional_first = False
+
+    result["unit_path"] = str(unit_path)
+    result["unit_content"] = content
+    if dry_run:
+        result["commands"] = [{"argv": c, "ran": False} for c in commands]
+        return result
+
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(content, encoding="utf-8")
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    started = True
+    for i, cmd in enumerate(commands):
+        proc = run_fn(cmd)
+        ok = proc.returncode == 0
+        entry = {"argv": cmd, "ran": True, "returncode": proc.returncode}
+        if not ok:
+            entry["stderr"] = (proc.stderr or "").strip()
+        result["commands"].append(entry)
+        if not ok and not (optional_first and i == 0):
+            started = False
+    result["started"] = started
+    return result
+
+
+def uninstall_app_service(name: str, *, dry_run: bool = False, run_fn: RunFn = _default_run) -> dict:
+    backend = detect_backend()
+    result: dict = {"backend": backend, "dry_run": dry_run, "commands": []}
+    if backend == "launchd":
+        unit_path = app_launchd_path(name)
+        commands = [["launchctl", "bootout", f"gui/{os.getuid()}", str(unit_path)]]
+    elif backend == "systemd":
+        unit_path = app_systemd_path(name)
+        commands = [
+            ["systemctl", "--user", "disable", "--now", app_unit_name(name)],
+            ["systemctl", "--user", "daemon-reload"],
+        ]
+    else:
+        result["instructions"] = "No user service manager found; nothing to remove."
+        return result
+    result["unit_path"] = str(unit_path)
+    if dry_run:
+        result["commands"] = [{"argv": c, "ran": False} for c in commands]
+        result["removed"] = unit_path.exists()
+        return result
+    for cmd in commands:
+        proc = run_fn(cmd)
+        result["commands"].append({"argv": cmd, "ran": True, "returncode": proc.returncode})
+    removed = False
+    if unit_path.exists():
+        unit_path.unlink()
+        removed = True
+    result["removed"] = removed
+    return result
+
+
+def status_app_service(name: str, *, run_fn: RunFn = _default_run) -> dict:
+    backend = detect_backend()
+    result: dict = {"backend": backend, "name": name}
+    if backend == "launchd":
+        unit_path = app_launchd_path(name)
+        result["installed"] = unit_path.exists()
+        result["unit_path"] = str(unit_path)
+        proc = run_fn(["launchctl", "print", f"gui/{os.getuid()}/{app_label(name)}"])
+        result["running"] = proc.returncode == 0
+    elif backend == "systemd":
+        unit_path = app_systemd_path(name)
+        result["installed"] = unit_path.exists()
+        result["unit_path"] = str(unit_path)
+        proc = run_fn(["systemctl", "--user", "is-active", app_unit_name(name)])
+        result["running"] = (proc.stdout or "").strip() == "active"
+    else:
+        result["installed"] = False
+        result["running"] = False
+    return result
