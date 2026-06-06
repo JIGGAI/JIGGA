@@ -582,3 +582,97 @@ def staff_member(paths: Any, team_id: str, member_id: str, *,
     return {"team": team_id, "member": member_id, "recipe": str(user_copy),
             "agent_written": member_id in summary["agents_written"],
             "scaffold": summary}
+
+
+def _owning_record(home: Path, agent_id: str) -> dict[str, Any] | None:
+    """The install record whose recipe defines this agent (team member or solo)."""
+    for record in installed_recipes(home):
+        if f"agents/{agent_id}.yaml" in (record.get("artifacts") or []):
+            return record
+    return None
+
+
+def set_member_definition(paths: Any, agent_id: str, dotted_key: str, value: Any) -> dict[str, Any]:
+    """Recipe-first agent config edit (RJ: updates modify the recipe). Sets a
+    dotted key INSIDE the member's `agent:` definition in the user-dir recipe
+    copy, then regenerates that one agent yaml from it (hash refreshed — the
+    file stays pristine-from-recipe, so `jigga update` keeps managing it).
+    Validated end-to-end: a value that breaks the recipe or the agent rolls
+    everything back."""
+    from jigga.core.config import load_agents
+    from jigga.runtime.config_edit import set_path
+
+    home = Path(paths.home)
+    record = _owning_record(home, agent_id)
+    if record is None:
+        raise ValueError(f"{agent_id!r} is not recipe-managed — edit it with `jigga agents set` "
+                         "(plain) or its yaml directly.")
+    source = Path(str(record.get("source") or ""))
+    if not source.exists():
+        raise ValueError(f"Recipe source {source} no longer exists")
+    recipe = load_recipe(source)
+    scaffold_id = str(record.get("scaffold_id") or recipe.id)
+
+    meta = dict(recipe.meta)
+    if recipe.kind == "agent":
+        definition = meta.get("agent")
+        if not isinstance(definition, dict):
+            raise ValueError(f"Recipe {recipe.id!r} has no agent definition")
+    else:
+        definition = None
+        for member in meta.get("agents") or []:
+            explicit = str(member.get("id") or f"{scaffold_id}-{member.get('role')}")
+            if explicit == agent_id and isinstance(member.get("agent"), dict):
+                definition = member["agent"]
+                break
+        if definition is None:
+            raise ValueError(f"{agent_id!r} has no definition in {recipe.id!r} — staff it first "
+                             f"(jigga team staff {scaffold_id} {agent_id})")
+
+    old = set_path(definition, dotted_key, value)
+
+    user_copy = home / "recipes" / source.name
+    user_copy.parent.mkdir(parents=True, exist_ok=True)
+    original_recipe = user_copy.read_text(encoding="utf-8") if user_copy.exists() else None
+    agent_path = home / "agents" / f"{agent_id}.yaml"
+    original_yaml = agent_path.read_text(encoding="utf-8") if agent_path.exists() else None
+
+    def _rollback() -> None:
+        if original_recipe is None:
+            user_copy.unlink(missing_ok=True)
+        else:
+            user_copy.write_text(original_recipe, encoding="utf-8")
+        if original_yaml is not None:
+            agent_path.write_text(original_yaml, encoding="utf-8")
+
+    user_copy.write_text(emit_recipe(meta, recipe.body), encoding="utf-8")
+    try:
+        load_recipe(user_copy)
+        ctx = {"teamId": scaffold_id, "teamName": recipe.name,
+               "agentId": agent_id, "agentName": recipe.name}
+        # Mirror scaffold-time defaults (scaffold_agent/scaffold_team set these
+        # on their working copy; recipes legitimately omit them).
+        build = dict(definition)
+        build.setdefault("name", recipe.name if recipe.kind == "agent" else agent_id.replace("_", " ").title())
+        build.setdefault("role", recipe.description or recipe.name)
+        doc = _finalize_agent_doc(agent_id, build, ctx)
+        write_yaml(agent_path, doc)
+        load_agents(home / "agents")  # full validation — bad values roll back
+    except Exception as exc:
+        _rollback()
+        raise ValueError(f"Change rolled back — it breaks {agent_id!r}: {exc}") from exc
+
+    record_path = _records_dir(home) / f"{_SAFE_NAME.sub('_', scaffold_id)}.json"
+    if record_path.exists():
+        rec = read_json(record_path)
+        if isinstance(rec, dict):
+            rec["source"] = str(user_copy)
+            rec.setdefault("hashes", {})[f"agents/{agent_id}.yaml"] = _sha256(agent_path)
+            rec["updated_at"] = now_iso()
+            write_json(record_path, rec)
+    from jigga.runtime.audit import append_event
+
+    append_event(paths.logs, "agent.changed", entity=agent_id, key=dotted_key,
+                 old=old, new=value, via="recipe", recipe=str(user_copy))
+    return {"entity": agent_id, "key": dotted_key, "old": old, "new": value,
+            "recipe": str(user_copy)}

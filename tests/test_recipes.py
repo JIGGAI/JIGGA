@@ -643,3 +643,60 @@ def test_staff_team_without_install_record_fails_cleanly(tmp_path: Path, capsys)
     rc = main(["--home", str(tmp_path), "team", "staff", "handmade", "x"])
     assert rc == 1
     assert "no install record" in capsys.readouterr().out
+
+
+# --- recipe-first agent config edits (agents set --recipe) ----------------------
+
+
+def test_agents_set_recipe_updates_definition_yaml_and_stays_pristine(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    assert main(["--home", str(tmp_path), "agents", "set", "copywriter",
+                 "tools", '["memory.search", "draft_with_model"]', "--recipe", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["new"] == ["memory.search", "draft_with_model"]
+
+    # live yaml regenerated from the recipe
+    agent = load_agents(paths.agents)["copywriter"]
+    assert agent.tools == ["memory.search", "draft_with_model"]
+    # user-dir recipe copy carries the change (source of truth)
+    user_copy = tmp_path / "recipes" / "marketing-team.md"
+    member = next(m for m in load_recipe(user_copy).agents if m.get("id") == "copywriter")
+    assert member["agent"]["tools"] == ["memory.search", "draft_with_model"]
+    # still pristine-from-recipe: update plans nothing for it
+    from jigga.runtime.recipes import installed_recipes
+    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "marketing_team")
+    assert record["modified"] == []
+    assert record["source"] == str(user_copy)
+
+
+def test_agents_set_recipe_rolls_back_breaking_values(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    yaml_before = (paths.agents / "copywriter.yaml").read_text(encoding="utf-8")
+    rc = main(["--home", str(tmp_path), "agents", "set", "copywriter",
+               "permission_mode", "bogus", "--recipe"])
+    assert rc == 1
+    assert "rolled back" in capsys.readouterr().out
+    assert (paths.agents / "copywriter.yaml").read_text(encoding="utf-8") == yaml_before
+    assert not (tmp_path / "recipes" / "marketing-team.md").exists()   # recipe copy rolled back too
+
+
+def test_agents_set_recipe_requires_recipe_managed_agent(tmp_path: Path, capsys) -> None:
+    from jigga.core.io import write_yaml
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.agents / "hand.yaml", {"id": "hand", "name": "H", "role": "r",
+               "memory_scope": "task_only", "tools": [], "permissions": {}})
+    rc = main(["--home", str(tmp_path), "agents", "set", "hand", "model", "gpt-5.5", "--recipe"])
+    assert rc == 1
+    assert "not recipe-managed" in capsys.readouterr().out
+
+
+def test_agents_set_recipe_solo_agent(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "researcher"]) == 0
+    capsys.readouterr()
+    assert main(["--home", str(tmp_path), "agents", "set", "researcher",
+                 "model", "gpt-5.5", "--recipe"]) == 0
+    capsys.readouterr()
+    assert load_agents(paths.agents)["researcher"].model == "gpt-5.5"
+    user_copy = tmp_path / "recipes" / "researcher.md"
+    assert load_recipe(user_copy).meta["agent"]["model"] == "gpt-5.5"

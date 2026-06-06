@@ -586,6 +586,9 @@ def build_parser() -> argparse.ArgumentParser:
     agents_set.add_argument("agent_id")
     agents_set.add_argument("key")
     agents_set.add_argument("value")
+    agents_set.add_argument("--recipe", action="store_true", dest="via_recipe",
+                            help="Recipe-first: write the change into the agent's definition in the "
+                                 "team recipe (user-dir copy) and regenerate the yaml from it")
     agents_set.add_argument("--json", action="store_true", dest="json_output")
     agents_files = agents_sub.add_parser("files", help="List an agent's identity files (required/optional/missing)")
     agents_files.add_argument("agent_id")
@@ -1932,6 +1935,20 @@ def _cmd_agents(args: argparse.Namespace) -> int:
     from jigga.runtime.workspaces import find_agent_teams
 
     paths = get_paths(args.home)
+    if args.agents_command == "set" and getattr(args, "via_recipe", False):
+        from jigga.runtime.config_edit import coerce_value
+        from jigga.runtime.recipes import set_member_definition
+        try:
+            result = set_member_definition(paths, args.agent_id, args.key, coerce_value(args.value))
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"{args.agent_id}.{args.key}: {result['old']!r} → {result['new']!r}  "
+                  f"(recipe: {result['recipe']})")
+        return 0
     if args.agents_command in ("get", "set"):
         return _entity_get_set(args, entity_dir=paths.agents, entity_id=args.agent_id,
                                verb=args.agents_command,
