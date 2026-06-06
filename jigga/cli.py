@@ -587,6 +587,15 @@ def build_parser() -> argparse.ArgumentParser:
     agents_set.add_argument("key")
     agents_set.add_argument("value")
     agents_set.add_argument("--json", action="store_true", dest="json_output")
+    agents_files = agents_sub.add_parser("files", help="List an agent's identity files (required/optional/missing)")
+    agents_files.add_argument("agent_id")
+    agents_files.add_argument("--json", action="store_true", dest="json_output")
+    agents_file = agents_sub.add_parser("file", help="Read/write one identity file")
+    agents_file.add_argument("verb", choices=["get", "set"])
+    agents_file.add_argument("agent_id")
+    agents_file.add_argument("name", help="File name, e.g. SOUL.md")
+    agents_file.add_argument("--content", help="New content (set); reads stdin when omitted")
+    agents_file.add_argument("--json", action="store_true", dest="json_output")
 
     recipes_cmd = sub.add_parser(
         "recipes", help="List, inspect, and scaffold recipes (agents + teams + workflows from one template)")
@@ -596,6 +605,13 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_show = recipes_sub.add_parser("show", help="Inspect a recipe: what it would scaffold")
     recipes_show.add_argument("recipe", help="Recipe name or path to a .md recipe")
     recipes_show.add_argument("--json", action="store_true", dest="json_output")
+    recipes_cat = recipes_sub.add_parser("cat", help="Print a recipe's raw markdown")
+    recipes_cat.add_argument("recipe")
+    recipes_save = recipes_sub.add_parser(
+        "save", help="Write a recipe's markdown to your user recipes dir (~/.jigga/recipes — overrides bundled)")
+    recipes_save.add_argument("recipe", help="Recipe file name (stem), e.g. marketing-team")
+    recipes_save.add_argument("--content", help="Markdown content; reads stdin when omitted")
+    recipes_save.add_argument("--json", action="store_true", dest="json_output")
     recipes_installed = recipes_sub.add_parser(
         "installed", help="Show installed recipes (provenance records) and any local edits/drift")
     recipes_installed.add_argument("--json", action="store_true", dest="json_output")
@@ -620,6 +636,15 @@ def build_parser() -> argparse.ArgumentParser:
     team_set.add_argument("key")
     team_set.add_argument("value")
     team_set.add_argument("--json", action="store_true", dest="json_output")
+    team_files = team_sub.add_parser("files", help="List a team's workspace files (required/missing)")
+    team_files.add_argument("team_id")
+    team_files.add_argument("--json", action="store_true", dest="json_output")
+    team_file = team_sub.add_parser("file", help="Read/write one team workspace file")
+    team_file.add_argument("verb", choices=["get", "set"])
+    team_file.add_argument("team_id")
+    team_file.add_argument("name", help="Workspace-relative path, e.g. notes/plan.md")
+    team_file.add_argument("--content", help="New content (set); reads stdin when omitted")
+    team_file.add_argument("--json", action="store_true", dest="json_output")
     team_run = team_sub.add_parser("run")
     team_handoff = team_sub.add_parser("handoff", help="Fire a team's handoffs from a member (file-first)")
     team_handoff.add_argument("team_id")
@@ -1640,6 +1665,12 @@ def _cmd_team(args: argparse.Namespace) -> int:
                                verb=args.team_command,
                                validate_fn=lambda: _load_teams(paths.teams),
                                audit_type="team.changed", logs_dir=paths.logs)
+    if args.team_command in ("files", "file"):
+        from jigga.runtime.entity_files import list_team_files
+        return _entity_file_cmd(
+            args, root=workspace_dir(paths.home, args.team_id),
+            listing_fn=lambda: list_team_files(paths.home, args.team_id),
+            entity=f"team:{args.team_id}", logs_dir=paths.logs)
     if args.team_command == "list":
         from jigga.runtime.workspaces import members, team_lead
 
@@ -1835,6 +1866,46 @@ def _entity_get_set(args: argparse.Namespace, *, entity_dir: Path, entity_id: st
     return 0
 
 
+def _entity_file_cmd(args: argparse.Namespace, *, root, listing_fn, entity: str, logs_dir) -> int:
+    """Shared agents/team file surface: list, get, set — workspace-confined,
+    audited writes (the jiggaview Files-tab backend)."""
+    import sys as _sys
+
+    from jigga.runtime.entity_files import read_entity_file, write_entity_file
+
+    command = getattr(args, "agents_command", None) or getattr(args, "team_command", None)
+    if command == "files":
+        files = listing_fn()
+        if args.json_output:
+            print_json(files)
+        else:
+            for f in files:
+                flags = ("required" if f["required"] else "optional") + (", missing" if f["missing"] else "")
+                print(f"{f['name']:32} ({flags})")
+        return 0
+    try:
+        if args.verb == "get":
+            content = read_entity_file(root, args.name)
+            if content is None:
+                print(f"! {args.name} does not exist")
+                return 1
+            if args.json_output:
+                print_json({"name": args.name, "content": content})
+            else:
+                print(content, end="")
+            return 0
+        content = args.content if args.content is not None else _sys.stdin.read()
+        write_entity_file(root, args.name, content, logs_dir=logs_dir, entity=entity)
+    except ValueError as exc:
+        print(f"! {exc}")
+        return 1
+    if args.json_output:
+        print_json({"name": args.name, "bytes": len(content.encode("utf-8"))})
+    else:
+        print(f"✓ wrote {args.name}")
+    return 0
+
+
 def _cmd_agents(args: argparse.Namespace) -> int:
     from jigga.runtime.workspaces import find_agent_teams
 
@@ -1844,6 +1915,19 @@ def _cmd_agents(args: argparse.Namespace) -> int:
                                verb=args.agents_command,
                                validate_fn=lambda: load_agents(paths.agents),
                                audit_type="agent.changed", logs_dir=paths.logs)
+    if args.agents_command in ("files", "file"):
+        from jigga.runtime.entity_files import agent_files_root, list_agent_files
+        from jigga.runtime.workspaces import ensure_agent_workspace
+
+        agent = load_agents(paths.agents).get(args.agent_id)
+        if agent is None:
+            print(f"! No such agent: {args.agent_id!r}")
+            return 1
+        ws = ensure_agent_workspace(paths.home, paths.teams, agent)
+        return _entity_file_cmd(
+            args, root=agent_files_root(paths.home, ws, args.agent_id),
+            listing_fn=lambda: list_agent_files(paths.home, ws, args.agent_id),
+            entity=f"agent:{args.agent_id}", logs_dir=paths.logs)
     agents = load_agents(paths.agents)
     out = []
     for agent in agents.values():
@@ -1902,6 +1986,43 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     if args.recipes_command == "scaffold":
         return _recipes_scaffold(paths, args.recipe, override_id=args.override_id,
                                  overwrite=args.overwrite, json_output=args.json_output)
+    if args.recipes_command == "cat":
+        recipe_path = find_recipe(paths.home, args.recipe)
+        if recipe_path is None:
+            print(f"Recipe not found: {args.recipe!r}.")
+            return 1
+        print(recipe_path.read_text(encoding="utf-8"), end="")
+        return 0
+    if args.recipes_command == "save":
+        import sys as _sys
+
+        from jigga.runtime.audit import append_event
+        from jigga.runtime.recipes import RECIPE_SUFFIX
+
+        content = args.content if args.content is not None else _sys.stdin.read()
+        stem = args.recipe.removesuffix(RECIPE_SUFFIX)
+        if not stem or "/" in stem or stem.startswith("."):
+            print(f"! Invalid recipe name: {args.recipe!r}")
+            return 1
+        target = paths.home / "recipes" / f"{stem}{RECIPE_SUFFIX}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        original = target.read_text(encoding="utf-8") if target.exists() else None
+        target.write_text(content, encoding="utf-8")
+        try:
+            load_recipe(target)  # validate: bad frontmatter rolls back
+        except ValueError as exc:
+            if original is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_text(original, encoding="utf-8")
+            print(f"! Not saved — invalid recipe: {exc}")
+            return 1
+        append_event(paths.logs, "recipe.saved", recipe=stem, path=str(target))
+        if args.json_output:
+            print_json({"recipe": stem, "path": str(target)})
+        else:
+            print(f"✓ saved {target} (user recipes override bundled — scaffold/update read this copy)")
+        return 0
     if args.recipes_command == "installed":
         return _recipes_installed(paths, json_output=args.json_output)
     return 0
