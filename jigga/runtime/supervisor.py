@@ -121,6 +121,11 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     loop_state = load_loop_state(paths.home)
     now = now_utc()
     wake_limit = max_wakes_per_hour(paths.home)
+    # Disabled agents/teams (config `disabled.*`): the supervisor never wakes
+    # them — cron skipped, tasks stay pending (visible, never lost), mail
+    # wakes withheld until re-enabled.
+    from jigga.runtime.disabled import disabled_agent_ids
+    disabled = disabled_agent_ids(paths.home, paths.teams)
     deduped_events: list[dict[str, Any]] = []
     skipped_events: list[dict[str, Any]] = []
 
@@ -129,6 +134,9 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
         if event.type == "cron.tick":
             cron = event.payload.get("cron", "")
             target = event.targets[0] if event.targets else ""
+            if target in disabled:
+                skipped_events.append({"reason": "agent.disabled", "event": event_dict})
+                continue
             if cron_already_fired(loop_state, target, cron, now):
                 skipped_events.append({"reason": "cron.deduplicated", "event": event_dict})
                 append_event(paths.logs, "supervisor.cron_deduplicated", agent=target, cron=cron)
@@ -169,7 +177,7 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     # agents pinging each other), the context pack surfaces the inbox, and a
     # successful run marks the mail read. Agents that already have pending
     # tasks need nothing — any run delivers their inbox.
-    for agent_id in _mail_wake_targets(paths.home, agents, skip=set(targets)):
+    for agent_id in _mail_wake_targets(paths.home, agents, skip=set(targets) | disabled):
         create_task(
             paths.tasks,
             title="Unread mailbox messages",
@@ -195,6 +203,9 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     for agent_id in targets:
         if agent_id not in agents:
             append_event(paths.logs, "supervisor.target_missing", status="failed", agent=agent_id)
+            continue
+        if agent_id in disabled:
+            append_event(paths.logs, "supervisor.agent_disabled", status="ask", agent=agent_id)
             continue
         if should_skip_wake(loop_state, agent_id, wake_limit, now):
             throttled.append(agent_id)

@@ -590,6 +590,11 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Recipe-first: write the change into the agent's definition in the "
                                  "team recipe (user-dir copy) and regenerate the yaml from it")
     agents_set.add_argument("--json", action="store_true", dest="json_output")
+    for verb, help_text in (("disable", "Supervisor stops waking this agent (reversible; tasks stay pending)"),
+                            ("enable", "Re-enable a disabled agent")):
+        sp = agents_sub.add_parser(verb, help=help_text)
+        sp.add_argument("agent_id")
+        sp.add_argument("--json", action="store_true", dest="json_output")
     agents_delete = agents_sub.add_parser("delete", help="Delete an agent (backed up; recipe member de-staffed)")
     agents_delete.add_argument("agent_id")
     agents_delete.add_argument("--json", action="store_true", dest="json_output")
@@ -611,6 +616,12 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_show = recipes_sub.add_parser("show", help="Inspect a recipe: what it would scaffold")
     recipes_show.add_argument("recipe", help="Recipe name or path to a .md recipe")
     recipes_show.add_argument("--json", action="store_true", dest="json_output")
+    recipes_delete = recipes_sub.add_parser(
+        "delete", help="Delete a recipe's user-dir copy (reverts to bundled, if any); --uninstall also tears down what it installed")
+    recipes_delete.add_argument("recipe", help="Recipe file name (stem)")
+    recipes_delete.add_argument("--uninstall", action="store_true",
+                                help="Also delete the installed team/agent (backed up, record-owned only)")
+    recipes_delete.add_argument("--json", action="store_true", dest="json_output")
     recipes_cat = recipes_sub.add_parser("cat", help="Print a recipe's raw markdown")
     recipes_cat.add_argument("recipe")
     recipes_save = recipes_sub.add_parser(
@@ -642,6 +653,11 @@ def build_parser() -> argparse.ArgumentParser:
     team_set.add_argument("key")
     team_set.add_argument("value")
     team_set.add_argument("--json", action="store_true", dest="json_output")
+    for verb, help_text in (("disable", "Supervisor stops waking ALL of this team's members (reversible)"),
+                            ("enable", "Re-enable a disabled team")):
+        sp = team_sub.add_parser(verb, help=help_text)
+        sp.add_argument("team_id")
+        sp.add_argument("--json", action="store_true", dest="json_output")
     team_delete = team_sub.add_parser("delete", help="Delete a team: yaml, workspace, and its record-owned agents/workflows (backed up)")
     team_delete.add_argument("team_id")
     team_delete.add_argument("--json", action="store_true", dest="json_output")
@@ -1681,6 +1697,13 @@ def _cmd_team(args: argparse.Namespace) -> int:
                                verb=args.team_command,
                                validate_fn=lambda: _load_teams(paths.teams),
                                audit_type="team.changed", logs_dir=paths.logs)
+    if args.team_command in ("disable", "enable"):
+        if not (paths.teams / f"{args.team_id}.yaml").exists():
+            print(f"! No such team: {args.team_id!r}")
+            return 1
+        return _toggle_disabled(paths, "teams", args.team_id,
+                                disable=args.team_command == "disable",
+                                json_output=args.json_output)
     if args.team_command == "delete":
         from jigga.runtime.deletion import delete_team
         try:
@@ -1867,6 +1890,31 @@ def _recipes_scaffold(paths: Any, name: str, *, override_id: str | None,
 
 
 
+
+def _toggle_disabled(paths: Any, kind: str, entity_id: str, *, disable: bool,
+                     json_output: bool) -> int:
+    """Flip config `disabled.<agents|teams>` (operational state — entity yamls
+    stay pristine). Audited."""
+    from jigga.runtime.audit import append_event
+
+    config = read_yaml(paths.config) if paths.config.exists() else {}
+    bucket = config.setdefault("disabled", {}).setdefault(kind, [])
+    present = entity_id in bucket
+    if disable and not present:
+        bucket.append(entity_id)
+    elif not disable and present:
+        bucket.remove(entity_id)
+    write_yaml(paths.config, config)
+    state = "disabled" if disable else "enabled"
+    append_event(paths.logs, f"{kind[:-1]}.{state}", entity=entity_id)
+    if json_output:
+        print_json({"entity": entity_id, "kind": kind, "disabled": disable})
+    else:
+        print(f"✓ {entity_id} {state}"
+              + ("" if disable else "") )
+    return 0
+
+
 def _entity_get_set(args: argparse.Namespace, *, entity_dir: Path, entity_id: str,
                     verb: str, validate_fn, audit_type: str, logs_dir: Path) -> int:
     """Dotted-key get/set over an entity yaml (team/agent) — the config_edit
@@ -1973,6 +2021,14 @@ def _cmd_agents(args: argparse.Namespace) -> int:
                                verb=args.agents_command,
                                validate_fn=lambda: load_agents(paths.agents),
                                audit_type="agent.changed", logs_dir=paths.logs)
+    if args.agents_command in ("disable", "enable"):
+        agents = load_agents(paths.agents)
+        if args.agent_id not in agents:
+            print(f"! No such agent: {args.agent_id!r}")
+            return 1
+        return _toggle_disabled(paths, "agents", args.agent_id,
+                                disable=args.agents_command == "disable",
+                                json_output=args.json_output)
     if args.agents_command == "delete":
         from jigga.runtime.deletion import delete_agent
         try:
@@ -2058,6 +2114,57 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     if args.recipes_command == "scaffold":
         return _recipes_scaffold(paths, args.recipe, override_id=args.override_id,
                                  overwrite=args.overwrite, json_output=args.json_output)
+    if args.recipes_command == "delete":
+        from jigga.runtime.audit import append_event
+        from jigga.runtime.recipes import RECIPE_SUFFIX  # noqa: PLC0415
+
+        stem = args.recipe.removesuffix(RECIPE_SUFFIX)
+        user_copy = paths.home / "recipes" / f"{stem}{RECIPE_SUFFIX}"
+        bundled = find_recipe(paths.home, stem) if not user_copy.exists() else None
+        torn_down: list[str] = []
+        if args.uninstall:
+            from jigga.runtime.deletion import delete_agent, delete_team
+
+            source_path = user_copy if user_copy.exists() else bundled
+            if source_path is not None:
+                recipe_id = load_recipe(source_path).id
+                for record in installed_recipes(paths.home):
+                    if record.get("recipe_id") != recipe_id:
+                        continue
+                    try:
+                        if record.get("kind") == "agent":
+                            delete_agent(paths, str(record["scaffold_id"]))
+                        else:
+                            delete_team(paths, str(record["scaffold_id"]))
+                        torn_down.append(str(record["scaffold_id"]))
+                    except ValueError as exc:
+                        print(f"! {exc}")
+        removed_copy = False
+        if user_copy.exists():
+            from jigga.runtime.update import backup_path_for
+            from jigga.core.models import now_iso as _now
+
+            backup = backup_path_for(paths.home, f"recipes/{stem}{RECIPE_SUFFIX}", stamp=_now()[:10])
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.write_text(user_copy.read_text(encoding="utf-8"), encoding="utf-8")
+            user_copy.unlink()
+            removed_copy = True
+        elif not args.uninstall:
+            print(f"! No user-dir copy of {stem!r} to delete"
+                  + (" (it's a bundled recipe — shadow it with `recipes save` or use --uninstall)"
+                     if bundled else ""))
+            return 1
+        append_event(paths.logs, "recipe.deleted", recipe=stem,
+                     removed_copy=removed_copy, uninstalled=torn_down)
+        if args.json_output:
+            print_json({"recipe": stem, "removed_copy": removed_copy, "uninstalled": torn_down})
+        else:
+            if removed_copy:
+                print(f"✓ removed user copy of {stem!r}"
+                      + (" — bundled version takes over" if find_recipe(paths.home, stem) else ""))
+            for entity in torn_down:
+                print(f"✓ uninstalled {entity!r} (backups: state/backups/)")
+        return 0
     if args.recipes_command == "cat":
         recipe_path = find_recipe(paths.home, args.recipe)
         if recipe_path is None:
