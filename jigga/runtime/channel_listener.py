@@ -72,6 +72,15 @@ def enabled_channels(home: Path) -> list[tuple[str, dict[str, Any]]]:
     return result
 
 
+def long_polling_channels_enabled(home: Path) -> bool:
+    """Is any enabled channel's adapter a real long-poller (blocks on
+    `long_poll_seconds`)? The supervisor loop paces on this: a blocking poll
+    lets ticks run back-to-back; instant-return channels (webchat's local file)
+    must not drop the inter-tick sleep or the loop hot-spins."""
+    return any(getattr(ADAPTERS[name], "long_polls", False)
+               for name, _ in enabled_channels(home))
+
+
 def _event_to_task_fields(event: JiggaEvent) -> tuple[str, str]:
     sender = event.actor_name
     chat_id = event.conversation_id
@@ -92,17 +101,23 @@ def ingest_once(
     *,
     long_poll_seconds: int = DEFAULT_LONG_POLL_SECONDS,
     process_agents: bool = True,
+    only_channel: str | None = None,
 ) -> dict[str, Any]:
     """Run a single ingest cycle across all enabled channels. Returns a summary.
 
     Factored out of the loop so tests can drive exactly one cycle and the loop
     stays a thin wrapper. One trace per cycle ties the inbound messages, the
     tasks they create, and the agent runs they trigger together.
+
+    `only_channel` scopes the cycle to a single enabled channel — the
+    `webchat send --wait` path uses it so a synchronous browser send never
+    blocks behind another channel's long-poll.
     """
     with trace_context():
         return _ingest_once(
             home, logs_dir, tasks_dir, agents_dir,
             long_poll_seconds=long_poll_seconds, process_agents=process_agents,
+            only_channel=only_channel,
         )
 
 
@@ -114,12 +129,15 @@ def _ingest_once(
     *,
     long_poll_seconds: int = DEFAULT_LONG_POLL_SECONDS,
     process_agents: bool = True,
+    only_channel: str | None = None,
 ) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     affected_agents: set[str] = set()
     polled: list[str] = []
 
     for name, cfg in enabled_channels(home):
+        if only_channel is not None and name != only_channel:
+            continue
         adapter = ADAPTERS[name]
         polled.append(name)
         result = adapter.poll(home, long_poll_seconds=long_poll_seconds)
