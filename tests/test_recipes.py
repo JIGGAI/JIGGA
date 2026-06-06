@@ -576,3 +576,70 @@ def test_cli_agents_list_json(tmp_path: Path, capsys) -> None:
     assert briefing["schedules"] == 1
     assert "memory.search" in briefing["tools"]
     assert by_id["copywriter"]["team"] == "marketing_team"
+
+
+# --- staffing: membership-only → defined, recipe-first --------------------------
+
+
+def test_staff_member_updates_recipe_and_scaffolds_agent(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    assert main(["--home", str(tmp_path), "team", "staff", "social_content_team",
+                 "linkedin_writer", "--role", "Drafts LinkedIn posts.", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["agent_written"] is True
+
+    # the agent exists, batteries included
+    agent = load_agents(paths.agents)["linkedin_writer"]
+    assert "memory.search" in agent.tools
+    assert agent.role == "Drafts LinkedIn posts."
+
+    # the USER-dir recipe copy is now the source of truth and carries the definition
+    user_copy = tmp_path / "recipes" / "social-content-team.md"
+    assert user_copy.exists()
+    recipe = load_recipe(user_copy)
+    member = next(m for m in recipe.agents if m.get("id") == "linkedin_writer")
+    assert "memory.search" in member["agent"]["tools"]
+
+    # install record repointed + the new agent tracked (jigga update manages it)
+    from jigga.runtime.recipes import installed_recipes
+    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "social_content_team")
+    assert record["source"] == str(user_copy)
+    assert "agents/linkedin_writer.yaml" in record["artifacts"]
+    assert record["modified"] == []                              # pristine from its recipe
+
+    # existing files untouched (create-only): strategist kept as-was
+    assert "content_strategist" in load_agents(paths.agents)
+
+
+def test_staff_existing_files_survive_and_double_staff_refused(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    strategist = paths.agents / "content_strategist.yaml"
+    strategist.write_text(strategist.read_text(encoding="utf-8") + "# my edit\n", encoding="utf-8")
+
+    assert main(["--home", str(tmp_path), "team", "staff", "social_content_team", "editor"]) == 0
+    capsys.readouterr()
+    assert "# my edit" in strategist.read_text(encoding="utf-8")  # create-only: edit survives
+
+    rc = main(["--home", str(tmp_path), "team", "staff", "social_content_team", "editor"])
+    assert rc == 1
+    assert "already staffed" in capsys.readouterr().out
+
+
+def test_staff_unknown_member_is_appended_to_roster(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    assert main(["--home", str(tmp_path), "team", "staff", "marketing_team",
+                 "fact_checker", "--role", "Verifies claims before publish."]) == 0
+    capsys.readouterr()
+    assert "fact_checker" in load_agents(paths.agents)
+    team = load_teams(paths.teams)["marketing_team"]
+    assert any(m.get("id") == "fact_checker" for m in team.agents)
+
+
+def test_staff_team_without_install_record_fails_cleanly(tmp_path: Path, capsys) -> None:
+    from jigga.core.io import write_yaml
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.teams / "handmade.yaml", {"id": "handmade", "name": "H", "agents": [
+        {"id": "x", "role": "r"}], "routing": {"default_assignee": "x"}})
+    rc = main(["--home", str(tmp_path), "team", "staff", "handmade", "x"])
+    assert rc == 1
+    assert "no install record" in capsys.readouterr().out

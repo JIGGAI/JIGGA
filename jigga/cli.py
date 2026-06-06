@@ -636,6 +636,13 @@ def build_parser() -> argparse.ArgumentParser:
     team_set.add_argument("key")
     team_set.add_argument("value")
     team_set.add_argument("--json", action="store_true", dest="json_output")
+    team_staff = team_sub.add_parser(
+        "staff", help="Staff a membership-only member: write its agent definition into the recipe "
+                      "(user-dir copy) and create-only scaffold the new agent")
+    team_staff.add_argument("team_id")
+    team_staff.add_argument("member_id")
+    team_staff.add_argument("--role", dest="role_text", help="Role sentence for the new agent")
+    team_staff.add_argument("--json", action="store_true", dest="json_output")
     team_files = team_sub.add_parser("files", help="List a team's workspace files (required/missing)")
     team_files.add_argument("team_id")
     team_files.add_argument("--json", action="store_true", dest="json_output")
@@ -1665,6 +1672,21 @@ def _cmd_team(args: argparse.Namespace) -> int:
                                verb=args.team_command,
                                validate_fn=lambda: _load_teams(paths.teams),
                                audit_type="team.changed", logs_dir=paths.logs)
+    if args.team_command == "staff":
+        from jigga.runtime.recipes import staff_member
+        try:
+            result = staff_member(paths, args.team_id, args.member_id, role_text=args.role_text)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"✓ Staffed {args.member_id!r} on {args.team_id!r}")
+            print(f"  recipe: {result['recipe']}  (now the team's source of truth)")
+            print(f"  agent:  agents/{args.member_id}.yaml"
+                  + ("" if result["agent_written"] else "  (already existed)"))
+        return 0
     if args.team_command in ("files", "file"):
         from jigga.runtime.entity_files import list_team_files
         return _entity_file_cmd(
