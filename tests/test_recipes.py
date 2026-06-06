@@ -552,3 +552,14 @@ def test_every_bundled_recipe_agent_can_search_memory() -> None:
         for definition in definitions:
             assert "memory.search" in (definition.get("tools") or []), \
                 f"{recipe_path.name}: an agent definition lacks memory.search"
+
+
+def test_cli_team_list_json(tmp_path: Path, capsys) -> None:
+    """`jigga team list --json` — the surface jiggaview's team switcher reads."""
+    init_runtime(tmp_path, examples=True)
+    assert main(["--home", str(tmp_path), "team", "list", "--json"]) == 0
+    teams = json.loads(capsys.readouterr().out)
+    by_id = {t["id"]: t for t in teams}
+    assert "marketing_team" in by_id and "personal_admin_team" in by_id
+    assert by_id["marketing_team"]["lead"] == "marketing_lead"
+    assert "copywriter" in by_id["marketing_team"]["members"]

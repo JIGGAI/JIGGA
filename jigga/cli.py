@@ -563,8 +563,10 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_scaffold.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     recipes_scaffold.add_argument("--json", action="store_true", dest="json_output")
 
-    team = sub.add_parser("team", help="Run teams, scaffold workspaces, and drive handoffs")
+    team = sub.add_parser("team", help="List/run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
+    team_list = team_sub.add_parser("list", help="List teams (id, lead, members)")
+    team_list.add_argument("--json", action="store_true", dest="json_output")
     team_run = team_sub.add_parser("run")
     team_handoff = team_sub.add_parser("handoff", help="Fire a team's handoffs from a member (file-first)")
     team_handoff.add_argument("team_id")
@@ -1455,6 +1457,24 @@ def _cmd_scheduler(args: argparse.Namespace) -> int:
 
 def _cmd_team(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
+    if args.team_command == "list":
+        from jigga.core.config import load_teams
+        from jigga.runtime.workspaces import members, team_lead
+
+        teams = [
+            {"id": team.id, "name": team.name, "purpose": team.purpose,
+             "lead": team_lead(team), "members": members(team)}
+            for team in load_teams(paths.teams).values()
+        ]
+        teams.sort(key=lambda t: t["id"])
+        if args.json_output:
+            print_json(teams)
+        elif not teams:
+            print("No teams. Scaffold one: jigga recipes scaffold marketing-team")
+        else:
+            for team in teams:
+                print(f"{team['id']:24} lead={team['lead'] or '-':20} members={len(team['members'])}  {team['name']}")
+        return 0
     if args.team_command == "run":
         print_json(run_team(paths, args.team_id))
         return 0
