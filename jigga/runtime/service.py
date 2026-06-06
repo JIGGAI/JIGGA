@@ -181,6 +181,10 @@ def install_service(
         commands = [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT],
+            # enable --now is a NO-OP on an already-active unit — an explicit
+            # restart is what makes re-install pick up new code/unit content
+            # (launchd gets this via kickstart -k).
+            ["systemctl", "--user", "restart", SYSTEMD_UNIT],
         ]
         optional_first = False
 
@@ -382,6 +386,8 @@ def install_app_service(name: str, argv: list[str], *, cwd: Path, env: dict[str,
         commands = [
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now", app_unit_name(name)],
+            # enable --now no-ops on an active unit; restart applies changes.
+            ["systemctl", "--user", "restart", app_unit_name(name)],
         ]
         optional_first = False
 
