@@ -590,6 +590,9 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Recipe-first: write the change into the agent's definition in the "
                                  "team recipe (user-dir copy) and regenerate the yaml from it")
     agents_set.add_argument("--json", action="store_true", dest="json_output")
+    agents_delete = agents_sub.add_parser("delete", help="Delete an agent (backed up; recipe member de-staffed)")
+    agents_delete.add_argument("agent_id")
+    agents_delete.add_argument("--json", action="store_true", dest="json_output")
     agents_files = agents_sub.add_parser("files", help="List an agent's identity files (required/optional/missing)")
     agents_files.add_argument("agent_id")
     agents_files.add_argument("--json", action="store_true", dest="json_output")
@@ -639,6 +642,9 @@ def build_parser() -> argparse.ArgumentParser:
     team_set.add_argument("key")
     team_set.add_argument("value")
     team_set.add_argument("--json", action="store_true", dest="json_output")
+    team_delete = team_sub.add_parser("delete", help="Delete a team: yaml, workspace, and its record-owned agents/workflows (backed up)")
+    team_delete.add_argument("team_id")
+    team_delete.add_argument("--json", action="store_true", dest="json_output")
     team_staff = team_sub.add_parser(
         "staff", help="Staff a membership-only member: write its agent definition into the recipe "
                       "(user-dir copy) and create-only scaffold the new agent")
@@ -1675,6 +1681,19 @@ def _cmd_team(args: argparse.Namespace) -> int:
                                verb=args.team_command,
                                validate_fn=lambda: _load_teams(paths.teams),
                                audit_type="team.changed", logs_dir=paths.logs)
+    if args.team_command == "delete":
+        from jigga.runtime.deletion import delete_team
+        try:
+            result = delete_team(paths, args.team_id)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"✓ Deleted team {args.team_id!r} — removed {len(result['removed'])} item(s)  "
+                  "(backups: state/backups/)")
+        return 0
     if args.team_command == "staff":
         from jigga.runtime.recipes import staff_member
         try:
@@ -1954,6 +1973,20 @@ def _cmd_agents(args: argparse.Namespace) -> int:
                                verb=args.agents_command,
                                validate_fn=lambda: load_agents(paths.agents),
                                audit_type="agent.changed", logs_dir=paths.logs)
+    if args.agents_command == "delete":
+        from jigga.runtime.deletion import delete_agent
+        try:
+            result = delete_agent(paths, args.agent_id)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"✓ Deleted agent {args.agent_id!r}  (backups: state/backups/)")
+            if result.get("destaffed_recipe"):
+                print(f"  recipe member de-staffed (membership-only again): {result['destaffed_recipe']}")
+        return 0
     if args.agents_command in ("files", "file"):
         from jigga.runtime.entity_files import agent_files_root, list_agent_files
         from jigga.runtime.workspaces import ensure_agent_workspace
