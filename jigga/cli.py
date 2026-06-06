@@ -574,6 +574,11 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_due = scheduler_sub.add_parser("due", help="List due events for the current time")
     scheduler_due.add_argument("--at", help="Evaluate due events at an ISO timestamp")
 
+    agents_p = sub.add_parser("agents", help="List configured agents")
+    agents_sub = agents_p.add_subparsers(dest="agents_command", required=True)
+    agents_list = agents_sub.add_parser("list", help="List agents (id, role, model, team, default)")
+    agents_list.add_argument("--json", action="store_true", dest="json_output")
+
     recipes_cmd = sub.add_parser(
         "recipes", help="List, inspect, and scaffold recipes (agents + teams + workflows from one template)")
     recipes_sub = recipes_cmd.add_subparsers(dest="recipes_command", required=True)
@@ -1761,6 +1766,40 @@ def _recipes_scaffold(paths: Any, name: str, *, override_id: str | None,
     return 0
 
 
+
+def _cmd_agents(args: argparse.Namespace) -> int:
+    from jigga.runtime.workspaces import find_agent_teams
+
+    paths = get_paths(args.home)
+    agents = load_agents(paths.agents)
+    out = []
+    for agent in agents.values():
+        teams = find_agent_teams(paths.teams, agent.id)
+        out.append({
+            "id": agent.id,
+            "name": agent.name,
+            "role": agent.role,
+            "model": agent.model,
+            "memory_scope": agent.memory_scope,
+            "default": bool(agent.default),
+            "tools": list(agent.tools or []),
+            "team": teams[0].id if teams else None,
+            "schedules": len((agent.wake or {}).get("schedules") or []),
+        })
+    out.sort(key=lambda a: (not a["default"], a["id"]))
+    if args.json_output:
+        print_json(out)
+    elif not out:
+        print("No agents. Scaffold some: jigga recipes scaffold personal-admin-team")
+    else:
+        for a in out:
+            star = "*" if a["default"] else " "
+            team = a["team"] or "-"
+            print(f"{star} {a['id']:24} team={team:20} model={a['model'] or '-':16} "
+                  f"tools={len(a['tools'])}  {a['role'][:50]}")
+    return 0
+
+
 def _cmd_recipes(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.recipes_command == "list":
@@ -1954,6 +1993,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "scheduler": _cmd_scheduler,
     "team": _cmd_team,
     "recipes": _cmd_recipes,
+    "agents": _cmd_agents,
     "mailbox": _cmd_mailbox,
     "model": _cmd_model,
     "run": _cmd_run,
