@@ -563,3 +563,16 @@ def test_cli_team_list_json(tmp_path: Path, capsys) -> None:
     assert "marketing_team" in by_id and "personal_admin_team" in by_id
     assert by_id["marketing_team"]["lead"] == "marketing_lead"
     assert "copywriter" in by_id["marketing_team"]["members"]
+
+
+def test_cli_agents_list_json(tmp_path: Path, capsys) -> None:
+    """`jigga agents list --json` — the surface jiggaview's Agents page reads."""
+    init_runtime(tmp_path, examples=True)
+    assert main(["--home", str(tmp_path), "agents", "list", "--json"]) == 0
+    agents = json.loads(capsys.readouterr().out)
+    by_id = {a["id"]: a for a in agents}
+    briefing = by_id["daily_briefing_agent"]
+    assert briefing["team"] == "personal_admin_team"
+    assert briefing["schedules"] == 1
+    assert "memory.search" in briefing["tools"]
+    assert by_id["copywriter"]["team"] == "marketing_team"
