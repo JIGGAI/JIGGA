@@ -42,9 +42,13 @@ def test_delete_agent_backs_up_and_destaffs_recipe(tmp_path: Path, capsys) -> No
 
 def test_delete_team_removes_owned_artifacts_only(tmp_path: Path, capsys) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    # a hand-written agent that happens to share the roster must survive
+    # a hand-written agent ON THE ROSTER (but not record-owned) must survive
     write_yaml(paths.agents / "outsider.yaml", {"id": "outsider", "name": "O", "role": "r",
                "memory_scope": "task_only", "tools": [], "permissions": {}})
+    from jigga.core.io import read_yaml
+    team_doc = read_yaml(paths.teams / "marketing_team.yaml")
+    team_doc["agents"].append({"id": "outsider", "role": "extra", "required": False})
+    write_yaml(paths.teams / "marketing_team.yaml", team_doc)
 
     assert main(["--home", str(tmp_path), "team", "delete", "marketing_team", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
