@@ -578,6 +578,15 @@ def build_parser() -> argparse.ArgumentParser:
     agents_sub = agents_p.add_subparsers(dest="agents_command", required=True)
     agents_list = agents_sub.add_parser("list", help="List agents (id, role, model, team, default)")
     agents_list.add_argument("--json", action="store_true", dest="json_output")
+    agents_get = agents_sub.add_parser("get", help="Read an agent's yaml (or one dotted key)")
+    agents_get.add_argument("agent_id")
+    agents_get.add_argument("key", nargs="?")
+    agents_get.add_argument("--json", action="store_true", dest="json_output")
+    agents_set = agents_sub.add_parser("set", help="Set a dotted key in an agent's yaml (validated, audited)")
+    agents_set.add_argument("agent_id")
+    agents_set.add_argument("key")
+    agents_set.add_argument("value")
+    agents_set.add_argument("--json", action="store_true", dest="json_output")
 
     recipes_cmd = sub.add_parser(
         "recipes", help="List, inspect, and scaffold recipes (agents + teams + workflows from one template)")
@@ -602,6 +611,15 @@ def build_parser() -> argparse.ArgumentParser:
     team_sub = team.add_subparsers(dest="team_command", required=True)
     team_list = team_sub.add_parser("list", help="List teams (id, lead, members)")
     team_list.add_argument("--json", action="store_true", dest="json_output")
+    team_get = team_sub.add_parser("get", help="Read a team's yaml (or one dotted key)")
+    team_get.add_argument("team_id")
+    team_get.add_argument("key", nargs="?")
+    team_get.add_argument("--json", action="store_true", dest="json_output")
+    team_set = team_sub.add_parser("set", help="Set a dotted key in a team's yaml (validated, audited)")
+    team_set.add_argument("team_id")
+    team_set.add_argument("key")
+    team_set.add_argument("value")
+    team_set.add_argument("--json", action="store_true", dest="json_output")
     team_run = team_sub.add_parser("run")
     team_handoff = team_sub.add_parser("handoff", help="Fire a team's handoffs from a member (file-first)")
     team_handoff.add_argument("team_id")
@@ -1616,6 +1634,12 @@ def _cmd_scheduler(args: argparse.Namespace) -> int:
 
 def _cmd_team(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
+    if args.team_command in ("get", "set"):
+        from jigga.core.config import load_teams as _load_teams
+        return _entity_get_set(args, entity_dir=paths.teams, entity_id=args.team_id,
+                               verb=args.team_command,
+                               validate_fn=lambda: _load_teams(paths.teams),
+                               audit_type="team.changed", logs_dir=paths.logs)
     if args.team_command == "list":
         from jigga.runtime.workspaces import members, team_lead
 
@@ -1767,10 +1791,59 @@ def _recipes_scaffold(paths: Any, name: str, *, override_id: str | None,
 
 
 
+
+def _entity_get_set(args: argparse.Namespace, *, entity_dir: Path, entity_id: str,
+                    verb: str, validate_fn, audit_type: str, logs_dir: Path) -> int:
+    """Dotted-key get/set over an entity yaml (team/agent) — the config_edit
+    pattern applied to declared entities. `set` re-validates the whole file by
+    reloading it; a value that breaks parsing is rolled back."""
+    from jigga.runtime.audit import append_event
+    from jigga.runtime.config_edit import coerce_value, get_path, set_path
+
+    path = entity_dir / f"{entity_id}.yaml"
+    if not path.exists():
+        print(f"! No such entity: {entity_id!r}")
+        return 1
+    doc = read_yaml(path)
+    if verb == "get":
+        value = get_path(doc, args.key) if args.key else doc
+        if args.json_output:
+            print_json(value)
+        else:
+            import json as _json
+            print(_json.dumps(value, indent=2, default=str) if isinstance(value, (dict, list)) else value)
+        return 0
+    value = coerce_value(args.value)
+    try:
+        old = set_path(doc, args.key, value)
+    except ValueError as exc:
+        print(f"! {exc}")
+        return 1
+    original = path.read_text(encoding="utf-8")
+    write_yaml(path, doc)
+    try:
+        validate_fn()
+    except Exception as exc:  # noqa: BLE001 — any load failure must roll back
+        path.write_text(original, encoding="utf-8")
+        print(f"! Change rolled back — it breaks {entity_id!r}: {exc}")
+        return 1
+    append_event(logs_dir, audit_type, entity=entity_id, key=args.key, old=old, new=value)
+    if args.json_output:
+        print_json({"entity": entity_id, "key": args.key, "old": old, "new": value})
+    else:
+        print(f"{entity_id}.{args.key}: {old!r} → {value!r}")
+    return 0
+
+
 def _cmd_agents(args: argparse.Namespace) -> int:
     from jigga.runtime.workspaces import find_agent_teams
 
     paths = get_paths(args.home)
+    if args.agents_command in ("get", "set"):
+        return _entity_get_set(args, entity_dir=paths.agents, entity_id=args.agent_id,
+                               verb=args.agents_command,
+                               validate_fn=lambda: load_agents(paths.agents),
+                               audit_type="agent.changed", logs_dir=paths.logs)
     agents = load_agents(paths.agents)
     out = []
     for agent in agents.values():
