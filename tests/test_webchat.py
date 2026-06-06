@@ -1,0 +1,387 @@
+"""Webchat channel (M2) — the browser as a JIGGA channel.
+
+File-backed: `jigga webchat send` appends inbox.jsonl, the adapter polls it
+past a stored offset into the NORMAL channel pipeline, the agent replies via
+the `webchat.send_message` tool into outbox.jsonl, and `--wait` makes the
+round trip synchronous for the jiggaview Chat page."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from jigga.cli import _channels_setup, main
+from jigga.commands.init import init_runtime
+from jigga.core.io import read_yaml, write_yaml
+from jigga.runtime import webchat
+from jigga.runtime.channel_listener import (
+    ingest_once,
+    long_polling_channels_enabled,
+)
+from jigga.runtime.tasks import list_tasks
+
+
+def _write_default_agent(paths, agent_id="assistant", tools=()) -> None:
+    write_yaml(paths.agents / f"{agent_id}.yaml",
+               {"id": agent_id, "name": "Assistant", "role": "pa", "default": True,
+                "permission_mode": "autonomous", "tools": list(tools)})
+
+
+def _enable_webchat(paths) -> None:
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True}
+    write_yaml(paths.config, config)
+
+
+# --- module: inbox / poll / offset ------------------------------------------
+
+
+def test_append_and_poll_roundtrip_advances_offset(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    entry = webchat.append_inbound(paths.home, "hello", sender="rj")
+    assert entry["id"].startswith("wcm")
+
+    result = webchat.poll_messages(paths.home)
+    assert result["status"] == "ok"
+    [msg] = result["messages"]
+    assert msg["text"] == "hello"
+    assert msg["sender"] == "rj"
+    assert msg["chat_id"] == "web"
+    assert msg["chat_type"] == "private"
+    assert msg["message_id"] == entry["id"]
+
+    # offset consumed — a second poll sees nothing (no double-processing)
+    assert webchat.poll_messages(paths.home)["messages"] == []
+    # new message after the offset is picked up
+    webchat.append_inbound(paths.home, "again")
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["again"]
+
+
+def test_poll_respects_limit_and_resumes(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+    first = webchat.poll_messages(paths.home, limit=2)
+    assert [m["text"] for m in first["messages"]] == ["m0", "m1"]
+    rest = webchat.poll_messages(paths.home, limit=50)
+    assert [m["text"] for m in rest["messages"]] == ["m2", "m3", "m4"]
+
+
+def test_corrupt_offset_reprocesses_from_zero(tmp_path: Path) -> None:
+    """A corrupt offset must never lose messages — worst case is reprocessing."""
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "hi")
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1
+    (paths.home / "state" / "webchat_offset.json").write_text("{not json", encoding="utf-8")
+    assert webchat.load_offset(paths.home) == 0
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["hi"]
+
+
+def test_corrupt_jsonl_lines_skipped(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "good")
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    with inbox.open("a", encoding="utf-8") as fh:
+        fh.write("{broken\n")
+        fh.write('"not a dict"\n')
+    webchat.append_inbound(paths.home, "also good")
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["good", "also good"]
+
+
+# --- module: outbox / history -------------------------------------------------
+
+
+def test_send_message_appends_outbox(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    result = webchat.send_message(paths.home, "web", "reply text")
+    assert result["status"] == "ok"
+    assert result["message_id"].startswith("wcr")
+    outbox = paths.home / "channels" / "webchat" / "outbox.jsonl"
+    [entry] = [json.loads(line) for line in outbox.read_text(encoding="utf-8").splitlines()]
+    assert entry["sender"] == "agent"
+    assert entry["text"] == "reply text"
+    assert entry["conversation_id"] == "web"
+
+
+def test_history_merges_chronologically_and_filters_conversation(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "q1")
+    webchat.send_message(paths.home, "web", "a1")
+    webchat.append_inbound(paths.home, "other room", conversation_id="room2")
+    merged = webchat.history(paths.home)
+    assert [(e["sender"], e["text"]) for e in merged] == [("you", "q1"), ("agent", "a1")]
+    assert [e["text"] for e in webchat.history(paths.home, conversation_id="room2")] == ["other room"]
+
+
+def test_history_interleaves_by_timestamp_not_file_order(tmp_path: Path) -> None:
+    """A reply between two questions must sort between them — the naive
+    inbox-then-outbox concatenation order is wrong for any real conversation."""
+    paths = init_runtime(tmp_path)
+    channel_dir = paths.home / "channels" / "webchat"
+    channel_dir.mkdir(parents=True)
+    rows = [
+        ("inbox.jsonl", "you", "q1", "2026-06-06T10:00:00Z"),
+        ("inbox.jsonl", "you", "q2", "2026-06-06T10:02:00Z"),
+        ("outbox.jsonl", "agent", "a1", "2026-06-06T10:01:00Z"),
+        ("outbox.jsonl", "agent", "a2", "2026-06-06T10:03:00Z"),
+    ]
+    for name, sender, text, ts in rows:
+        with (channel_dir / name).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"id": text, "conversation_id": "web", "sender": sender,
+                                 "text": text, "ts": ts}) + "\n")
+    assert [e["text"] for e in webchat.history(paths.home)] == ["q1", "a1", "q2", "a2"]
+
+
+def test_history_limit_keeps_most_recent(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+    assert [e["text"] for e in webchat.history(paths.home, limit=2)] == ["m3", "m4"]
+
+
+# --- adapter -------------------------------------------------------------------
+
+
+def test_adapter_poll_produces_webchat_events(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "hello agent", sender="rj")
+    adapter = webchat.WebchatAdapter()
+    result = adapter.poll(paths.home)
+    assert result["status"] == "ok"
+    [event] = result["events"]
+    assert event.source == "webchat"
+    assert event.text == "hello agent"
+    assert event.actor_name == "rj"
+    assert event.is_direct  # private conversation → activation modes behave like a DM
+
+
+def test_adapter_send_writes_outbox(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.WebchatAdapter().send(paths.home, conversation_id="web", text="out")
+    assert [e["text"] for e in webchat.history(paths.home)] == ["out"]
+
+
+def test_long_polls_flags_pace_the_supervisor_loop(tmp_path: Path) -> None:
+    """Webchat reads a local file and returns instantly — it must NOT claim
+    long-polling or the daemon loop would drop its inter-tick sleep and spin."""
+    from jigga.runtime.channels import TelegramAdapter
+
+    assert TelegramAdapter.long_polls is True
+    assert webchat.WebchatAdapter.long_polls is False
+
+    paths = init_runtime(tmp_path)
+    assert not long_polling_channels_enabled(paths.home)
+    _enable_webchat(paths)
+    assert not long_polling_channels_enabled(paths.home)   # webchat alone: cron cadence
+    config = read_yaml(paths.config)
+    config["channels"]["telegram"] = {"enabled": True}
+    write_yaml(paths.config, config)
+    assert long_polling_channels_enabled(paths.home)       # telegram blocks → back-to-back ticks
+
+
+# --- capability handler / dispatch ----------------------------------------------
+
+
+def _dispatch(paths, agent_tools, action, payload):
+    from jigga.core.models import AgentConfig, WorkflowStep
+    from jigga.runtime.capabilities import CapabilityRegistry
+    from jigga.runtime.dispatcher import dispatch_action
+    from jigga.runtime.runtime_context import RuntimeContext
+
+    registry = CapabilityRegistry.load()
+    agent = AgentConfig(id="assistant", name="A", role="r", tools=list(agent_tools))
+    runtime = RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs,
+                             sessions_dir=paths.home / "sessions")
+    return dispatch_action(WorkflowStep(id="s", action=action), payload, {},
+                           runtime, registry, paths.logs, run_id="r1")
+
+
+def test_agent_replies_via_send_message_tool(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    result = _dispatch(paths, ["webchat.send_message"], "webchat.send_message",
+                       {"text": "tool reply", "chat_id": "web"})
+    assert result["status"] == "ok"
+    assert [e["text"] for e in webchat.history(paths.home)] == ["tool reply"]
+
+
+def test_send_message_requires_text(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    with pytest.raises(ValueError, match="requires 'text'"):
+        _dispatch(paths, ["webchat.send_message"], "webchat.send_message", {"chat_id": "web"})
+
+
+def test_poll_is_runtime_only_for_agents(tmp_path: Path) -> None:
+    """Ingest belongs to the pipeline: an agent invoking webchat.poll_messages
+    is denied at dispatch even if a legacy grant listed it."""
+    paths = init_runtime(tmp_path)
+    with pytest.raises(ValueError, match="runtime-only"):
+        _dispatch(paths, ["webchat.poll_messages"], "webchat.poll_messages", {})
+
+
+def test_handler_rejects_unknown_action(tmp_path: Path) -> None:
+    from jigga.core.models import WorkflowStep
+
+    paths = init_runtime(tmp_path)
+
+    class _Runtime:
+        home = paths.home
+
+    with pytest.raises(ValueError, match="Unknown webchat action"):
+        webchat.webchat_handler(WorkflowStep(id="s", action="webchat.bogus"), None, {}, {}, _Runtime())
+
+
+def test_onboard_tool_grant_excludes_runtime_only_actions() -> None:
+    from jigga.commands.onboard import _all_capability_actions
+
+    actions = _all_capability_actions()
+    assert "webchat.send_message" in actions
+    assert "webchat.poll_messages" not in actions
+
+
+# --- ingest: only_channel scoping ------------------------------------------------
+
+
+def test_ingest_only_channel_skips_other_enabled_channels(tmp_path: Path) -> None:
+    """`webchat send --wait` must never block behind telegram's long-poll."""
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    config = read_yaml(paths.config)
+    config["channels"] = {
+        "telegram": {"enabled": True, "allowed_chat_ids": ["111"], "default_agent": "assistant"},
+        "webchat": {"enabled": True},
+    }
+    write_yaml(paths.config, config)
+    webchat.append_inbound(paths.home, "scoped")
+
+    def _explode(*_a, **_k):
+        raise AssertionError("telegram polled during webchat-scoped ingest")
+
+    with patch("jigga.runtime.telegram.poll_messages", _explode), \
+         patch("jigga.runtime.channel_listener.run_agent", lambda *a, **k: {"ok": True}):
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
+                              long_poll_seconds=0, only_channel="webchat")
+
+    assert summary["polled"] == ["webchat"]
+    [task] = list_tasks(paths.tasks)
+    assert task.metadata["channel"] == "webchat"
+    assert task.assignee == "assistant"
+
+
+# --- CLI: send / --wait / history -------------------------------------------------
+
+
+def test_cli_send_auto_enables_channel_and_grants_reply_tool(tmp_path: Path) -> None:
+    """Typing in the local chat IS the opt-in: first send enables the channel,
+    claims the default-channel slot, and grants the routed agent the reply tool."""
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths, tools=["filesystem.read_file"])
+
+    assert main(["--home", str(tmp_path), "webchat", "send", "--text", "hi there"]) == 0
+
+    config = read_yaml(paths.config)
+    assert config["channels"]["webchat"]["enabled"] is True
+    assert config["channels"]["default"] == "webchat"
+    tools = read_yaml(paths.agents / "assistant.yaml")["tools"]
+    assert "webchat.send_message" in tools
+    assert "webchat.poll_messages" not in tools             # ingest stays runtime-only
+    assert "filesystem.read_file" in tools                  # existing grants preserved
+    # message landed in the inbox, unconsumed (supervisor backstop will ingest)
+    assert [e["text"] for e in webchat.history(paths.home)] == ["hi there"]
+    assert webchat.load_offset(paths.home) == 0
+
+
+def test_cli_send_does_not_steal_existing_default_channel(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    config = read_yaml(paths.config)
+    config["channels"] = {"default": "telegram", "telegram": {"enabled": True}}
+    write_yaml(paths.config, config)
+
+    assert main(["--home", str(tmp_path), "webchat", "send", "--text", "x"]) == 0
+    assert read_yaml(paths.config)["channels"]["default"] == "telegram"
+
+
+def test_cli_send_wait_returns_agent_reply(tmp_path: Path, capsys) -> None:
+    """The synchronous chat round trip: send --wait ingests webchat-only inline
+    and returns exactly the replies this message produced."""
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    # a stale agent reply from an earlier exchange must NOT be re-reported
+    webchat.send_message(paths.home, "web", "old reply")
+
+    def fake_run_agent(home, logs, tasks, agents, agent_id, **kw):
+        webchat.send_message(home, "web", "fresh reply")
+        return {"agent_id": agent_id}
+
+    with patch("jigga.runtime.channel_listener.run_agent", fake_run_agent):
+        assert main(["--home", str(tmp_path), "webchat", "send", "--wait", "--json",
+                     "--text", "question?"]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["message"]["text"] == "question?"
+    assert [r["text"] for r in out["replies"]] == ["fresh reply"]
+    assert out["channel_enabled_now"] is True
+
+
+def test_cli_send_wait_consumes_offset_no_double_processing(tmp_path: Path) -> None:
+    """The supervisor's backstop poll must not re-run a message --wait handled."""
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    runs: list[str] = []
+
+    def fake_run_agent(home, logs, tasks, agents, agent_id, **kw):
+        runs.append(agent_id)
+        return {"agent_id": agent_id}
+
+    with patch("jigga.runtime.channel_listener.run_agent", fake_run_agent):
+        assert main(["--home", str(tmp_path), "webchat", "send", "--wait",
+                     "--text", "once only"]) == 0
+        assert len(list_tasks(paths.tasks)) == 1
+        # the backstop cycle: nothing new to ingest
+        summary = ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
+                              long_poll_seconds=0)
+        assert summary["created"] == []
+        assert len(list_tasks(paths.tasks)) == 1
+
+
+def test_cli_history_json(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "q")
+    webchat.send_message(paths.home, "web", "a")
+    assert main(["--home", str(tmp_path), "webchat", "history", "--json"]) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(e["sender"], e["text"]) for e in entries] == [("you", "q"), ("agent", "a")]
+
+
+def test_cli_history_respects_conversation_and_limit(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path)
+    for i in range(3):
+        webchat.append_inbound(paths.home, f"m{i}", conversation_id="room")
+    webchat.append_inbound(paths.home, "elsewhere")
+    assert main(["--home", str(tmp_path), "webchat", "history", "--json",
+                 "--conversation", "room", "--limit", "2"]) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [e["text"] for e in entries] == ["m1", "m2"]
+
+
+# --- channels setup (wizard) -------------------------------------------------------
+
+
+def test_channels_setup_webchat_skips_install(tmp_path: Path) -> None:
+    """Webchat is bundled — the wizard enables it without any capability
+    install/auth step (catalog capability=None)."""
+    paths = init_runtime(tmp_path)
+
+    def _scripted(answers):
+        it = iter(answers)
+        return lambda _p: next(it)
+
+    # pick webchat (sorted: telegram=1, webchat=2) → activation: always(1)
+    _channels_setup(paths, prompt=_scripted(["2", "1"]), echo=lambda *_a, **_k: None)
+    cfg = read_yaml(paths.config)["channels"]
+    assert cfg["webchat"]["enabled"] is True
+    assert cfg["webchat"]["activation"] == "always"
+    assert cfg["default"] == "webchat"

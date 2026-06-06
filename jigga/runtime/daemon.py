@@ -8,7 +8,7 @@ from typing import Any
 
 from jigga.core.paths import get_paths
 from jigga.runtime.audit import append_event
-from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, enabled_channels
+from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, long_polling_channels_enabled
 from jigga.runtime.supervisor import supervisor_tick
 
 # An always-on supervisor runs indefinitely; keep only the most recent tick
@@ -51,8 +51,13 @@ def supervisor_loop(
     try:
         while not stopped["flag"] and (max_ticks is None or count < max_ticks):
             # Re-checked each tick so enabling/disabling a channel takes effect
-            # without restarting the daemon.
-            channels_on = bool(enabled_channels(home_path))
+            # without restarting the daemon. Only a channel whose poll actually
+            # blocks (Telegram long-poll) counts: it paces the loop, so ticks
+            # can run back-to-back. Webchat polls a local file and returns
+            # instantly — if it counted, the loop would hot-spin; it keeps the
+            # cron cadence instead (the `webchat send --wait` path is what
+            # makes browser chat real-time, not the supervisor).
+            channels_on = long_polling_channels_enabled(home_path)
             poll_seconds = channel_long_poll_seconds if channels_on else 0
             result = supervisor_tick(home, channel_long_poll_seconds=poll_seconds)
             ticks.append(result)

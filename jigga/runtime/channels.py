@@ -77,9 +77,16 @@ class JiggaEvent:
 class ChannelAdapter(Protocol):
     """The contract every channel implements. `poll` returns
     `{"status": "ok"|<error>, "events": [JiggaEvent, ...]}`; `send` delivers an
-    outbound reply to a conversation."""
+    outbound reply to a conversation.
+
+    `long_polls` declares whether `poll` actually blocks on `long_poll_seconds`
+    (Telegram: HTTP long-poll). The supervisor loop uses it for pacing — a
+    blocking poll lets ticks run back-to-back for near-real-time chat; a
+    channel that returns instantly (webchat reads a local file) must NOT claim
+    it, or the loop would hot-spin."""
 
     name: str
+    long_polls: bool
 
     def poll(self, home: Path, *, long_poll_seconds: int = 0) -> dict[str, Any]: ...
 
@@ -92,6 +99,7 @@ class TelegramAdapter:
     normalized messages into `JiggaEvent`s."""
 
     name = "telegram"
+    long_polls = True
 
     def poll(self, home: Path, *, long_poll_seconds: int = 0) -> dict[str, Any]:
         result = telegram.poll_messages(home, long_poll_seconds=long_poll_seconds)
@@ -114,8 +122,14 @@ class TelegramAdapter:
         )
 
 
+def _webchat_adapter() -> "ChannelAdapter":
+    from jigga.runtime.webchat import WebchatAdapter
+
+    return WebchatAdapter()
+
+
 # Channel name -> adapter. Slack / iMessage / webhook register here once built.
-ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter()}
+ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter()}
 
 
 def get_adapter(name: str) -> ChannelAdapter | None:

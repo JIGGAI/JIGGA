@@ -111,8 +111,11 @@ def _set_model_provider(paths: Any, provider: str, model: str | None) -> None:
 
 # Installable channels: channel name -> (optional capability to install, blurb).
 # New adapters (Slack, iMessage) register here once their capability exists.
-_CHANNEL_CATALOG: dict[str, tuple[str, str]] = {
+# A `None` capability means nothing to install — the channel is bundled and
+# needs no auth (webchat: a local file the browser chat page reads/writes).
+_CHANNEL_CATALOG: dict[str, tuple[str | None, str]] = {
     "telegram": ("telegram", "Telegram bot — poll inbound + reply"),
+    "webchat": (None, "Browser chat (jiggaview Chat page) — local file-backed, no auth"),
 }
 
 
@@ -139,7 +142,8 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
 
     capability = _CHANNEL_CATALOG[name][0]
     # Reuse the channel's guided install: token/credentials + config + approval.
-    if install_capability(paths, capability, input_fn=prompt, print_fn=echo) != 0:
+    # Bundled channels (capability=None) have nothing to install or authenticate.
+    if capability is not None and install_capability(paths, capability, input_fn=prompt, print_fn=echo) != 0:
         return
 
     activation = [
@@ -194,7 +198,9 @@ def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, l
     agent_path = paths.agents / f"{routed}.yaml"
     if not agent_path.exists():
         return None
-    capability_name = _CHANNEL_CATALOG.get(channel, (channel,))[0]
+    # Catalog entry with capability=None (bundled channel) → the capability is
+    # named after the channel itself (webchat → bundled `webchat` capability).
+    capability_name = _CHANNEL_CATALOG.get(channel, (channel,))[0] or channel
     registry = CapabilityRegistry.load(user_capabilities=paths.capabilities, approvals_dir=paths.policies)
     capability = registry.get(capability_name)
     actions = ([a for a in capability.actions if not capability.is_runtime_only(a)]
@@ -534,6 +540,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-process", action="store_true",
         help="Only enqueue messages as tasks; don't run agents (let the supervisor handle them)",
     )
+
+    webchat = sub.add_parser(
+        "webchat", help="Browser chat channel (jiggaview Chat page) — file-backed, local-only"
+    )
+    webchat_sub = webchat.add_subparsers(dest="webchat_command", required=True)
+    webchat_send = webchat_sub.add_parser(
+        "send", help="Send a message into webchat (first use enables the channel + grants the reply tool)"
+    )
+    webchat_send.add_argument("--text", required=True, help="Message text")
+    webchat_send.add_argument("--conversation", default=None, help="Conversation id (default: web)")
+    webchat_send.add_argument("--sender", default="you", help="Sender label (default: you)")
+    webchat_send.add_argument(
+        "--wait", action="store_true",
+        help="Ingest inline and return the agent's reply in this invocation (synchronous chat UX)",
+    )
+    webchat_send.add_argument("--json", action="store_true", dest="json_output")
+    webchat_history = webchat_sub.add_parser(
+        "history", help="The merged conversation (your messages + agent replies), chronological"
+    )
+    webchat_history.add_argument("--conversation", default=None, help="Conversation id (default: web)")
+    webchat_history.add_argument("--limit", type=int, default=200)
+    webchat_history.add_argument("--json", action="store_true", dest="json_output")
 
     logs = sub.add_parser("logs", help="Tail the audit log")
     logs_sub = logs.add_subparsers(dest="logs_command", required=True)
@@ -1575,6 +1603,79 @@ def _cmd_channels(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ensure_webchat_enabled(paths: Any) -> dict[str, Any]:
+    """First use of webchat enables it — typing in the local chat IS the opt-in
+    (no token, no auth; only someone who can reach the jiggaview host gets here).
+    Sets `channels.webchat.enabled`, claims the default-channel slot if nothing
+    else has, and grants the routed agent the reply tool (same close-the-loop
+    grant `channels setup` does). Idempotent."""
+    from jigga.runtime.audit import append_event
+
+    config = read_yaml(paths.config)
+    entry = config.setdefault("channels", {}).setdefault("webchat", {})
+    enabled_now = not entry.get("enabled")
+    if enabled_now:
+        entry["enabled"] = True
+        entry.setdefault("activation", "always")
+        ensure_default_channel(config, "webchat")
+        write_yaml(paths.config, config)
+        append_event(paths.logs, "channel.webchat.enabled", activation=entry["activation"])
+    granted = _grant_channel_tools(paths, "webchat", config)
+    if granted:
+        agent_id, items = granted
+        append_event(paths.logs, "channel.tools_granted", channel="webchat",
+                     agent=agent_id, granted=items)
+    return {"enabled_now": enabled_now, "granted": granted}
+
+
+def _cmd_webchat(args: argparse.Namespace) -> int:
+    from jigga.runtime import webchat
+    from jigga.runtime.channel_listener import ingest_once
+
+    paths = get_paths(args.home)
+    conversation = args.conversation or webchat.DEFAULT_CONVERSATION
+    if args.webchat_command == "send":
+        setup = _ensure_webchat_enabled(paths)
+        # Snapshot before the send so --wait can return exactly the replies this
+        # message produced (ids, not counts — robust to interleaved writers).
+        seen = {e.get("id") for e in webchat.history(paths.home, conversation_id=conversation, limit=1000)}
+        entry = webchat.append_inbound(paths.home, args.text,
+                                       conversation_id=conversation, sender=args.sender)
+        replies: list[dict[str, Any]] = []
+        if args.wait:
+            # Webchat-only ingest: synchronous send must never block behind
+            # another channel's long-poll. The offset advances here, so the
+            # supervisor's backstop poll won't double-process this message.
+            ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
+                        long_poll_seconds=0, process_agents=True, only_channel="webchat")
+            replies = [e for e in webchat.history(paths.home, conversation_id=conversation, limit=1000)
+                       if e.get("sender") == "agent" and e.get("id") not in seen]
+        result = {
+            "status": "ok",
+            "message": entry,
+            "replies": replies,
+            "channel_enabled_now": setup["enabled_now"],
+        }
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"sent {entry['id']} → {conversation}")
+            for reply in replies:
+                print(f"agent: {reply.get('text')}")
+            if args.wait and not replies:
+                print("(no reply yet — the agent run produced none; check `jigga logs tail`)")
+        return 0
+    if args.webchat_command == "history":
+        entries = webchat.history(paths.home, conversation_id=conversation, limit=args.limit)
+        if args.json_output:
+            print_json(entries)
+        else:
+            for e in entries:
+                print(f"[{e.get('ts')}] {e.get('sender')}: {e.get('text')}")
+        return 0
+    return 0
+
+
 def _cmd_approvals(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.approvals_command == "list":
@@ -2357,6 +2458,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "gog": _cmd_gog,
     "telegram": _cmd_telegram,
     "channels": _cmd_channels,
+    "webchat": _cmd_webchat,
     "approvals": _cmd_approvals,
     "logs": _cmd_logs,
     "audit": _cmd_audit,

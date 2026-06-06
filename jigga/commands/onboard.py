@@ -61,6 +61,11 @@ def _all_capability_actions() -> list[str]:
     actions: list[str] = []
     for cap in bundled_capabilities():
         for action in cap.actions:
+            # Runtime-only actions (e.g. webchat.poll_messages) belong to the
+            # ingest pipeline — never list them as agent tools; the dispatcher
+            # would deny them and the model would just waste a turn trying.
+            if cap.is_runtime_only(action):
+                continue
             if action not in actions:
                 actions.append(action)
     return actions

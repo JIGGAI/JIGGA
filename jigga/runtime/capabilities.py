@@ -209,6 +209,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.notifications",
     },
     {
+        "name": "webchat",
+        "version": "0.1.0",
+        "summary": "Reply in the jiggaview browser chat (file-backed webchat channel).",
+        "actions": ["webchat.send_message", "webchat.poll_messages"],
+        "runtime_only_actions": ["webchat.poll_messages"],
+        "risk_level": "low",
+        "handler": "runtime.webchat",
+    },
+    {
         "name": "mailbox",
         "version": "0.1.0",
         "summary": "File-backed agent mailbox — send durable messages to a teammate's inbox (read on their next wake).",
