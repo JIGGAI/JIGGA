@@ -348,6 +348,23 @@ def build_parser() -> argparse.ArgumentParser:
     state = sub.add_parser("state", help="Inspect local runtime state")
     state.add_argument("--json", action="store_true", dest="json_output")
 
+    plugins_p = sub.add_parser(
+        "plugins", help="Install and supervise app plugins (out-of-process sidecars, e.g. jiggaview)")
+    plugins_sub = plugins_p.add_subparsers(dest="plugins_command", required=True)
+    plugins_install = plugins_sub.add_parser("install", help="Install from a local dir or git URL (scan + approve + setup + service)")
+    plugins_install.add_argument("source", help="Local directory or git URL containing a type: app manifest.yaml")
+    plugins_install.add_argument("--no-service", action="store_true", help="Install without registering the always-on service")
+    plugins_install.add_argument("--json", action="store_true", dest="json_output")
+    plugins_list = plugins_sub.add_parser("list", help="Installed plugins + service state")
+    plugins_list.add_argument("--json", action="store_true", dest="json_output")
+    for verb, help_text in (("start", "Start (register/kickstart) a plugin's service"),
+                            ("stop", "Stop a plugin's service (unit removed; reinstallable with start)"),
+                            ("status", "Show a plugin's service state"),
+                            ("uninstall", "Stop the service and remove the plugin directory")):
+        sp = plugins_sub.add_parser(verb, help=help_text)
+        sp.add_argument("name")
+        sp.add_argument("--json", action="store_true", dest="json_output")
+
     config_p = sub.add_parser("config", help="Read and edit runtime config (~/.jigga/config.yaml) by dotted key")
     config_sub = config_p.add_subparsers(dest="config_command", required=True)
     config_get = config_sub.add_parser("get", help="Print a value (or the whole config)")
@@ -909,6 +926,85 @@ def _select_recipe_changes(plan: dict) -> tuple[list[dict], list[str]]:
         _edited_footer(kept)
     return chosen_actions, chosen_paths
 
+
+
+
+def _cmd_plugins(args: argparse.Namespace) -> int:
+    from jigga.runtime.plugins import (
+        install_plugin,
+        list_plugins,
+        load_app_manifest,
+        plugin_dir,
+        uninstall_plugin,
+        _service_env,
+    )
+    from jigga.runtime.service import install_app_service, status_app_service, uninstall_app_service
+
+    paths = get_paths(args.home)
+    if args.plugins_command == "install":
+        try:
+            summary = install_plugin(paths, args.source, service=not args.no_service)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(summary)
+        else:
+            print(f"✓ Installed plugin {summary['name']!r} v{summary['version']} → {summary['dir']}")
+            findings = (summary.get("scan") or {}).get("findings") or []
+            for finding in findings:
+                print(f"  ⚠ scan: {finding.get('message', finding)}")
+            service = summary.get("service")
+            if service and service.get("started"):
+                where = f"http://localhost:{summary['port']}" if summary.get("port") else "(no port declared)"
+                print(f"  Running as a {service['backend']} service — {where}")
+            elif service is not None:
+                print("  Service registered but not confirmed running — check `jigga plugins status "
+                      + summary["name"] + "`")
+        return 0
+    if args.plugins_command == "list":
+        plugins = list_plugins(paths)
+        if args.json_output:
+            print_json(plugins)
+        elif not plugins:
+            print("No plugins installed. Try: jigga plugins install https://github.com/JIGGAI/jiggaview")
+        else:
+            for plugin in plugins:
+                state = "running" if plugin["running"] else ("stopped" if plugin["installed_service"] else "no service")
+                port = f"  :{plugin['port']}" if plugin.get("port") else ""
+                print(f"{plugin['name']:20} v{plugin['version']:8} {state:10}{port}  {plugin['summary']}")
+        return 0
+    if args.plugins_command == "status":
+        result = status_app_service(args.name)
+        print_json(result) if args.json_output else print(
+            f"{args.name}: " + ("running" if result.get("running") else
+                                "installed, not running" if result.get("installed") else "not installed"))
+        return 0
+    if args.plugins_command == "start":
+        target = plugin_dir(paths.home, args.name)
+        manifest = target / "manifest.yaml"
+        if not manifest.exists():
+            print(f"! Plugin {args.name!r} is not installed")
+            return 1
+        capability = load_app_manifest(manifest)
+        result = install_app_service(capability.name, capability.run, cwd=target,
+                                     env=_service_env(paths, capability), logs_dir=paths.logs)
+        print_json(result) if args.json_output else print(
+            f"{args.name}: " + ("started" if result.get("started") else "start reported a problem — see --json"))
+        return 0 if result.get("started") or result.get("backend") != "unsupported" else 1
+    if args.plugins_command == "stop":
+        result = uninstall_app_service(args.name)
+        print_json(result) if args.json_output else print(f"{args.name}: stopped")
+        return 0
+    if args.plugins_command == "uninstall":
+        try:
+            result = uninstall_plugin(paths, args.name)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        print_json(result) if args.json_output else print(f"✓ Uninstalled {args.name!r}")
+        return 0
+    return 0
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
@@ -1836,6 +1932,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "doctor": _cmd_doctor,
     "update": _cmd_update,
     "config": _cmd_config,
+    "plugins": _cmd_plugins,
     "state": _cmd_state,
     "memory": _cmd_memory,
     "workflow": _cmd_workflow,

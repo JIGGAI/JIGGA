@@ -11,11 +11,12 @@ from jigga.core.io import ensure_dir, list_config_files, read_json, read_yaml, w
 APPROVALS_FILE = "capability_approvals.json"
 
 VALID_RISK_LEVELS = {"low", "medium", "high"}
-VALID_CAPABILITY_TYPES = {"native", "skill_pack", "mcp_server"}
+VALID_CAPABILITY_TYPES = {"native", "skill_pack", "mcp_server", "app"}
 
 # Auto-assigned handler key for each capability type when the manifest does
 # not declare one explicitly. Built-in dispatch table registers each of these.
 DEFAULT_HANDLERS_BY_TYPE = {
+    "app": "app.none",  # apps are supervised processes, never dispatched as actions
     "native": "dry_run.generic",
     "skill_pack": "skill_pack.default",
     "mcp_server": "mcp_server.subprocess",
@@ -41,6 +42,14 @@ class CapabilityManifest:
     # skill_pack-specific field: filename inside the pack dir holding the
     # instructions/system-prompt the model is given on dispatch.
     instructions: str = "instructions.md"
+    # app-specific fields (plugins — out-of-process supervised sidecars):
+    # `run` is the long-running argv (service ExecStart, cwd = plugin dir);
+    # `setup` is a list of one-shot argvs run at install (npm ci, build...);
+    # `port`/`app_env` flow into the service unit environment.
+    run: list[str] = field(default_factory=list)
+    setup: list[list[str]] = field(default_factory=list)
+    port: int | None = None
+    app_env: dict[str, str] = field(default_factory=dict)
     source: str | None = None
     manifest_hash: str | None = None
     bundled: bool = False
@@ -66,11 +75,17 @@ class CapabilityManifest:
         bundled: bool = False,
         manifest_hash: str | None = None,
     ) -> "CapabilityManifest":
-        missing = [key for key in ("name", "version", "summary", "actions") if not data.get(key)]
+        kind_early = str(data.get("type", "native"))
+        required = ("name", "version", "summary") if kind_early == "app" else ("name", "version", "summary", "actions")
+        missing = [key for key in required if not data.get(key)]
         if missing:
             raise ValueError(f"Capability manifest missing required fields: {', '.join(missing)}")
-        actions = data.get("actions")
-        if not isinstance(actions, list) or not actions or not all(isinstance(item, str) and item for item in actions):
+        actions = data.get("actions") or []
+        if kind_early == "app":
+            if actions:
+                raise ValueError("type: app manifests declare no actions — apps are supervised "
+                                 "processes, not dispatchable tools")
+        elif not isinstance(actions, list) or not actions or not all(isinstance(item, str) and item for item in actions):
             raise ValueError("Capability manifest field 'actions' must be a non-empty list of strings")
         risk = str(data.get("risk_level", "low"))
         if risk not in VALID_RISK_LEVELS:
@@ -93,6 +108,20 @@ class CapabilityManifest:
         args = data.get("args") or []
         if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
             raise ValueError("Capability 'args' must be a list of strings")
+
+        run = data.get("run") or []
+        if kind == "app":
+            if not isinstance(run, list) or not run or not all(isinstance(item, str) and item for item in run):
+                raise ValueError("type: app capability requires a non-empty 'run' argv list")
+        raw_setup = data.get("setup") or []
+        setup: list[list[str]] = []
+        for entry in raw_setup:
+            if not isinstance(entry, list) or not all(isinstance(item, str) for item in entry):
+                raise ValueError("Capability 'setup' must be a list of argv lists")
+            setup.append([str(item) for item in entry])
+        port = data.get("port")
+        if port is not None and not isinstance(port, int):
+            raise ValueError("Capability 'port' must be an integer")
 
         # Handler defaults are type-aware. If the manifest declares a handler
         # explicitly, that wins (so native packs can still ship custom code via
@@ -121,6 +150,10 @@ class CapabilityManifest:
             bundled=bundled,
             runtime_only_actions=[str(a) for a in (data.get("runtime_only_actions") or [])],
             when_to_use=str(data["when_to_use"]) if data.get("when_to_use") else None,
+            run=[str(item) for item in run] if isinstance(run, list) else [],
+            setup=setup,
+            port=port,
+            app_env={str(k): str(v) for k, v in (data.get("app_env") or {}).items()},
         )
 
     def to_dict(self) -> dict[str, Any]:
