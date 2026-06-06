@@ -230,25 +230,28 @@ def _finalize_agent_doc(agent_id: str, definition: dict[str, Any],
 
 
 def _write_recipe_workflows(workflows_dir: Path, recipe: Recipe, ctx: dict[str, str],
-                            *, overwrite: bool) -> dict[str, list[str]]:
+                            *, overwrite: bool, recorded: dict[str, str]) -> dict[str, list[str]]:
     """Write the recipe's embedded `workflows:` (full workflow documents in the
     frontmatter) into the runtime workflows dir — a recipe is a self-contained
     installable unit: agents + team + the workflows they run. Templated;
     create-only unless `overwrite` (same contract as agents/teams)."""
     written: list[str] = []
+    updated: list[str] = []
     skipped: list[str] = []
     for doc in recipe.meta.get("workflows") or []:
         if not isinstance(doc, dict) or not doc.get("id"):
             continue
         doc = _template(doc, ctx)
         path = workflows_dir / f"{doc['id']}.yaml"
-        if path.exists() and not overwrite:
+        outcome = _sync_write(path, _yaml_text(doc), rel=f"workflows/{doc['id']}.yaml",
+                              recorded=recorded, overwrite=overwrite)
+        if outcome == "written":
+            written.append(str(doc["id"]))
+        elif outcome == "updated":
+            updated.append(str(doc["id"]))
+        elif outcome == "skipped_edited":
             skipped.append(str(doc["id"]))
-            continue
-        ensure_dir(workflows_dir)
-        write_yaml(path, doc)
-        written.append(str(doc["id"]))
-    return {"written": written, "skipped": skipped}
+    return {"written": written, "updated": updated, "skipped": skipped}
 
 
 # --- install records ---------------------------------------------------------
@@ -288,7 +291,12 @@ def _record_install(home: Path, recipe: Recipe, *, scaffold_id: str,
     records_dir = _records_dir(home)
     ensure_dir(records_dir)
     record_path = records_dir / f"{_SAFE_NAME.sub('_', scaffold_id)}.json"
-    existing = read_json(record_path) if record_path.exists() else {}
+    try:
+        existing = read_json(record_path) if record_path.exists() else {}
+    except Exception:  # noqa: BLE001 — a corrupt record must never block install
+        existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
     hashes = dict(existing.get("hashes") or {})
     for path in written:
         digest = _sha256(path)
@@ -335,6 +343,53 @@ def installed_recipes(home: Path) -> list[dict[str, Any]]:
         records.append(record)
     return records
 
+
+
+# --- sync write policy (scaffold default; RJ 2026-06-06) -----------------------
+# Scaffold "never touches YOUR files", not "never touches existing files":
+#   missing                          → write   ("written")
+#   exists, content identical        → skip    ("unchanged")
+#   exists, PRISTINE (hash == as-installed) → write ("updated" — lossless:
+#                                      the file contains nothing user-made)
+#   exists, edited or untracked      → skip    ("skipped_edited" — the jigga
+#                                      update picker / --overwrite are the
+#                                      explicit opt-ins)
+# Corrupt/missing install records degrade to "untracked" → skip (never clobber).
+
+
+def _yaml_text(doc: dict[str, Any]) -> str:
+    return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+
+
+def _recorded_hashes(home: Path, scaffold_id: str) -> dict[str, str]:
+    record_path = _records_dir(home) / f"{_SAFE_NAME.sub('_', scaffold_id)}.json"
+    if not record_path.exists():
+        return {}
+    try:
+        record = read_json(record_path)
+    except Exception:  # noqa: BLE001 — corrupt record must never block or clobber
+        return {}
+    return dict(record.get("hashes") or {}) if isinstance(record, dict) else {}
+
+
+def _sync_write(path: Path, content: str, *, rel: str, recorded: dict[str, str],
+                overwrite: bool) -> str:
+    """Apply the sync policy for one artifact; returns the outcome category."""
+    if not path.exists():
+        ensure_dir(path.parent)
+        path.write_text(content, encoding="utf-8")
+        return "written"
+    current = path.read_text(encoding="utf-8")
+    if current == content:
+        return "unchanged"
+    if overwrite:
+        path.write_text(content, encoding="utf-8")
+        return "updated"
+    recorded_hash = recorded.get(rel)
+    if recorded_hash and _sha256(path) == recorded_hash:
+        path.write_text(content, encoding="utf-8")
+        return "updated"
+    return "skipped_edited"
 
 def recipe_summary(recipe: Recipe) -> dict[str, Any]:
     """What a recipe would scaffold — for `jigga recipes show` (and the UI)."""
@@ -383,9 +438,10 @@ def scaffold_agent(
     definition.setdefault("role", recipe.description or recipe.name)
     doc = _finalize_agent_doc(agent_id, definition, ctx)
     path = agents_dir / f"{agent_id}.yaml"
-    written = overwrite or not path.exists()
-    if written:
-        write_yaml(path, doc)
+    recorded = _recorded_hashes(home, agent_id)
+    outcome = _sync_write(path, _yaml_text(doc), rel=f"agents/{agent_id}.yaml",
+                          recorded=recorded, overwrite=overwrite)
+    written = outcome in ("written", "updated")
     # A solo agent is its own one-member team → its own workspace (also created
     # on first run); scaffold it now so recipe `files:` have a home.
     solo_team = TeamConfig.from_dict({"id": agent_id, "name": recipe.name,
@@ -393,16 +449,19 @@ def scaffold_agent(
                                       "routing": {"default_assignee": agent_id}})
     workspace = scaffold_workspace(home, solo_team)
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
-    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
+    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite,
+                                        recorded=recorded)
     managed = [path] + [workflows_dir / f"{wid}.yaml"
-                        for wid in workflows["written"] + workflows["skipped"]]
-    written_paths = ([path] if written else []) + [workflows_dir / f"{wid}.yaml"
-                                                   for wid in workflows["written"]]
+                        for wid in workflows["written"] + workflows["updated"] + workflows["skipped"]]
+    written_paths = ([path] if written else []) + [
+        workflows_dir / f"{wid}.yaml" for wid in workflows["written"] + workflows["updated"]]
     _record_install(home, recipe, scaffold_id=agent_id, managed=managed, written=written_paths)
     return {"kind": "agent", "agent_id": agent_id, "agent_file": str(path), "written": written,
+            "outcome": outcome,
             "scheduled": bool(doc.get("wake")), "workspace": workspace["workspace"],
             "files_written": files["written"], "files_skipped": files["skipped"],
-            "workflows_written": workflows["written"], "workflows_skipped": workflows["skipped"]}
+            "workflows_written": workflows["written"], "workflows_updated": workflows["updated"],
+            "workflows_skipped": workflows["skipped"]}
 
 
 def scaffold_team(
@@ -428,8 +487,10 @@ def scaffold_team(
     meta = recipe.meta
 
     lead_role = recipe.routing.get("lead") or (recipe.agents[0].get("role") if recipe.agents else None)
+    recorded = _recorded_hashes(home, team_id)
     members: list[dict[str, Any]] = []
     written: list[str] = []
+    updated: list[str] = []
     skipped: list[str] = []
     for spec in recipe.agents:
         role = str(spec.get("role") or spec.get("id"))
@@ -442,11 +503,14 @@ def scaffold_team(
         definition.setdefault("role", role)
         agent_doc = _finalize_agent_doc(agent_id, definition, ctx)
         path = agents_dir / f"{agent_id}.yaml"
-        if path.exists() and not overwrite:
-            skipped.append(agent_id)
-        else:
-            write_yaml(path, agent_doc)
+        outcome = _sync_write(path, _yaml_text(agent_doc), rel=f"agents/{agent_id}.yaml",
+                              recorded=recorded, overwrite=overwrite)
+        if outcome == "written":
             written.append(agent_id)
+        elif outcome == "updated":
+            updated.append(agent_id)
+        elif outcome == "skipped_edited":
+            skipped.append(agent_id)
 
     lead_id = None
     if lead_role:
@@ -469,25 +533,30 @@ def scaffold_team(
         if meta.get(key) is not None:
             team_doc[key] = _template(meta[key], ctx)
     team_path = teams_dir / f"{team_id}.yaml"
-    team_written = overwrite or not team_path.exists()
-    if team_written:
-        write_yaml(team_path, team_doc)
+    team_outcome = _sync_write(team_path, _yaml_text(team_doc), rel=f"teams/{team_id}.yaml",
+                               recorded=recorded, overwrite=overwrite)
+    team_written = team_outcome in ("written", "updated")
 
     workspace = scaffold_workspace(home, TeamConfig.from_dict(team_doc))
     files = _write_recipe_files(Path(workspace["workspace"]), recipe, ctx, overwrite=overwrite)
-    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite)
-    managed = ([agents_dir / f"{aid}.yaml" for aid in written + skipped] + [team_path]
-               + [workflows_dir / f"{wid}.yaml" for wid in workflows["written"] + workflows["skipped"]])
-    written_paths = ([agents_dir / f"{aid}.yaml" for aid in written]
+    workflows = _write_recipe_workflows(workflows_dir, recipe, ctx, overwrite=overwrite,
+                                        recorded=recorded)
+    managed = ([agents_dir / f"{aid}.yaml" for aid in written + updated + skipped] + [team_path]
+               + [workflows_dir / f"{wid}.yaml"
+                  for wid in workflows["written"] + workflows["updated"] + workflows["skipped"]])
+    written_paths = ([agents_dir / f"{aid}.yaml" for aid in written + updated]
                      + ([team_path] if team_written else [])
-                     + [workflows_dir / f"{wid}.yaml" for wid in workflows["written"]])
+                     + [workflows_dir / f"{wid}.yaml"
+                        for wid in workflows["written"] + workflows["updated"]])
     _record_install(home, recipe, scaffold_id=team_id, managed=managed, written=written_paths)
     return {
         "team_id": team_id, "team_file": str(team_path), "team_written": team_written,
-        "agents_written": written, "agents_skipped": skipped, "lead": lead_id,
+        "agents_written": written, "agents_updated": updated, "agents_skipped": skipped,
+        "lead": lead_id,
         "workspace": workspace["workspace"],
         "files_written": files["written"], "files_skipped": files["skipped"],
-        "workflows_written": workflows["written"], "workflows_skipped": workflows["skipped"],
+        "workflows_written": workflows["written"], "workflows_updated": workflows["updated"],
+        "workflows_skipped": workflows["skipped"],
     }
 
 

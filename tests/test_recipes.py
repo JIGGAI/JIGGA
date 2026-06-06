@@ -74,19 +74,19 @@ def test_scaffold_team_writes_agents_team_workspace_with_templating(tmp_path: Pa
     assert (Path(summary["workspace"]) / "notes" / "plan.md").exists()
 
 
-def test_scaffold_is_create_only_unless_overwrite(tmp_path: Path) -> None:
+def test_scaffold_sync_protects_edits_and_overwrite_forces(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
     recipe = load_recipe(_write_recipe(tmp_path))
     scaffold_team(paths.home, recipe, team_id="mm", agents_dir=paths.agents, teams_dir=paths.teams)
     (paths.agents / "mm-lead.yaml").write_text("id: mm-lead\nname: EDITED\nrole: x\n", encoding="utf-8")
 
     again = scaffold_team(paths.home, recipe, team_id="mm", agents_dir=paths.agents, teams_dir=paths.teams)
-    assert "mm-lead" in again["agents_skipped"]                     # not overwritten
+    assert "mm-lead" in again["agents_skipped"]                     # edited → never touched
     assert load_agents(paths.agents)["mm-lead"].name == "EDITED"
 
     forced = scaffold_team(paths.home, recipe, team_id="mm", overwrite=True,
                            agents_dir=paths.agents, teams_dir=paths.teams)
-    assert "mm-lead" in forced["agents_written"]
+    assert "mm-lead" in forced["agents_updated"]                    # --overwrite forces
     assert load_agents(paths.agents)["mm-lead"].name == "Marketing Team Lead"
 
 
