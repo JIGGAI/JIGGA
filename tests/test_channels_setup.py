@@ -134,3 +134,22 @@ def test_setup_overwrite_preserves_channel_grants(tmp_path: Path, monkeypatch) -
     assert "telegram.send_message" in doc["tools"]                 # grant restored
     assert "telegram.poll_messages" not in doc["tools"]            # runtime-only stays out
     assert "https://api.telegram.org" in doc["permissions"]["network"]["allow"]
+
+
+def test_setup_overwrite_does_not_grant_disabled_channels(tmp_path: Path, monkeypatch) -> None:
+    """The regrant covers ENABLED channels only — a channel the user turned
+    off must not sneak its send tools back onto the regenerated agent."""
+    from jigga.cli import main
+    from jigga.core.io import write_yaml
+
+    paths = init_runtime(tmp_path)
+    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
+    _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
+    config = read_yaml(paths.config)
+    config["channels"]["telegram"]["enabled"] = False        # user turned it off
+    write_yaml(paths.config, config)
+
+    setup_answers = iter(["RJ", "", "", "1", "Chief", "1", ""])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(setup_answers, ""))
+    assert main(["--home", str(tmp_path), "setup", "--overwrite"]) == 0
+    assert "telegram.send_message" not in read_yaml(paths.agents / "chief.yaml")["tools"]
