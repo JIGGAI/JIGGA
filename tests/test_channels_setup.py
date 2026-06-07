@@ -109,3 +109,28 @@ def test_runtime_only_action_denied_when_agent_invokes(tmp_path: Path) -> None:
     events = [json.loads(line) for line in (paths.logs / "events.jsonl").read_text().splitlines()]
     denied = [e for e in events if e["type"] == "capability.invocation.denied"]
     assert denied and denied[-1]["details"]["action"] == "telegram.poll_messages"
+
+
+def test_setup_overwrite_preserves_channel_grants(tmp_path: Path, monkeypatch) -> None:
+    """Regression (bit RJ live): `jigga setup --overwrite` regenerates the
+    default agent yaml from bundled capabilities only, silently stripping the
+    send tool + network egress an enabled channel had granted — renaming the
+    assistant broke Telegram replies. Setup must re-apply enabled channels'
+    grants after the rewrite."""
+    from jigga.cli import main
+
+    paths = init_runtime(tmp_path)
+    # Channel install + enable, routed to the (about-to-exist) default agent.
+    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
+    _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
+    # Create the default agent via setup, then rename it with --overwrite
+    # (the exact sequence that lost the grant).
+    setup_answers = iter(["RJ", "", "", "1", "Chief", "1", ""])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(setup_answers, ""))
+    assert main(["--home", str(tmp_path), "setup", "--overwrite"]) == 0
+
+    doc = read_yaml(paths.agents / "chief.yaml")
+    assert doc["name"] == "Chief"                                  # the overwrite happened
+    assert "telegram.send_message" in doc["tools"]                 # grant restored
+    assert "telegram.poll_messages" not in doc["tools"]            # runtime-only stays out
+    assert "https://api.telegram.org" in doc["permissions"]["network"]["allow"]
