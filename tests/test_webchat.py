@@ -952,3 +952,26 @@ def test_compaction_sweep_includes_webchat(tmp_path: Path) -> None:
     assert len(webchat.poll_messages(paths.home)["messages"]) == 1
     result = compact_memory(paths.home)
     assert result["webchat_archived"]["archived_inbox"] == 1
+
+
+def test_archive_rebases_legacy_offset_with_corrupt_lines(tmp_path: Path) -> None:
+    """Legacy (anchor-less) offset files have no healing — archival MUST store
+    a correctly rebased offset, counted in PARSED entries (a corrupt line in
+    the archived prefix must not shift the rebase): too low reprocesses a
+    consumed message, too high (or not rebasing at all) skips a real one."""
+    from jigga.core.io import write_json
+
+    paths = init_runtime(tmp_path)
+    _aged(paths, "e1 old consumed", days_old=40)
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    with inbox.open("a", encoding="utf-8") as fh:
+        fh.write("{corrupt old junk\n")
+    webchat.append_inbound(paths.home, "e2 recent consumed")
+    webchat.append_inbound(paths.home, "e3 unconsumed")
+    # pre-anchor offset file: e1 + e2 consumed (2 parsed entries)
+    write_json(paths.home / "state" / "webchat_offset.json", {"offset": 2})
+
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_inbox"] == 2          # e1 + the corrupt line
+    # exactly e3 flows next: no reprocess of e2, no skip of e3
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["e3 unconsumed"]
