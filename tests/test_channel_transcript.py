@@ -276,3 +276,32 @@ def test_compaction_sweep_includes_channel_transcripts(tmp_path: Path) -> None:
     _age_first_line(paths, "telegram", 40)
     result = compact_memory(paths.home)
     assert result["channel_transcripts_archived"] == {"telegram": 1}
+
+
+def test_history_interleaves_by_timestamp_not_file_order(tmp_path: Path) -> None:
+    """Same invariant as webchat's: an outbound recorded late but timestamped
+    early must sort into place, not trail the file."""
+    paths = init_runtime(tmp_path)
+    path = ct.transcript_path(paths.home, "telegram")
+    path.parent.mkdir(parents=True)
+    rows = [("q1", "in", "2026-06-07T10:00:00Z"), ("q2", "in", "2026-06-07T10:02:00Z"),
+            ("a1", "out", "2026-06-07T10:01:00Z")]
+    with path.open("a", encoding="utf-8") as fh:
+        for text, direction, ts in rows:
+            fh.write(json.dumps({"id": text, "conversation_id": "111", "sender": "x",
+                                 "text": text, "direction": direction, "ts": ts}) + "\n")
+    assert [e["text"] for e in ct.history(paths.home, "telegram", 111)] == ["q1", "a1", "q2"]
+
+
+def test_roll_summary_disabled_by_config(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_channel_cfg(paths, "telegram", context_turns=2, summarize=False)
+    for i in range(5):
+        ct.record(paths.home, "telegram", conversation_id=111, sender="rj",
+                  text=f"m{i}", direction="in")
+
+    def explode(*_a, **_k):
+        raise AssertionError("summarize=false must not call the model")
+
+    with patch("jigga.runtime.model_router.call_model", explode):
+        assert ct.roll_summary(paths.home, paths.logs, "telegram", 111) == ""
