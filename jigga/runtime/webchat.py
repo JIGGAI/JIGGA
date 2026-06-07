@@ -82,8 +82,13 @@ def store_offset(home: Path, offset: int) -> None:
 
 
 def append_inbound(home: Path, text: str, *, conversation_id: str = DEFAULT_CONVERSATION,
-                   sender: str = "you") -> dict[str, Any]:
-    """The browser's send: append an inbound message (seq = line position)."""
+                   sender: str = "you", target_agent: str | None = None) -> dict[str, Any]:
+    """The browser's send: append an inbound message (seq = line position).
+
+    `target_agent` addresses a specific agent instead of the channel's default
+    — the chat page's agent picker. Carried on the entry, surfaced as the
+    event's `target` so the listener routes to it (webchat is local/trusted;
+    remote channels like Telegram deliberately get no sender-chosen routing)."""
     entry = {
         "id": new_id("wcm"),
         "conversation_id": str(conversation_id),
@@ -91,6 +96,8 @@ def append_inbound(home: Path, text: str, *, conversation_id: str = DEFAULT_CONV
         "text": str(text),
         "ts": now_iso(),
     }
+    if target_agent:
+        entry["target_agent"] = str(target_agent)
     _append_jsonl(_inbox(home), entry)
     return entry
 
@@ -116,6 +123,7 @@ def poll_messages(home: Path, *, long_poll_seconds: int = 0, limit: int = 50) ->
             "text": entry.get("text") or "",
             "message_id": entry.get("id"),
             "mentions_bot": False,
+            "target_agent": entry.get("target_agent"),
         }
         for entry in fresh
     ]
@@ -171,9 +179,15 @@ class WebchatAdapter:
         from jigga.runtime.channels import TelegramAdapter  # shared event mapper
 
         result = poll_messages(home, long_poll_seconds=long_poll_seconds)
-        events = [TelegramAdapter.to_event(m) for m in result.get("messages", [])]
-        for event in events:
+        events = []
+        for message in result.get("messages", []):
+            event = TelegramAdapter.to_event(message)
             event.source = "webchat"
+            if message.get("target_agent"):
+                # Sender-chosen routing (the chat page's agent picker) — the
+                # listener validates the agent exists before honoring it.
+                event.target = {"agent": message["target_agent"]}
+            events.append(event)
         return {"status": result.get("status", "ok"), "events": events, "raw": result}
 
     def send(self, home: Path, *, conversation_id: Any, text: str) -> dict[str, Any]:
