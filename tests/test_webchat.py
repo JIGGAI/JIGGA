@@ -744,3 +744,54 @@ def test_agent_prompt_carries_summary_for_long_threads(tmp_path: Path) -> None:
     assert "earlier: m0-m2 discussed" in user.content
     assert "Recent conversation in this thread" in user.content
     assert "and what did we decide?" in user.content
+
+
+# --- conversations listing (the chat page's thread list) --------------------------
+
+
+def test_list_conversations_groups_and_sorts_newest_first(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "old thread msg")                       # web
+    webchat.append_inbound(paths.home, "lead q", conversation_id="marketing_lead",
+                           target_agent="marketing_lead")
+    webchat.send_message(paths.home, "marketing_lead", "lead a")
+    convs = webchat.list_conversations(paths.home)
+    assert [c["conversation_id"] for c in convs] == ["marketing_lead", "web"]  # newest first
+    lead = convs[0]
+    assert lead["agent"] == "marketing_lead"     # attributed from the picker target
+    assert lead["count"] == 2
+    assert lead["last_text"] == "lead a"
+    assert lead["last_sender"] == "agent"
+    assert convs[1]["agent"] is None             # default thread has no target
+
+
+def test_list_conversations_last_is_by_timestamp_not_file_order(tmp_path: Path) -> None:
+    """An outbox reply older than the latest inbox message must not win 'last'
+    just because outbox is read second."""
+    paths = init_runtime(tmp_path)
+    channel_dir = paths.home / "channels" / "webchat"
+    channel_dir.mkdir(parents=True)
+    rows = [("inbox.jsonl", "you", "newest question", "2026-06-07T12:00:00Z"),
+            ("outbox.jsonl", "agent", "older answer", "2026-06-07T11:00:00Z")]
+    for name, sender, text, ts in rows:
+        with (channel_dir / name).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"id": text, "conversation_id": "web", "sender": sender,
+                                 "text": text, "ts": ts}) + "\n")
+    [conv] = webchat.list_conversations(paths.home)
+    assert conv["last_text"] == "newest question"
+    assert conv["count"] == 2
+
+
+def test_list_conversations_empty(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    assert webchat.list_conversations(paths.home) == []
+
+
+def test_cli_conversations_json(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "hello", conversation_id="chief-abc",
+                           target_agent="chief")
+    assert main(["--home", str(tmp_path), "webchat", "conversations", "--json"]) == 0
+    [conv] = json.loads(capsys.readouterr().out)
+    assert conv["conversation_id"] == "chief-abc"
+    assert conv["agent"] == "chief"
