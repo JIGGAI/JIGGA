@@ -457,3 +457,119 @@ def test_channels_setup_webchat_skips_install(tmp_path: Path) -> None:
     assert cfg["webchat"]["enabled"] is True
     assert cfg["webchat"]["activation"] == "always"
     assert cfg["default"] == "webchat"
+
+
+# --- thread-context injection (the model is stateless; JIGGA is the chat client) --
+
+
+def test_thread_context_renders_recent_turns_oldest_first(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    m1 = webchat.append_inbound(paths.home, "what models do we support?")
+    webchat.send_message(paths.home, "web", "ChatGPT today; Claude next.")
+    m3 = webchat.append_inbound(paths.home, "what about the second option?")
+
+    rendered = webchat.thread_context(paths.home, "web", exclude_message_id=m3["id"])
+    assert rendered == "you: what models do we support?\nagent: ChatGPT today; Claude next."
+    assert m1["id"]  # (no exclusion of earlier messages)
+
+
+def test_thread_context_respects_config_turns_and_zero_disables(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    for i in range(6):
+        webchat.append_inbound(paths.home, f"m{i}")
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True, "context_turns": 2}
+    write_yaml(paths.config, config)
+    assert webchat.thread_context(paths.home, "web") == "you: m4\nyou: m5"
+
+    config["channels"]["webchat"]["context_turns"] = 0
+    write_yaml(paths.config, config)
+    assert webchat.thread_context(paths.home, "web") == ""
+
+
+def test_thread_context_char_cap_drops_oldest(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "OLDEST " + "x" * webchat.CONTEXT_CHAR_CAP)
+    webchat.append_inbound(paths.home, "newest matters")
+    rendered = webchat.thread_context(paths.home, "web")
+    assert rendered == "you: newest matters"      # oldest overflow dropped at a line boundary
+    assert len(rendered) <= webchat.CONTEXT_CHAR_CAP
+
+
+def test_thread_context_empty_thread_is_empty(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    assert webchat.thread_context(paths.home, "web") == ""
+
+
+def test_agent_prompt_carries_thread_history(tmp_path: Path) -> None:
+    """End-to-end: a webchat follow-up runs with the conversation's tail in
+    the user message — and the current message is NOT duplicated (it's the
+    task body)."""
+    from jigga.runtime.model_router import ModelCallResult
+
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    _enable_webchat(paths)
+    # An earlier, already-handled exchange in the thread (consume the offset
+    # so only the follow-up will be pending at ingest):
+    webchat.append_inbound(paths.home, "list our channels")
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1
+    webchat.send_message(paths.home, "web", "telegram and webchat")
+    requests = []
+
+    def capture_call_model(home, logs, request):
+        requests.append(request)
+        return ModelCallResult(status="ok", content="the second one is webchat",
+                               model="fake", provider="fake", dry_run=True)
+
+    with patch("jigga.runtime.agent.call_model", capture_call_model):
+        assert main(["--home", str(tmp_path), "webchat", "send", "--wait",
+                     "--text", "tell me more about the second one"]) == 0
+
+    # find the task-run request (ingest consumed BOTH pending inbox messages →
+    # two tasks; the follow-up task is the one whose body has the new text)
+    user_items = [i for r in requests for i in r.items if i.role == "user"
+                  and "tell me more about the second one" in i.content]
+    assert user_items, "follow-up task request not captured"
+    content = user_items[0].content
+    assert "Recent conversation in this thread" in content
+    assert "you: list our channels" in content
+    assert "agent: telegram and webchat" in content
+    # the current message appears once (task body), not again in the history
+    assert content.count("tell me more about the second one") == 1
+
+
+def test_non_channel_tasks_get_no_thread_header(tmp_path: Path) -> None:
+    from jigga.runtime.model_router import ModelCallResult
+    from jigga.runtime.agent import run_agent
+    from jigga.runtime.tasks import create_task
+
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    webchat.append_inbound(paths.home, "unrelated chat noise")   # transcript exists
+    create_task(paths.tasks, "Plain scheduled work", assignee="assistant")
+    requests = []
+
+    def capture_call_model(home, logs, request):
+        requests.append(request)
+        return ModelCallResult(status="ok", content="done", model="fake", provider="fake", dry_run=True)
+
+    with patch("jigga.runtime.agent.call_model", capture_call_model):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "assistant")
+
+    contents = [i.content for r in requests for i in r.items if i.role == "user"]
+    assert contents and all("Recent conversation" not in c for c in contents)
+
+
+def test_thread_context_window_is_full_even_with_exclusion(tmp_path: Path) -> None:
+    """Excluding the current message must not shrink the window below
+    `context_turns` — the renderer over-fetches by one to compensate."""
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "first")
+    webchat.append_inbound(paths.home, "second")
+    current = webchat.append_inbound(paths.home, "the current one")
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True, "context_turns": 2}
+    write_yaml(paths.config, config)
+    rendered = webchat.thread_context(paths.home, "web", exclude_message_id=current["id"])
+    assert rendered == "you: first\nyou: second"   # both turns, not just one
