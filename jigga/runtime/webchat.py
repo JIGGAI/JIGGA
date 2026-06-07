@@ -270,6 +270,29 @@ def thread_context(home: Path, conversation_id: Any, *,
     return text
 
 
+def list_conversations(home: Path) -> list[dict[str, Any]]:
+    """Every distinct conversation across inbox+outbox, newest-activity first —
+    what the chat page's thread list renders. `agent` is the thread's targeted
+    agent (from the picker); None means the channel-default thread. Order-
+    independent: "last" is decided by timestamp comparison, not file order."""
+    convs: dict[str, dict[str, Any]] = {}
+    for entry in _read_jsonl(_inbox(home)) + _read_jsonl(_outbox(home)):
+        cid = str(entry.get("conversation_id") or DEFAULT_CONVERSATION)
+        conv = convs.setdefault(cid, {
+            "conversation_id": cid, "count": 0, "agent": None,
+            "last_ts": "", "last_text": "", "last_sender": "",
+        })
+        conv["count"] += 1
+        if entry.get("target_agent"):
+            conv["agent"] = entry["target_agent"]
+        ts = str(entry.get("ts") or "")
+        if ts >= conv["last_ts"]:
+            conv["last_ts"] = ts
+            conv["last_text"] = (entry.get("text") or "")[:120]
+            conv["last_sender"] = str(entry.get("sender") or "")
+    return sorted(convs.values(), key=lambda c: c["last_ts"], reverse=True)
+
+
 def webchat_handler(step, _capability, resolved_input, _memory_context, runtime) -> Any:
     """Capability handler: `webchat.send_message` is how an agent replies in
     the browser (poll is runtime-only — the ingest pipeline owns it)."""

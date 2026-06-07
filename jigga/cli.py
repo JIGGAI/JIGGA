@@ -570,6 +570,10 @@ def build_parser() -> argparse.ArgumentParser:
     webchat_history.add_argument("--conversation", default=None, help="Conversation id (default: web)")
     webchat_history.add_argument("--limit", type=int, default=200)
     webchat_history.add_argument("--json", action="store_true", dest="json_output")
+    webchat_convs = webchat_sub.add_parser(
+        "conversations", help="List every conversation thread (newest activity first)"
+    )
+    webchat_convs.add_argument("--json", action="store_true", dest="json_output")
 
     logs = sub.add_parser("logs", help="Tail the audit log")
     logs_sub = logs.add_subparsers(dest="logs_command", required=True)
@@ -1681,7 +1685,8 @@ def _cmd_webchat(args: argparse.Namespace) -> int:
     target_agent = getattr(args, "agent", None)
     # Each agent gets its own thread by default; the plain default-agent chat
     # stays on the classic `web` conversation.
-    conversation = args.conversation or target_agent or webchat.DEFAULT_CONVERSATION
+    conversation = (getattr(args, "conversation", None) or target_agent
+                    or webchat.DEFAULT_CONVERSATION)
     if args.webchat_command == "send":
         if target_agent and not (paths.agents / f"{target_agent}.yaml").exists():
             print(f"No agent named {target_agent!r} (see `jigga agents list`).", file=sys.stderr)
@@ -1724,6 +1729,15 @@ def _cmd_webchat(args: argparse.Namespace) -> int:
         else:
             for e in entries:
                 print(f"[{e.get('ts')}] {e.get('sender')}: {e.get('text')}")
+        return 0
+    if args.webchat_command == "conversations":
+        convs = webchat.list_conversations(paths.home)
+        if args.json_output:
+            print_json(convs)
+        else:
+            for c in convs:
+                print(f"{c['conversation_id']:24} {(c.get('agent') or 'default'):20} "
+                      f"{c['count']:4}  {c.get('last_ts', '')[:16]}  {c.get('last_text', '')[:50]}")
         return 0
     return 0
 
