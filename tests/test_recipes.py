@@ -350,6 +350,28 @@ def test_cli_recipes_show_unknown_recipe_fails(tmp_path: Path, capsys) -> None:
     assert "not found" in capsys.readouterr().out.lower()
 
 
+def test_cli_recipes_cat_bundled_reads_default_under_a_user_copy(tmp_path: Path, capsys) -> None:
+    """`recipes cat --bundled` returns the shipped default even when a user copy
+    shadows it — the diff-vs-default path. Plain `cat` returns the user copy."""
+    init_runtime(tmp_path)
+    # A user copy that shadows the bundled marketing-team recipe.
+    edited = "---\nid: marketing_team\nname: Marketing Team\nkind: team\nversion: 9.9.9\n---\nMINE\n"
+    (tmp_path / "recipes").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "recipes" / "marketing-team.md").write_text(edited, encoding="utf-8")
+
+    assert main(["--home", str(tmp_path), "recipes", "cat", "marketing-team"]) == 0
+    assert capsys.readouterr().out == edited  # plain cat → user copy
+
+    assert main(["--home", str(tmp_path), "recipes", "cat", "marketing-team", "--bundled"]) == 0
+    bundled = capsys.readouterr().out
+    assert bundled != edited and "MINE" not in bundled  # --bundled → the default
+    assert "id: marketing_team" in bundled
+
+    # Unknown bundled recipe → not found, exit 1.
+    assert main(["--home", str(tmp_path), "recipes", "cat", "zzz-nope", "--bundled"]) == 1
+    assert "not found" in capsys.readouterr().out.lower()
+
+
 def test_recipe_summary_shapes() -> None:
     bundled = Path(__file__).resolve().parents[1] / "examples" / "recipes"
     team = recipe_summary(load_recipe(bundled / "social-content-team.md"))
