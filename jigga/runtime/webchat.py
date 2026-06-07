@@ -17,13 +17,15 @@ only by whoever can reach the jiggaview host (RJ: tailnet is the moat).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import now_iso
-from jigga.runtime.audit import new_id
+from jigga.runtime.audit import append_event, new_id
 
 SUPPORTED_ACTIONS = ("webchat.send_message", "webchat.poll_messages")
 DEFAULT_CONVERSATION = "web"
@@ -159,6 +161,88 @@ def history(home: Path, *, conversation_id: str = DEFAULT_CONVERSATION,
     return merged[-limit:]
 
 
+def _summary_path(home: Path, conversation_id: Any) -> Path:
+    """Per-conversation summary file. Conversation ids are free-form (agent
+    ids, --conversation values), so the filename is a sanitized slug plus a
+    short content hash — collision-safe and traversal-proof."""
+    raw = str(conversation_id)
+    slug = re.sub(r"[^A-Za-z0-9._-]", "_", raw).strip("._") or "conversation"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return _dir(home) / "summaries" / f"{slug[:60]}-{digest}.json"
+
+
+def load_summary(home: Path, conversation_id: Any) -> dict[str, Any]:
+    path = _summary_path(home, conversation_id)
+    try:
+        data = read_json(path) if path.exists() else {}
+    except Exception:  # noqa: BLE001 — corrupt summary → start over, never break chat
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+_SUMMARY_SYSTEM = (
+    "You maintain a rolling summary of one chat conversation between a user and "
+    "an assistant. Fold the new turns into the existing summary: keep names, "
+    "decisions, numbers, and open questions; drop pleasantries. Reply with ONLY "
+    "the updated summary, under 150 words."
+)
+
+
+def roll_summary(home: Path, logs_dir: Path, conversation_id: Any, *,
+                 agent_id: str = "system.webchat") -> str:
+    """Conversational compaction (lazy, at chat time): fold the turns that have
+    scrolled out of the context window into this conversation's rolling
+    summary, then return it. The watermark (`through_message_id`) makes folds
+    incremental — each call folds only what's newly overflowed, so a long
+    thread costs one small model call per message, not a re-summarization.
+    A model failure keeps the previous summary and watermark (retried on the
+    next message). Stored per-conversation under `channels/webchat/summaries/`
+    — conversation STATE lives with the conversation; durable knowledge still
+    flows to agent memory via the normal run breadcrumbs."""
+    from jigga.core.config import load_runtime_config
+    from jigga.runtime.model_router import ModelCallItem, ModelCallRequest, call_model
+
+    cfg = (load_runtime_config(home).get("channels") or {}).get("webchat") or {}
+    record = load_summary(home, conversation_id)
+    existing = str(record.get("summary") or "")
+    try:
+        turns = int(cfg.get("context_turns", DEFAULT_CONTEXT_TURNS))
+    except (TypeError, ValueError):
+        turns = DEFAULT_CONTEXT_TURNS
+    if turns <= 0 or not cfg.get("summarize", True):
+        return existing
+    entries = history(home, conversation_id=str(conversation_id), limit=100_000)
+    overflow = entries[:-turns] if len(entries) > turns else []
+    if not overflow:
+        return existing
+    ids = [e.get("id") for e in overflow]
+    watermark = record.get("through_message_id")
+    start = ids.index(watermark) + 1 if watermark in ids else 0
+    fresh = overflow[start:]
+    if not fresh:
+        return existing
+    rendered = "\n".join(f"{e.get('sender') or 'you'}: {e.get('text') or ''}" for e in fresh)
+    user = (f"Existing summary (may be empty):\n{existing or '(none)'}\n\n"
+            f"New turns to fold in (oldest first):\n{rendered[:CONTEXT_CHAR_CAP * 2]}")
+    request = ModelCallRequest(
+        agent_id=agent_id, role="conversation summarizer",
+        task={"id": f"webchat-summary:{conversation_id}"},
+        items=[ModelCallItem(id="system", role="system", content=_SUMMARY_SYSTEM),
+               ModelCallItem(id="turns", role="user", content=user)],
+    )
+    result = call_model(home, logs_dir, request)
+    summary = (result.content or "").strip()
+    if result.status != "ok" or not summary:
+        return existing
+    path = _summary_path(home, conversation_id)
+    ensure_dir(path.parent)
+    write_json(path, {"conversation_id": str(conversation_id), "summary": summary,
+                      "through_message_id": fresh[-1].get("id"), "updated": now_iso()})
+    append_event(logs_dir, "webchat.summary_rolled", conversation=str(conversation_id),
+                 folded_turns=len(fresh), through=fresh[-1].get("id"))
+    return summary
+
+
 def thread_context(home: Path, conversation_id: Any, *,
                    exclude_message_id: str | None = None) -> str:
     """The conversation's recent tail, rendered for the agent's prompt —
@@ -228,9 +312,29 @@ class WebchatAdapter:
         return send_message(home, conversation_id, text)
 
     def thread_context(self, home: Path, *, conversation_id: Any,
-                       exclude_message_id: str | None = None) -> str:
+                       exclude_message_id: str | None = None,
+                       logs_dir: Path | None = None,
+                       agent_id: str | None = None) -> str:
         """Optional adapter hook: channels with a local transcript provide the
-        thread's recent tail for the agent's prompt. The agent loop probes for
-        this via getattr — channels without one (telegram has no local
-        transcript store) simply don't inject."""
-        return thread_context(home, conversation_id, exclude_message_id=exclude_message_id)
+        conversation context block for the agent's prompt — the rolling
+        summary of everything that scrolled out of the window (when logs_dir
+        is given, overflow is folded first; the model call needs the audit
+        log) above the verbatim recent tail. The agent loop probes for this
+        via getattr — channels without one (telegram has no local transcript
+        store) simply don't inject."""
+        tail = thread_context(home, conversation_id, exclude_message_id=exclude_message_id)
+        if not tail:
+            return ""
+        if logs_dir is not None:
+            try:
+                summary = roll_summary(home, logs_dir, conversation_id,
+                                       agent_id=agent_id or "system.webchat")
+            except Exception:  # noqa: BLE001 — summary is an enhancement, never a blocker
+                summary = str(load_summary(home, conversation_id).get("summary") or "")
+        else:
+            summary = str(load_summary(home, conversation_id).get("summary") or "")
+        parts = []
+        if summary:
+            parts.append(f"## Earlier in this conversation (summary)\n{summary}")
+        parts.append(f"## Recent conversation in this thread (oldest first)\n{tail}")
+        return "\n\n".join(parts)

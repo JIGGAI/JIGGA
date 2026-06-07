@@ -153,13 +153,14 @@ _TOOL_INSTRUCTIONS = (
 )
 
 
-def _thread_context(home: Path, task) -> str:
-    """Chat-thread history for channel-originated tasks. Models are stateless
+def _thread_context(home: Path, logs_dir: Path, agent_id: str, task) -> str:
+    """Chat-thread context for channel-originated tasks. Models are stateless
     — without this, every message in a conversation is answered by an amnesiac
     (a follow-up like "what about the second option?" lands on nothing). The
-    channel's adapter provides the transcript tail when it has one (webchat's
-    file-backed thread); adapters without a local transcript simply don't
-    inject. Best-effort: a history failure must never break the run."""
+    channel's adapter provides the rendered block when it has a local
+    transcript (webchat: rolling summary of scrolled-out turns + the verbatim
+    recent tail); adapters without one simply don't inject. Best-effort: a
+    history/summary failure must never break the run."""
     meta = task.metadata or {}
     channel, chat_id = meta.get("channel"), meta.get("chat_id")
     if not channel or chat_id is None:
@@ -169,7 +170,8 @@ def _thread_context(home: Path, task) -> str:
         return ""
     try:
         return provider(home, conversation_id=chat_id,
-                        exclude_message_id=meta.get("message_id")) or ""
+                        exclude_message_id=meta.get("message_id"),
+                        logs_dir=logs_dir, agent_id=agent_id) or ""
     except Exception:  # noqa: BLE001 — context is an enhancement, not a dependency
         return ""
 
@@ -207,14 +209,14 @@ def _run_task_loop(
     # if no context was assembled (e.g. a direct _run_task_loop test call).
     base = system_context.strip() or _identity_prompt(agent)
     system_content = f"{base}\n\n{_TOOL_INSTRUCTIONS}"
-    # Chat-originated task? Ride the conversation's recent tail along in the
+    # Chat-originated task? Ride the conversation's context block (rolling
+    # summary + recent tail, rendered by the channel adapter) along in the
     # user message (NOT the system prompt — that stays byte-stable for
     # provider prefix caching; the user message varies per task anyway).
     user_content = f"Task: {task.title}\n\n{body}"
-    thread = _thread_context(home, task)
+    thread = _thread_context(home, logs_dir, agent.id, task)
     if thread:
-        user_content = ("## Recent conversation in this thread (oldest first)\n"
-                        f"{thread}\n\n{user_content}")
+        user_content = f"{thread}\n\n{user_content}"
     items = [
         ModelCallItem(id="system", role="system", content=system_content),
         ModelCallItem(id=f"task:{task.id}", role="user", content=user_content),
