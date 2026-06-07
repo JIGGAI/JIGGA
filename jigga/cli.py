@@ -664,6 +664,9 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_delete.add_argument("--json", action="store_true", dest="json_output")
     recipes_cat = recipes_sub.add_parser("cat", help="Print a recipe's raw markdown")
     recipes_cat.add_argument("recipe")
+    recipes_cat.add_argument(
+        "--bundled", action="store_true",
+        help="Read the bundled/default version, ignoring your user copy (for diffing against a new release)")
     recipes_save = recipes_sub.add_parser(
         "save", help="Write a recipe's markdown to your user recipes dir (~/.jigga/recipes — overrides bundled)")
     recipes_save.add_argument("recipe", help="Recipe file name (stem), e.g. marketing-team")
@@ -2333,7 +2336,17 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
                 print(f"✓ uninstalled {entity!r} (backups: state/backups/)")
         return 0
     if args.recipes_command == "cat":
-        recipe_path = find_recipe(paths.home, args.recipe)
+        if args.bundled:
+            # The bundled/default copy specifically, even when a user copy
+            # shadows it — so the UI can diff "your installed recipe" vs "the
+            # released default". (find_recipe resolves user-first.)
+            from jigga.core.paths import examples_dir
+            from jigga.runtime.recipes import RECIPE_SUFFIX
+            stem = args.recipe.removesuffix(RECIPE_SUFFIX)
+            candidate = examples_dir() / "recipes" / f"{stem}{RECIPE_SUFFIX}"
+            recipe_path = candidate if candidate.exists() else None
+        else:
+            recipe_path = find_recipe(paths.home, args.recipe)
         if recipe_path is None:
             print(f"Recipe not found: {args.recipe!r}.")
             return 1
