@@ -793,15 +793,44 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if interactive and resolve_default_agent(paths.agents) is None:
         if input("\nSet up your assistant now? [Y/n]: ").strip().lower() in {"", "y", "yes"}:
             run_onboarding(paths)
+            # If channels were enabled before this agent existed (e.g. the old
+            # default agent was deleted), close the reply loop for the new one.
+            _regrant_enabled_channel_tools(paths)
         else:
             print("Skipped. Run `jigga setup` when you're ready.")
     maybe_prompt_after_init(paths, interactive=interactive)
     return 0
 
 
+def _regrant_enabled_channel_tools(paths: Any) -> list[tuple[str, list[str]]]:
+    """Re-apply channel tool grants after the default agent's yaml has been
+    regenerated. `setup --overwrite` rebuilds the agent from bundled
+    capabilities only, silently stripping the send tools + network egress that
+    enabling a channel granted (bit RJ live: renaming the assistant broke
+    Telegram replies until `jigga doctor` flagged it). Idempotent — a no-op
+    when the grants are already present."""
+    from jigga.runtime.audit import append_event
+
+    config = read_yaml(paths.config)
+    regranted: list[tuple[str, list[str]]] = []
+    for channel, cfg in (config.get("channels") or {}).items():
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            continue
+        granted = _grant_channel_tools(paths, channel, config)
+        if granted:
+            agent_id, items = granted
+            append_event(paths.logs, "channel.tools_granted", channel=channel,
+                         agent=agent_id, granted=items)
+            regranted.append((agent_id, items))
+    return regranted
+
+
 def _cmd_setup(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
-    run_onboarding(paths, overwrite=args.overwrite)
+    # input resolved at call time (not def-time default) so tests can patch it.
+    run_onboarding(paths, input_fn=input, overwrite=args.overwrite)
+    for agent_id, items in _regrant_enabled_channel_tools(paths):
+        print(f"  Restored '{agent_id}' channel access — " + "; ".join(items))
     return 0
 
 
@@ -930,6 +959,10 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
         input_fn=input if interactive else (lambda _prompt: ""),
         overwrite=args.overwrite,
     )
+    # A re-run with --overwrite regenerates the agent yaml — restore the tool
+    # grants any already-enabled channel had given it (idempotent).
+    for agent_id, items in _regrant_enabled_channel_tools(paths):
+        print(f"  Restored '{agent_id}' channel access — " + "; ".join(items))
 
     # 2. Model — needed for agents to think. Interactive only (provider choice
     #    + secrets); offered unless skipped.
