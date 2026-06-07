@@ -184,14 +184,17 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> No
          "run `jigga supervisor run` (or install it as a service).")
 
 
-def _grant_channel_tools(paths: Any, channel: str, config: dict) -> tuple[str, list[str]] | None:
+def _grant_channel_tools(paths: Any, channel: str, config: dict,
+                         agent_id: str | None = None) -> tuple[str, list[str]] | None:
     """Grant the channel capability's agent-facing actions (send/reply + any
     future ones — NEVER runtime-only ingest actions like poll, which belong to
-    the supervisor) to the channel's routed agent — its configured
-    `default_agent`, else the install's default agent — so it can reply on the
-    channel. Persists the agent yaml. Returns (agent_id, newly_added_actions),
-    or None if there's no agent to grant to or it already has them all."""
-    routed = (config.get("channels", {}).get(channel, {}) or {}).get("default_agent") \
+    the supervisor) to `agent_id` when given, else the channel's routed agent —
+    its configured `default_agent`, else the install's default agent — so it
+    can reply on the channel. Persists the agent yaml. Returns (agent_id,
+    newly_added_actions), or None if there's no agent to grant to or it
+    already has them all."""
+    routed = agent_id \
+        or (config.get("channels", {}).get(channel, {}) or {}).get("default_agent") \
         or resolve_default_agent(paths.agents)
     if not routed:
         return None
@@ -549,7 +552,12 @@ def build_parser() -> argparse.ArgumentParser:
         "send", help="Send a message into webchat (first use enables the channel + grants the reply tool)"
     )
     webchat_send.add_argument("--text", required=True, help="Message text")
-    webchat_send.add_argument("--conversation", default=None, help="Conversation id (default: web)")
+    webchat_send.add_argument(
+        "--agent", default=None,
+        help="Address a specific agent instead of the channel default (its thread = its id unless --conversation)",
+    )
+    webchat_send.add_argument("--conversation", default=None,
+                              help="Conversation id (default: web, or --agent's id)")
     webchat_send.add_argument("--sender", default="you", help="Sender label (default: you)")
     webchat_send.add_argument(
         "--wait", action="store_true",
@@ -1603,12 +1611,13 @@ def _cmd_channels(args: argparse.Namespace) -> int:
     return 0
 
 
-def _ensure_webchat_enabled(paths: Any) -> dict[str, Any]:
+def _ensure_webchat_enabled(paths: Any, *, target_agent: str | None = None) -> dict[str, Any]:
     """First use of webchat enables it — typing in the local chat IS the opt-in
     (no token, no auth; only someone who can reach the jiggaview host gets here).
     Sets `channels.webchat.enabled`, claims the default-channel slot if nothing
-    else has, and grants the routed agent the reply tool (same close-the-loop
-    grant `channels setup` does). Idempotent."""
+    else has, and grants the reply tool (same close-the-loop grant `channels
+    setup` does) — to the routed default agent and, when the send addresses a
+    specific agent (the chat page's picker), to that agent too. Idempotent."""
     from jigga.runtime.audit import append_event
 
     config = read_yaml(paths.config)
@@ -1620,12 +1629,15 @@ def _ensure_webchat_enabled(paths: Any) -> dict[str, Any]:
         ensure_default_channel(config, "webchat")
         write_yaml(paths.config, config)
         append_event(paths.logs, "channel.webchat.enabled", activation=entry["activation"])
-    granted = _grant_channel_tools(paths, "webchat", config)
-    if granted:
-        agent_id, items = granted
-        append_event(paths.logs, "channel.tools_granted", channel="webchat",
-                     agent=agent_id, granted=items)
-    return {"enabled_now": enabled_now, "granted": granted}
+    grants = [_grant_channel_tools(paths, "webchat", config)]
+    if target_agent:
+        grants.append(_grant_channel_tools(paths, "webchat", config, agent_id=target_agent))
+    for granted in grants:
+        if granted:
+            agent_id, items = granted
+            append_event(paths.logs, "channel.tools_granted", channel="webchat",
+                         agent=agent_id, granted=items)
+    return {"enabled_now": enabled_now, "granted": next((g for g in grants if g), None)}
 
 
 def _cmd_webchat(args: argparse.Namespace) -> int:
@@ -1633,14 +1645,21 @@ def _cmd_webchat(args: argparse.Namespace) -> int:
     from jigga.runtime.channel_listener import ingest_once
 
     paths = get_paths(args.home)
-    conversation = args.conversation or webchat.DEFAULT_CONVERSATION
+    target_agent = getattr(args, "agent", None)
+    # Each agent gets its own thread by default; the plain default-agent chat
+    # stays on the classic `web` conversation.
+    conversation = args.conversation or target_agent or webchat.DEFAULT_CONVERSATION
     if args.webchat_command == "send":
-        setup = _ensure_webchat_enabled(paths)
+        if target_agent and not (paths.agents / f"{target_agent}.yaml").exists():
+            print(f"No agent named {target_agent!r} (see `jigga agents list`).", file=sys.stderr)
+            return 1
+        setup = _ensure_webchat_enabled(paths, target_agent=target_agent)
         # Snapshot before the send so --wait can return exactly the replies this
         # message produced (ids, not counts — robust to interleaved writers).
         seen = {e.get("id") for e in webchat.history(paths.home, conversation_id=conversation, limit=1000)}
         entry = webchat.append_inbound(paths.home, args.text,
-                                       conversation_id=conversation, sender=args.sender)
+                                       conversation_id=conversation, sender=args.sender,
+                                       target_agent=target_agent)
         replies: list[dict[str, Any]] = []
         if args.wait:
             # Webchat-only ingest: synchronous send must never block behind

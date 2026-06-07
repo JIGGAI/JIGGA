@@ -270,6 +270,78 @@ def test_ingest_only_channel_skips_other_enabled_channels(tmp_path: Path) -> Non
     assert task.assignee == "assistant"
 
 
+# --- multi-agent: --agent targeting ------------------------------------------------
+
+
+def test_send_with_agent_routes_to_that_agent(tmp_path: Path) -> None:
+    """The chat page's agent picker: --agent addresses a specific agent — its
+    own thread (conversation = agent id), the task assigned to it, the run on
+    it, and the reply tool granted to it."""
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)                       # assistant = channel default
+    write_yaml(paths.agents / "specialist.yaml",
+               {"id": "specialist", "name": "Spec", "role": "specialist",
+                "permission_mode": "autonomous", "tools": []})
+    ran: list[str] = []
+
+    def fake_run_agent(home, logs, tasks, agents, agent_id, **kw):
+        ran.append(agent_id)
+        webchat.send_message(home, "specialist", "specialist here")
+        return {"agent_id": agent_id}
+
+    with patch("jigga.runtime.channel_listener.run_agent", fake_run_agent):
+        assert main(["--home", str(tmp_path), "webchat", "send", "--wait",
+                     "--agent", "specialist", "--text", "ping the specialist"]) == 0
+
+    assert ran == ["specialist"]                       # not the default agent
+    [task] = list_tasks(paths.tasks)
+    assert task.assignee == "specialist"
+    assert task.metadata["chat_id"] == "specialist"    # thread = agent id
+    # reply tool granted to the targeted agent, not just the default
+    assert "webchat.send_message" in read_yaml(paths.agents / "specialist.yaml")["tools"]
+    # threads are separate: the specialist's thread has the exchange, web is empty
+    assert [e["sender"] for e in webchat.history(paths.home, conversation_id="specialist")] == \
+        ["you", "agent"]
+    assert webchat.history(paths.home) == []
+
+
+def test_unknown_target_agent_falls_back_to_default(tmp_path: Path) -> None:
+    """A stale/typo'd target (e.g. an agent deleted after the message was
+    written) must not drop the message — audit + route to the default."""
+    import json as _json
+
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    _enable_webchat(paths)
+    webchat.append_inbound(paths.home, "anyone home?", target_agent="ghost")
+
+    with patch("jigga.runtime.channel_listener.run_agent", lambda *a, **k: {"ok": True}):
+        ingest_once(paths.home, paths.logs, paths.tasks, paths.agents, long_poll_seconds=0)
+
+    [task] = list_tasks(paths.tasks)
+    assert task.assignee == "assistant"
+    events = [_json.loads(line) for line
+              in (paths.logs / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    unknown = [e for e in events if e["type"] == "channel.target_unknown"]
+    assert unknown and unknown[0]["details"]["requested_agent"] == "ghost"
+
+
+def test_cli_send_rejects_unknown_agent(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    assert main(["--home", str(tmp_path), "webchat", "send",
+                 "--agent", "ghost", "--text", "x"]) == 1
+    assert webchat.history(paths.home, conversation_id="ghost") == []   # nothing appended
+
+
+def test_explicit_conversation_overrides_agent_thread(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    assert main(["--home", str(tmp_path), "webchat", "send", "--agent", "assistant",
+                 "--conversation", "room42", "--text", "hi"]) == 0
+    assert [e["text"] for e in webchat.history(paths.home, conversation_id="room42")] == ["hi"]
+
+
 # --- CLI: send / --wait / history -------------------------------------------------
 
 

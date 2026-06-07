@@ -186,13 +186,26 @@ def _ingest_once(
                              reason=f"activation={cfg.get('activation') or 'always'}",
                              conversation_type=event.conversation_type)
                 continue
-            event.target = {"agent": default_agent}
+            # An adapter may pre-target a specific agent (webchat's agent
+            # picker sets event.target from the sender's choice). Honor it only
+            # when that agent actually exists — else audit and fall back to the
+            # channel default, so a typo'd/stale target can't drop a message.
+            assignee = default_agent
+            requested = (event.target or {}).get("agent")
+            if requested and requested != default_agent:
+                if (Path(agents_dir) / f"{requested}.yaml").exists():
+                    assignee = requested
+                else:
+                    append_event(logs_dir, "channel.target_unknown", status="ask", channel=name,
+                                 requested_agent=requested, fallback=default_agent,
+                                 event_id=event.id)
+            event.target = {"agent": assignee}
             title, description = _event_to_task_fields(event)
             task = create_task(
                 tasks_dir,
                 title=title,
                 description=description,
-                assignee=default_agent,
+                assignee=assignee,
                 metadata={
                     "channel": name,
                     "chat_id": event.conversation_id,
@@ -210,8 +223,8 @@ def _ingest_once(
             created.append(task.to_dict())
             append_event(logs_dir, "channel.message.received", channel=name, task_id=task.id,
                          chat_id=event.conversation_id, sender=event.actor.get("name"), event_id=event.id)
-            if default_agent:
-                affected_agents.add(default_agent)
+            if assignee:
+                affected_agents.add(assignee)
 
     runs: list[dict[str, Any]] = []
     if process_agents:
