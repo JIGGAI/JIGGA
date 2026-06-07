@@ -261,6 +261,17 @@ def send_message(home: Path, chat_id: Any, text: str) -> dict[str, Any]:
         return _not_connected("telegram.send_message")
     body = _api_call(token, "sendMessage", {"chat_id": chat_id, "text": text})
     result = body.get("result") or {}
+    # Conversation continuity: every successful outbound lands in the local
+    # transcript (the contract: a channel's send primitive records "out").
+    # This single funnel covers agent tool replies AND runtime notices
+    # (approval prompts, failure replies) — all context the next turn should
+    # see. Best-effort: a transcript fault must not break sending.
+    try:
+        from jigga.runtime.channel_transcript import record
+        record(home, "telegram", conversation_id=chat_id, sender="agent",
+               text=text, direction="out", message_id=result.get("message_id"))
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "channel": "telegram",
         "status": "ok",

@@ -100,6 +100,10 @@ class TelegramAdapter:
 
     name = "telegram"
     long_polls = True
+    # The listener records inbound into the shared channel transcript for us
+    # (Telegram keeps messages on its servers; locally we'd otherwise forget
+    # the conversation between turns).
+    self_transcribed = False
 
     def poll(self, home: Path, *, long_poll_seconds: int = 0) -> dict[str, Any]:
         result = telegram.poll_messages(home, long_poll_seconds=long_poll_seconds)
@@ -109,6 +113,19 @@ class TelegramAdapter:
 
     def send(self, home: Path, *, conversation_id: Any, text: str) -> dict[str, Any]:
         return telegram.send_message(home, conversation_id, text)
+
+    def thread_context(self, home: Path, *, conversation_id: Any,
+                       exclude_message_id: Any = None,
+                       logs_dir: Path | None = None,
+                       agent_id: str | None = None) -> str:
+        """Conversation context block (rolling summary + recent tail) from the
+        shared channel transcript — same hook contract as webchat's, so the
+        agent loop needs nothing channel-specific."""
+        from jigga.runtime.channel_transcript import thread_context_block
+
+        return thread_context_block(home, "telegram", conversation_id,
+                                    exclude_message_id=exclude_message_id,
+                                    logs_dir=logs_dir, agent_id=agent_id)
 
     @staticmethod
     def to_event(message: dict[str, Any]) -> JiggaEvent:

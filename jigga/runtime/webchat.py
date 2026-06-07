@@ -472,6 +472,7 @@ class WebchatAdapter:
 
     name = "webchat"
     long_polls = False  # local file read — returns instantly; never paces the supervisor loop
+    self_transcribed = True  # inbox/outbox.jsonl IS the transcript — the listener must not double-record
 
     def poll(self, home: Path, *, long_poll_seconds: int = 0) -> dict[str, Any]:
         from jigga.runtime.channels import TelegramAdapter  # shared event mapper
