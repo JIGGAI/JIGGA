@@ -795,3 +795,183 @@ def test_cli_conversations_json(tmp_path: Path, capsys) -> None:
     [conv] = json.loads(capsys.readouterr().out)
     assert conv["conversation_id"] == "chief-abc"
     assert conv["agent"] == "chief"
+
+
+# --- archival + anchored offset (slice 4: transcripts out of the hot path) --------
+
+
+def _aged(paths, text, *, days_old, conversation="web", sender="you"):
+    """Append an inbound entry, then rewrite its ts to `days_old` days ago."""
+    from datetime import datetime, timedelta, timezone
+
+    entry = webchat.append_inbound(paths.home, text, conversation_id=conversation,
+                                   sender=sender)
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    lines = inbox.read_text(encoding="utf-8").splitlines()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
+    rewritten = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            rewritten.append(line)          # corrupt lines pass through untouched
+            continue
+        if e.get("id") == entry["id"]:
+            e["ts"] = old_ts
+        rewritten.append(json.dumps(e))
+    inbox.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    entry["ts"] = old_ts
+    return entry
+
+
+def test_anchored_offset_survives_prefix_trim(tmp_path: Path) -> None:
+    """The crash-safety core: after consumed lines are removed from the front
+    of the inbox, the anchor re-finds the consume position — no reprocess, no
+    skip, regardless of which step a crash interrupted."""
+    paths = init_runtime(tmp_path)
+    for i in range(4):
+        webchat.append_inbound(paths.home, f"m{i}")
+    assert len(webchat.poll_messages(paths.home, limit=3)["messages"]) == 3  # consume m0-m2
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    # simulate an archival trim of the first two consumed lines WITHOUT
+    # touching the offset file (the worst crash window)
+    lines = inbox.read_text(encoding="utf-8").splitlines()
+    inbox.write_text("\n".join(lines[2:]) + "\n", encoding="utf-8")
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["m3"]
+
+
+def test_anchored_offset_whole_consumed_prefix_gone(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "consumed")
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    inbox.write_text("", encoding="utf-8")          # everything consumed got archived
+    webchat.append_inbound(paths.home, "fresh")
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["fresh"]
+
+
+def test_legacy_offset_without_anchor_still_works(tmp_path: Path) -> None:
+    from jigga.core.io import write_json
+
+    paths = init_runtime(tmp_path)
+    for i in range(3):
+        webchat.append_inbound(paths.home, f"m{i}")
+    write_json(paths.home / "state" / "webchat_offset.json", {"offset": 2})  # pre-anchor file
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["m2"]
+
+
+def test_archive_moves_old_consumed_inbox_and_rebases_offset(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _aged(paths, "ancient one", days_old=40)
+    _aged(paths, "ancient two", days_old=35)
+    webchat.append_inbound(paths.home, "recent")
+    assert len(webchat.poll_messages(paths.home, limit=50)["messages"]) == 3  # all consumed
+
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_inbox"] == 2
+    archive_dir = paths.home / "channels" / "webchat" / "archive"
+    archived = [json.loads(line) for f in sorted(archive_dir.glob("inbox-*.jsonl"))
+                for line in f.read_text(encoding="utf-8").splitlines()]
+    assert [e["text"] for e in archived] == ["ancient one", "ancient two"]
+    # survivors intact; history reflects only the hot file
+    assert [e["text"] for e in webchat.history(paths.home)] == ["recent"]
+    # offset rebased: nothing reprocessed, new messages still flow
+    assert webchat.poll_messages(paths.home)["messages"] == []
+    webchat.append_inbound(paths.home, "after archive")
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["after archive"]
+
+
+def test_archive_never_touches_unconsumed_messages(tmp_path: Path) -> None:
+    """An unread message is never archived, however old (offset bound)."""
+    paths = init_runtime(tmp_path)
+    _aged(paths, "old but NEVER consumed", days_old=60)
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_inbox"] == 0
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == \
+        ["old but NEVER consumed"]
+
+
+def test_archive_outbox_by_age_and_retention_zero_disables(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    paths = init_runtime(tmp_path)
+    webchat.send_message(paths.home, "web", "old reply")
+    outbox = paths.home / "channels" / "webchat" / "outbox.jsonl"
+    e = json.loads(outbox.read_text(encoding="utf-8"))
+    e["ts"] = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    outbox.write_text(json.dumps(e) + "\n", encoding="utf-8")
+    webchat.send_message(paths.home, "web", "fresh reply")
+
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True, "retention_days": 0}
+    write_yaml(paths.config, config)
+    assert webchat.archive_transcripts(paths.home) == \
+        {"archived_inbox": 0, "archived_outbox": 0, "dry_run": False}   # disabled
+
+    config["channels"]["webchat"]["retention_days"] = 30
+    write_yaml(paths.config, config)
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_outbox"] == 1
+    assert [e["text"] for e in webchat.history(paths.home)] == ["fresh reply"]
+
+
+def test_archive_dry_run_mutates_nothing(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _aged(paths, "ancient", days_old=40)
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1
+    before = (paths.home / "channels" / "webchat" / "inbox.jsonl").read_text(encoding="utf-8")
+    summary = webchat.archive_transcripts(paths.home, dry_run=True)
+    assert summary["archived_inbox"] == 1 and summary["dry_run"] is True
+    assert (paths.home / "channels" / "webchat" / "inbox.jsonl").read_text(encoding="utf-8") == before
+    assert not (paths.home / "channels" / "webchat" / "archive").exists()
+
+
+def test_archive_corrupt_line_rides_along_without_desync(tmp_path: Path) -> None:
+    """A corrupt line inside the old prefix is archived with it — and because
+    the offset counts PARSED entries, the trim must not eat the unconsumed
+    message that follows."""
+    paths = init_runtime(tmp_path)
+    _aged(paths, "old consumed", days_old=40)
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    with inbox.open("a", encoding="utf-8") as fh:
+        fh.write("{corrupt junk\n")
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1   # consume the real one
+    _aged(paths, "old NOT consumed", days_old=39)
+
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_inbox"] == 2          # real old line + corrupt junk
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == \
+        ["old NOT consumed"]
+
+
+def test_compaction_sweep_includes_webchat(tmp_path: Path) -> None:
+    from jigga.runtime.compaction import compact_memory
+
+    paths = init_runtime(tmp_path)
+    _aged(paths, "ancient", days_old=40)
+    assert len(webchat.poll_messages(paths.home)["messages"]) == 1
+    result = compact_memory(paths.home)
+    assert result["webchat_archived"]["archived_inbox"] == 1
+
+
+def test_archive_rebases_legacy_offset_with_corrupt_lines(tmp_path: Path) -> None:
+    """Legacy (anchor-less) offset files have no healing — archival MUST store
+    a correctly rebased offset, counted in PARSED entries (a corrupt line in
+    the archived prefix must not shift the rebase): too low reprocesses a
+    consumed message, too high (or not rebasing at all) skips a real one."""
+    from jigga.core.io import write_json
+
+    paths = init_runtime(tmp_path)
+    _aged(paths, "e1 old consumed", days_old=40)
+    inbox = paths.home / "channels" / "webchat" / "inbox.jsonl"
+    with inbox.open("a", encoding="utf-8") as fh:
+        fh.write("{corrupt old junk\n")
+    webchat.append_inbound(paths.home, "e2 recent consumed")
+    webchat.append_inbound(paths.home, "e3 unconsumed")
+    # pre-anchor offset file: e1 + e2 consumed (2 parsed entries)
+    write_json(paths.home / "state" / "webchat_offset.json", {"offset": 2})
+
+    summary = webchat.archive_transcripts(paths.home)
+    assert summary["archived_inbox"] == 2          # e1 + the corrupt line
+    # exactly e3 flows next: no reprocess of e2, no skip of e3
+    assert [m["text"] for m in webchat.poll_messages(paths.home)["messages"]] == ["e3 unconsumed"]

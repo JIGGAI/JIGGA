@@ -85,9 +85,41 @@ def load_offset(home: Path) -> int:
         return 0
 
 
-def store_offset(home: Path, offset: int) -> None:
+def store_offset(home: Path, offset: int, *, anchor_id: str | None = None) -> None:
+    """`anchor_id` is the id of the LAST CONSUMED entry — it lets the offset
+    self-heal after archival rewrites the inbox (line positions shift; the
+    anchor's new index is re-found). None = nothing consumed yet."""
     ensure_dir(_offset_path(home).parent)
-    write_json(_offset_path(home), {"offset": int(offset)})
+    write_json(_offset_path(home), {"offset": int(offset), "anchor_id": anchor_id})
+
+
+def _resolve_offset(home: Path, entries: list[dict[str, Any]]) -> int:
+    """The effective consume position, healed against the anchor.
+
+    When the stored anchor (last consumed id) is present in the current file,
+    its index + 1 IS the offset — regardless of what the numeric offset says,
+    which makes any crash ordering around an archival trim safe. Anchor gone
+    (the whole consumed prefix was archived) → 0, and everything still in the
+    file is unconsumed by construction (archival only ever trims consumed
+    lines). Legacy offset files without an anchor keep the raw number."""
+    path = _offset_path(home)
+    try:
+        raw = read_json(path) if path.exists() else {}
+    except Exception:  # noqa: BLE001 — corrupt offset → reprocess, never lose
+        return 0
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        offset = int(raw.get("offset", 0))
+    except (TypeError, ValueError):
+        return 0
+    anchor = raw.get("anchor_id")
+    if not anchor:
+        return max(0, offset)
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index].get("id") == anchor:
+            return index + 1
+    return 0
 
 
 def append_inbound(home: Path, text: str, *, conversation_id: str = DEFAULT_CONVERSATION,
@@ -119,10 +151,12 @@ def poll_messages(home: Path, *, long_poll_seconds: int = 0, limit: int = 50) ->
     sequential channel loop would starve the other channels."""
     home = Path(home)
     entries = _read_jsonl(_inbox(home))
-    offset = load_offset(home)
+    offset = _resolve_offset(home, entries)
     fresh = entries[offset:offset + max(1, limit)]
     if fresh:
-        store_offset(home, offset + len(fresh))
+        consumed_through = offset + len(fresh)
+        store_offset(home, consumed_through,
+                     anchor_id=entries[consumed_through - 1].get("id"))
     messages = [
         {
             "chat_id": entry.get("conversation_id") or DEFAULT_CONVERSATION,
@@ -268,6 +302,129 @@ def thread_context(home: Path, conversation_id: Any, *,
         if 0 <= cut < len(text) - 1:
             text = text[cut + 1:]
     return text
+
+
+DEFAULT_RETENTION_DAYS = 30
+
+
+def _archivable_prefix(path: Path, cutoff_iso: str,
+                       *, max_entries: int | None = None) -> tuple[list[str], int, int]:
+    """(all raw lines, count of leading archivable lines, parsed entries in
+    that prefix). PREFIX only — entries append chronologically, so survivors
+    keep contiguous positions and the anchored offset can re-find itself.
+    Unparsable lines count as old (junk rides to the archive rather than
+    pinning the file). `max_entries` bounds the prefix in PARSED-entry space
+    (the offset counts parsed entries, not raw lines — corrupt lines must not
+    let archival eat an unconsumed message)."""
+    if not path.exists():
+        return [], 0, 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    count = parsed = 0
+    for line in lines:
+        entry: Any = None
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            entry = None
+        is_entry = isinstance(entry, dict)
+        if is_entry and max_entries is not None and parsed >= max_entries:
+            break  # the next real entry is unconsumed — never archive it
+        ts = str(entry.get("ts") or "") if is_entry else ""
+        if ts >= cutoff_iso:
+            break
+        count += 1
+        if is_entry:
+            parsed += 1
+    return lines, count, parsed
+
+
+def _append_archive(home: Path, stem: str, lines: list[str]) -> None:
+    """Append archived lines grouped by entry month (`archive/<stem>-YYYY-MM.jsonl`)."""
+    by_month: dict[str, list[str]] = {}
+    for line in lines:
+        try:
+            month = str((json.loads(line) or {}).get("ts") or "")[:7] or "unknown"
+        except (json.JSONDecodeError, AttributeError):
+            month = "unknown"
+        by_month.setdefault(month, []).append(line)
+    archive_dir = _dir(home) / "archive"
+    ensure_dir(archive_dir)
+    for month, chunk in by_month.items():
+        with (archive_dir / f"{stem}-{month}.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(chunk) + "\n")
+
+
+def archive_transcripts(home: Path, *, now: Any = None, dry_run: bool = False) -> dict[str, Any]:
+    """Housekeeping: move transcript entries older than
+    `channels.webchat.retention_days` (default 30; 0 disables) into
+    `channels/webchat/archive/` — still files, still greppable, just out of
+    the hot path. Inbox lines must ALSO be consumed (index < offset): an
+    unread message is never archived, however old. Thread continuity for a
+    dormant conversation survives via its rolling summary file, which
+    archival never touches.
+
+    Crash-safe by anchor, not by ordering: archive-append, then store the
+    rebased offset (with the surviving last-consumed anchor), then rewrite
+    the trimmed file via temp+rename. A crash between any two steps leaves
+    the anchor resolvable, so the next poll heals — worst case is duplicate
+    lines in the cold archive, never a lost or skipped message."""
+    from datetime import datetime, timedelta, timezone
+
+    from jigga.core.config import load_runtime_config
+
+    cfg = (load_runtime_config(home).get("channels") or {}).get("webchat") or {}
+    try:
+        retention = int(cfg.get("retention_days", DEFAULT_RETENTION_DAYS))
+    except (TypeError, ValueError):
+        retention = DEFAULT_RETENTION_DAYS
+    summary = {"archived_inbox": 0, "archived_outbox": 0, "dry_run": dry_run}
+    if retention <= 0:
+        return summary
+    moment = now or datetime.now(timezone.utc)
+    cutoff = (moment - timedelta(days=retention)).isoformat()
+
+    # Inbox: prefix bounded by the consumed offset (in parsed-entry space).
+    entries = _read_jsonl(_inbox(home))
+    offset = _resolve_offset(home, entries)
+    lines, prefix, parsed_in_prefix = _archivable_prefix(_inbox(home), cutoff, max_entries=offset)
+    if prefix:
+        summary["archived_inbox"] = prefix
+        if not dry_run:
+            _append_archive(home, "inbox", lines[:prefix])
+            survivors = lines[prefix:]
+            remaining = _read_jsonl_lines(survivors)
+            rebased = max(0, offset - parsed_in_prefix)
+            anchor = remaining[rebased - 1].get("id") if rebased > 0 else None
+            store_offset(home, rebased, anchor_id=anchor)
+            _rewrite_lines(_inbox(home), survivors)
+
+    # Outbox: age is the only condition (replies have no consume semantics).
+    lines, prefix, _ = _archivable_prefix(_outbox(home), cutoff)
+    if prefix:
+        summary["archived_outbox"] = prefix
+        if not dry_run:
+            _append_archive(home, "outbox", lines[:prefix])
+            _rewrite_lines(_outbox(home), lines[prefix:])
+    return summary
+
+
+def _read_jsonl_lines(lines: list[str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def _rewrite_lines(path: Path, lines: list[str]) -> None:
+    """Replace a transcript file's contents atomically (temp + rename)."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+    tmp.replace(path)
 
 
 def list_conversations(home: Path) -> list[dict[str, Any]]:
