@@ -200,6 +200,20 @@ def _ingest_once(
                                  requested_agent=requested, fallback=default_agent,
                                  event_id=event.id)
             event.target = {"agent": assignee}
+            # Conversation continuity for external channels: record every
+            # gate-passing inbound message into the channel's local transcript
+            # (webchat declares `self_transcribed` — its inbox IS the
+            # transcript). Best-effort: a transcript fault must not break
+            # ingest; the message still becomes a task either way.
+            if not getattr(adapter, "self_transcribed", False):
+                try:
+                    from jigga.runtime.channel_transcript import record as record_transcript
+                    record_transcript(home, name, conversation_id=event.conversation_id,
+                                      sender=event.actor_name, text=event.text,
+                                      direction="in", message_id=event.raw.get("message_id"))
+                except Exception as exc:  # noqa: BLE001
+                    append_event(logs_dir, "channel.transcript_error", status="error",
+                                 channel=name, error=str(exc))
             title, description = _event_to_task_fields(event)
             task = create_task(
                 tasks_dir,

@@ -128,14 +128,18 @@ def compact_memory(home: Path, *, now: datetime | None = None, dry_run: bool = F
     if tasks_archived and not dry_run:
         # archived task files move out of the store — drop them from the index
         forget_tasks(home / "tasks", tasks_archived)
-    # Webchat transcripts ride the same daily sweep (file moves only — the
+    # Channel transcripts ride the same daily sweep (file moves only — the
     # conversational/model side of chat compaction happens lazily at chat
-    # time via the rolling summary, never here).
+    # time via the rolling summary, never here). Webchat has its own
+    # offset-aware archival; external channels use the shared transcript's.
+    from jigga.runtime.channel_transcript import archive_all
     from jigga.runtime.webchat import archive_transcripts
     webchat_archived = archive_transcripts(home, now=now, dry_run=dry_run)
+    channel_archived = archive_all(home, now=now, dry_run=dry_run)
     return {"dry_run": dry_run, "raw_archived": raw_archived,
             "facts_archived": facts_archived, "tasks_archived": tasks_archived,
-            "webchat_archived": webchat_archived}
+            "webchat_archived": webchat_archived,
+            "channel_transcripts_archived": channel_archived}
 
 
 def _marker_path(home: Path) -> Path:
