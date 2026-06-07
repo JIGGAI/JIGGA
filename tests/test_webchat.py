@@ -573,3 +573,174 @@ def test_thread_context_window_is_full_even_with_exclusion(tmp_path: Path) -> No
     write_yaml(paths.config, config)
     rendered = webchat.thread_context(paths.home, "web", exclude_message_id=current["id"])
     assert rendered == "you: first\nyou: second"   # both turns, not just one
+
+
+# --- rolling per-conversation summary (conversational compaction) ----------------
+
+
+def _summary_result(text="SUMMARY", status="ok"):
+    from jigga.runtime.model_router import ModelCallResult
+    return ModelCallResult(status=status, content=text, model="fake",
+                           provider="fake", dry_run=True)
+
+
+def _set_turns(paths, turns, **extra) -> None:
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True,
+                                                    "context_turns": turns, **extra}
+    write_yaml(paths.config, config)
+
+
+def test_summary_path_is_traversal_proof(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    path = webchat._summary_path(paths.home, "../../../etc/passwd")
+    assert path.parent == paths.home / "channels" / "webchat" / "summaries"
+    # distinct ids that sanitize identically still get distinct files (hash suffix)
+    assert webchat._summary_path(paths.home, "a/b") != webchat._summary_path(paths.home, "a_b")
+
+
+def test_roll_summary_noop_under_window(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 5)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+
+    def explode(*_a, **_k):
+        raise AssertionError("model called with no overflow")
+
+    with patch("jigga.runtime.model_router.call_model", explode):
+        assert webchat.roll_summary(paths.home, paths.logs, "web") == ""
+
+
+def test_roll_summary_folds_overflow_and_advances_watermark(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 2)
+    entries = [webchat.append_inbound(paths.home, f"m{i}") for i in range(5)]
+    calls = []
+
+    def capture(home, logs, request):
+        calls.append(request)
+        return _summary_result("the early turns discussed m0-m2")
+
+    with patch("jigga.runtime.model_router.call_model", capture):
+        summary = webchat.roll_summary(paths.home, paths.logs, "web")
+
+    assert summary == "the early turns discussed m0-m2"
+    prompt = calls[0].items[-1].content
+    assert "m0" in prompt and "m2" in prompt     # overflow folded
+    assert "m3" not in prompt and "m4" not in prompt   # window turns NOT folded
+    record = webchat.load_summary(paths.home, "web")
+    assert record["through_message_id"] == entries[2]["id"]
+
+    # nothing new overflowed → stored summary returned, model NOT called again
+    def explode(*_a, **_k):
+        raise AssertionError("model re-called without new overflow")
+
+    with patch("jigga.runtime.model_router.call_model", explode):
+        assert webchat.roll_summary(paths.home, paths.logs, "web") == summary
+
+
+def test_roll_summary_incremental_fold_includes_existing(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 2)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+    with patch("jigga.runtime.model_router.call_model",
+               lambda *a, **k: _summary_result("v1 summary")):
+        webchat.roll_summary(paths.home, paths.logs, "web")
+    webchat.append_inbound(paths.home, "m5")     # pushes m3 out of the window
+    calls = []
+
+    def capture(home, logs, request):
+        calls.append(request)
+        return _summary_result("v2 summary")
+
+    with patch("jigga.runtime.model_router.call_model", capture):
+        assert webchat.roll_summary(paths.home, paths.logs, "web") == "v2 summary"
+    prompt = calls[0].items[-1].content
+    assert "v1 summary" in prompt                # folds INTO the existing summary
+    assert "m3" in prompt and "m2" not in prompt # only the newly-overflowed turn
+
+
+def test_roll_summary_model_failure_keeps_previous_state(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 2)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+    with patch("jigga.runtime.model_router.call_model",
+               lambda *a, **k: _summary_result("good", status="ok")):
+        webchat.roll_summary(paths.home, paths.logs, "web")
+    before = webchat.load_summary(paths.home, "web")
+    webchat.append_inbound(paths.home, "m5")
+    with patch("jigga.runtime.model_router.call_model",
+               lambda *a, **k: _summary_result("", status="error")):
+        assert webchat.roll_summary(paths.home, paths.logs, "web") == "good"
+    assert webchat.load_summary(paths.home, "web") == before   # watermark NOT advanced
+
+
+def test_roll_summary_disabled_by_config(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 2, summarize=False)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+
+    def explode(*_a, **_k):
+        raise AssertionError("summarize=false must not call the model")
+
+    with patch("jigga.runtime.model_router.call_model", explode):
+        assert webchat.roll_summary(paths.home, paths.logs, "web") == ""
+
+
+def test_corrupt_summary_file_is_ignored(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    path = webchat._summary_path(paths.home, "web")
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken", encoding="utf-8")
+    assert webchat.load_summary(paths.home, "web") == {}
+
+
+def test_adapter_block_renders_summary_above_tail(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _set_turns(paths, 2)
+    for i in range(5):
+        webchat.append_inbound(paths.home, f"m{i}")
+    with patch("jigga.runtime.model_router.call_model",
+               lambda *a, **k: _summary_result("they covered m0 through m2")):
+        block = webchat.WebchatAdapter().thread_context(
+            paths.home, conversation_id="web", logs_dir=paths.logs)
+    summary_at = block.index("Earlier in this conversation (summary)")
+    tail_at = block.index("Recent conversation in this thread")
+    assert summary_at < tail_at
+    assert "they covered m0 through m2" in block
+    assert "you: m3\nyou: m4" in block
+
+
+def test_agent_prompt_carries_summary_for_long_threads(tmp_path: Path) -> None:
+    """End-to-end: once a thread outgrows the window, the agent's prompt gets
+    summary + tail + current task — full continuity at bounded cost."""
+    from jigga.runtime.model_router import ModelCallResult
+
+    paths = init_runtime(tmp_path)
+    _write_default_agent(paths)
+    _set_turns(paths, 2)
+    for i in range(4):                            # already-handled earlier turns
+        webchat.append_inbound(paths.home, f"m{i}")
+    assert len(webchat.poll_messages(paths.home, limit=50)["messages"]) == 4
+    agent_requests = []
+
+    def agent_model(home, logs, request):
+        agent_requests.append(request)
+        return ModelCallResult(status="ok", content="ok", model="fake",
+                               provider="fake", dry_run=True)
+
+    with patch("jigga.runtime.agent.call_model", agent_model), \
+         patch("jigga.runtime.model_router.call_model",
+               lambda *a, **k: _summary_result("earlier: m0-m2 discussed")):
+        assert main(["--home", str(tmp_path), "webchat", "send", "--wait",
+                     "--text", "and what did we decide?"]) == 0
+
+    [user] = [i for r in agent_requests for i in r.items if i.role == "user"]
+    assert "Earlier in this conversation (summary)" in user.content
+    assert "earlier: m0-m2 discussed" in user.content
+    assert "Recent conversation in this thread" in user.content
+    assert "and what did we decide?" in user.content
