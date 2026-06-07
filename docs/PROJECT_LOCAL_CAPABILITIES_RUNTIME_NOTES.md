@@ -5,8 +5,7 @@ Second Milestone A slice. Lets a workspace ship its own capability packs under `
 ## What changed
 
 - New helpers in `jigga/core/paths.py`:
-  - `find_project_root(start=None)` — walks upward from a starting cwd looking for a `.jigga/` subdirectory (gitignore-style auto-discovery). Returns the project root or `None`.
-  - `resolve_project_root(project=None)` — resolution order: explicit `project` argument > `JIGGA_PROJECT` env var > auto-detect via `find_project_root()` > `None`.
+  - `resolve_project_root(project=None)` — resolution order: explicit `project` argument > `JIGGA_PROJECT` env var > `None`. **Explicit-only since 2026-06-07**: the original gitignore-style cwd-walk auto-discovery was removed after it crossed out of the repo, found the user's real `~/.jigga`, and declared `$HOME` a project — silently bleeding runtime state into contexts that never opted in.
   - `project_capabilities_dir(project_root)` — returns `<project_root>/.jigga/capabilities` (whether or not it exists; `scan_capability_dir` already handles missing directories gracefully).
 - New top-level CLI flag: `--project <dir>`. Threaded into every call site that constructs a `CapabilityRegistry` (workflow plan, workflow run, capabilities list/inspect/pending/approve/validate).
 - `run_workflow` gained a `project_capabilities: Path | None` kwarg; the CLI passes it through.
@@ -29,10 +28,9 @@ When the CLI is invoked, the project root is resolved like this:
 |---|---|---|
 | 1 | Explicit `--project <dir>` CLI flag | `jigga --project ~/code/my-content workflow run ...` |
 | 2 | `JIGGA_PROJECT` env var | `JIGGA_PROJECT=~/code/my-content jigga ...` |
-| 3 | Auto-detect — walk up from cwd looking for `.jigga/` | `cd ~/code/my-content/src && jigga ...` |
-| 4 | None — no project capabilities loaded | `jigga workflow run hello` from `/tmp` |
+| 3 | None — no project capabilities loaded | `jigga workflow run hello` |
 
-Mental model: same as `git`. If you're inside the tree, JIGGA finds the project. If not, no project context.
+Mental model: project capabilities are an opt-in extension — opting in is saying `--project` (or exporting `JIGGA_PROJECT` in the project's direnv/shell). There is deliberately no cwd-based auto-detection: a folder you merely stand in must not be able to add verbs to your agents.
 
 ## Quick smoke
 
