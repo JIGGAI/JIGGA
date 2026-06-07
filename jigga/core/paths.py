@@ -58,42 +58,25 @@ def examples_dir() -> Path:
     return repo_root() / "examples"
 
 
-def find_project_root(start: str | Path | None = None) -> Path | None:
-    """Walk upward from `start` (or cwd) looking for a directory containing a
-    `.jigga/` subdirectory. Returns the parent of that `.jigga/` (the project
-    root), or None if no such directory is found before reaching the
-    filesystem root.
-
-    Mirrors the gitignore-style auto-discovery pattern: a workspace becomes
-    "JIGGA-aware" by creating a `.jigga/` directory inside it. Auto-detection
-    is best-effort — explicit `--project <dir>` (or `JIGGA_PROJECT` env var)
-    always overrides this.
-    """
-    raw = start or Path.cwd()
-    current = Path(raw).expanduser().resolve()
-    # If `start` is a file, scan from its parent.
-    if current.is_file():
-        current = current.parent
-    while True:
-        if (current / ".jigga").is_dir():
-            return current
-        if current.parent == current:
-            return None
-        current = current.parent
-
-
 def resolve_project_root(project: str | Path | None = None) -> Path | None:
     """Resolution order for the project root:
     1. Explicit `project` argument (e.g. CLI `--project <path>`).
     2. `JIGGA_PROJECT` environment variable.
-    3. Auto-detect via `find_project_root()` from cwd.
-    4. None — caller treats project capabilities as unavailable.
+    3. None — caller treats project capabilities as unavailable.
+
+    Deliberately explicit-only: an earlier version auto-detected by walking
+    upward from cwd looking for a `.jigga/` dir, gitignore-style. From any
+    directory under $HOME that walk eventually reached the user's runtime
+    home (`~/.jigga`) and declared the home directory a "project", silently
+    pulling runtime state into contexts that never asked for it (it bled
+    real-system capabilities into isolated tests). Project capabilities are
+    an opt-in extension; opting in is saying `--project`.
     """
     explicit = project or os.environ.get("JIGGA_PROJECT")
     if explicit:
         candidate = Path(explicit).expanduser().resolve()
         return candidate if candidate.is_dir() else None
-    return find_project_root()
+    return None
 
 
 def project_capabilities_dir(project_root: str | Path | None) -> Path | None:

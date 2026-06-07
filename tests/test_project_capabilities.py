@@ -7,7 +7,6 @@ from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.io import write_yaml
 from jigga.core.paths import (
-    find_project_root,
     project_capabilities_dir,
     resolve_project_root,
 )
@@ -19,37 +18,20 @@ from jigga.runtime.capabilities import (
 from jigga.runtime.workflow import run_workflow
 
 
-# --- find_project_root + resolve_project_root ------------------------------
+# --- resolve_project_root (explicit-only) -----------------------------------
 
 
-def test_find_project_root_walks_up_from_nested_cwd(tmp_path: Path) -> None:
+def test_resolve_project_root_is_explicit_only(tmp_path: Path, monkeypatch) -> None:
+    """No --project, no env → no project, even when cwd sits inside a
+    directory tree that contains a `.jigga/`. The removed cwd-walk used to
+    cross out of the repo and declare the user's HOME a project (real
+    ~/.jigga state bled into isolated tests); opting in is saying --project."""
     (tmp_path / ".jigga").mkdir()
-    nested = tmp_path / "src" / "app" / "module"
+    nested = tmp_path / "src" / "app"
     nested.mkdir(parents=True)
-    assert find_project_root(nested) == tmp_path.resolve()
-
-
-def test_find_project_root_returns_none_when_no_jigga_dir(tmp_path: Path) -> None:
-    nested = tmp_path / "no" / "project"
-    nested.mkdir(parents=True)
-    # tmp_path itself has no .jigga, and there's no .jigga above it on the
-    # filesystem path. Walking up should hit the filesystem root and return None.
-    # NOTE: a developer's machine might have ~/.jigga above tmp_path, which
-    # would (correctly) be detected. The test asserts the auto-detect doesn't
-    # *invent* a project — if it finds one, it must be the one above tmp_path.
-    result = find_project_root(nested)
-    if result is not None:
-        assert (result / ".jigga").is_dir()
-        # The detected root must be an ancestor of nested.
-        assert str(nested).startswith(str(result))
-
-
-def test_find_project_root_handles_starting_from_a_file(tmp_path: Path) -> None:
-    (tmp_path / ".jigga").mkdir()
-    nested = tmp_path / "src" / "main.py"
-    nested.parent.mkdir(parents=True)
-    nested.write_text("# stub", encoding="utf-8")
-    assert find_project_root(nested) == tmp_path.resolve()
+    monkeypatch.delenv("JIGGA_PROJECT", raising=False)
+    monkeypatch.chdir(nested)
+    assert resolve_project_root(None) is None
 
 
 def test_resolve_project_root_explicit_wins_over_env(tmp_path: Path, monkeypatch) -> None:
