@@ -559,3 +559,17 @@ def test_non_channel_tasks_get_no_thread_header(tmp_path: Path) -> None:
 
     contents = [i.content for r in requests for i in r.items if i.role == "user"]
     assert contents and all("Recent conversation" not in c for c in contents)
+
+
+def test_thread_context_window_is_full_even_with_exclusion(tmp_path: Path) -> None:
+    """Excluding the current message must not shrink the window below
+    `context_turns` — the renderer over-fetches by one to compensate."""
+    paths = init_runtime(tmp_path)
+    webchat.append_inbound(paths.home, "first")
+    webchat.append_inbound(paths.home, "second")
+    current = webchat.append_inbound(paths.home, "the current one")
+    config = read_yaml(paths.config)
+    config.setdefault("channels", {})["webchat"] = {"enabled": True, "context_turns": 2}
+    write_yaml(paths.config, config)
+    rendered = webchat.thread_context(paths.home, "web", exclude_message_id=current["id"])
+    assert rendered == "you: first\nyou: second"   # both turns, not just one
