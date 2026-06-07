@@ -145,6 +145,13 @@ def run_onboarding(
         [("chief", _ROLES["chief"]["role"]), ("assistant", _ROLES["assistant"]["role"])],
         default="chief",
     )
+    # The assistant's display name — id stays the stable archetype id (`chief`/
+    # `assistant`) so routing/workspaces never depend on what you call it.
+    base = _ROLES[role_kind]
+    spec = dict(base)
+    custom_name = ask(f"Name your assistant? (Enter for \"{base['name']}\") ")
+    if custom_name:
+        spec["name"] = custom_name
     style = _choose(
         input_fn, echo, "Communication style?",
         [("concise", _STYLES["concise"]), ("detailed", _STYLES["detailed"]), ("warm", _STYLES["warm"])],
@@ -153,7 +160,6 @@ def run_onboarding(
     extra_dirs = _normalize_dirs(ask(
         "\nAny folders the assistant may read/write? (comma-separated, Enter for none) "))
 
-    spec = _ROLES[role_kind]
     # USER.md — generated from the answers, never shipped pre-filled.
     user_path = paths.home / "USER.md"
     if overwrite or not _looks_filled(user_path):
@@ -169,7 +175,7 @@ def run_onboarding(
             "id": agent_id,
             "name": spec["name"],
             "role": spec["role"],
-            "description": purpose or f"The {spec['name'].lower()} for this JIGGA install.",
+            "description": purpose or f"The {base['name'].lower()} for this JIGGA install.",
             "default": True,
             "memory_scope": "task_only",
             "permission_mode": "autonomous",
@@ -192,15 +198,16 @@ def run_onboarding(
         })
         created = True
         _write_persona(paths.home, agent_id, spec, _STYLES[style], purpose, call_you,
-                       overwrite=overwrite)
+                       overwrite=overwrite, fresh=True)
 
     echo(f"\n✓ Setup complete. Default agent: {spec['name']} (`{agent_id}`).")
     echo(f"  USER.md: {user_path}")
     echo("  It's the catch-all for inbound messages and can run/oversee every team.")
     if extra_dirs:
         echo(f"  Filesystem access: its JIGGA home + {', '.join(extra_dirs)}")
-    return {"agent_id": agent_id, "role_kind": role_kind, "style": style,
-            "created": created, "user_md": str(user_path), "extra_dirs": extra_dirs}
+    return {"agent_id": agent_id, "name": spec["name"], "role_kind": role_kind,
+            "style": style, "created": created, "user_md": str(user_path),
+            "extra_dirs": extra_dirs}
 
 
 def _looks_filled(user_path: Path) -> bool:
@@ -216,14 +223,21 @@ def _looks_filled(user_path: Path) -> bool:
 
 
 def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
-                   purpose: str, call_you: str, *, overwrite: bool = False) -> None:
+                   purpose: str, call_you: str, *, overwrite: bool = False,
+                   fresh: bool = False) -> None:
     """Author the default agent's identity files in its workspace — SOUL.md
     (persona), AGENTS.md (charter + guardrails), and MEMORY.md (the agent's own
     curated notes) — so the context pack injects them. No TOOLS.md: the tool
     layer is generated live from the agent's yaml grants (an authored file
     would drift; a hand-created TOOLS.md still contributes usage notes via the
     context pack). Generated from the setup choices; create-only (the
-    installer's edits are theirs) unless `overwrite`."""
+    installer's edits are theirs) unless `overwrite`.
+
+    `fresh` means the agent was just created in this same setup run: the
+    workspace scaffold has only just seeded its generic SOUL/MEMORY starters
+    (no human edits can exist yet), so the authored persona must replace
+    them — without it, the wizard's posture/style/name answers were silently
+    discarded in favor of the generic starter text."""
     from jigga.core.config import load_agents
     from jigga.core.io import ensure_dir
     from jigga.runtime.workspaces import ensure_agent_workspace, workspace_dir
@@ -234,7 +248,8 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
     ws_id = ensure_agent_workspace(home, home / "teams", agent)
     role_dir = workspace_dir(home, ws_id) / "roles" / agent_id
     ensure_dir(role_dir)
-    soul = (f"# SOUL — {spec['name']}\n{spec['posture']}\n\n{style_line}\n")
+    soul = (f"# SOUL — {spec['name']}\nYour name is {spec['name']}.\n"
+            f"{spec['posture']}\n\n{style_line}\n")
     charter = [f"# {spec['name']} — charter", "", spec["role"], ""]
     if purpose:
         charter += [f"**Purpose of this install:** {purpose}", ""]
@@ -267,5 +282,5 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
     }
     for name, content in files.items():
         path = role_dir / name
-        if overwrite or not path.exists():
+        if overwrite or fresh or not path.exists():
             path.write_text(content, encoding="utf-8")

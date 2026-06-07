@@ -69,9 +69,9 @@ def test_onboard_without_daemon_does_not_install_service(tmp_path: Path, monkeyp
 
 
 def test_onboard_interactive_offers_model_per_confirmation(tmp_path: Path, monkeypatch) -> None:
-    # run_onboarding asks 6 questions (all blank -> defaults), then we answer
+    # run_onboarding asks 7 questions (all blank -> defaults), then we answer
     # the model confirm "y", the channel confirm "n", and the start-now confirm "n".
-    answers = iter(["", "", "", "", "", "", "y", "n", "n"])
+    answers = iter(["", "", "", "", "", "", "", "y", "n", "n"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers, ""))
 
     ran = {"model": False, "channels": False}
@@ -117,15 +117,15 @@ def test_confirm_survives_focus_escape_noise(monkeypatch):
 
 
 def test_onboard_interactive_start_now_installs(tmp_path: Path, monkeypatch, _no_real_service) -> None:
-    # 6 setup blanks, model "n", channel "n", start-now "y"
-    answers = iter(["", "", "", "", "", "", "n", "n", "y"])
+    # 7 setup blanks, model "n", channel "n", start-now "y"
+    answers = iter(["", "", "", "", "", "", "", "n", "n", "y"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
     assert main(["--home", str(tmp_path), "onboard"]) == 0
     assert len(_no_real_service) == 1  # service installed on "y"
 
 
 def test_onboard_interactive_decline_start_now(tmp_path: Path, monkeypatch, _no_real_service) -> None:
-    answers = iter(["", "", "", "", "", "", "n", "n", "n"])
+    answers = iter(["", "", "", "", "", "", "", "n", "n", "n"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
     assert main(["--home", str(tmp_path), "onboard"]) == 0
     assert _no_real_service == []  # declined -> not installed

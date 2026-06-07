@@ -15,10 +15,11 @@ def _scripted(answers: list[str]):
 
 def test_onboarding_creates_default_agent_and_user_md(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
-    # answers: call_you, timezone, purpose, role(1=chief), style(1=concise)
-    out = run_onboarding(paths, input_fn=_scripted(["RJ", "US/Central", "Run the marketing team", "1", "1"]),
+    # answers: call_you, timezone, purpose, role(1=chief), name(default), style(1=concise)
+    out = run_onboarding(paths, input_fn=_scripted(["RJ", "US/Central", "Run the marketing team", "1", "", "1"]),
                          print_fn=lambda *a, **k: None)
     assert out["agent_id"] == "chief" and out["role_kind"] == "chief"
+    assert out["name"] == "Chief of Staff"          # Enter keeps the archetype name
 
     # USER.md generated from the answers (nothing hardcoded)
     user = (paths.home / "USER.md").read_text()
@@ -31,14 +32,19 @@ def test_onboarding_creates_default_agent_and_user_md(tmp_path: Path) -> None:
     assert "spawn_subagent" in agent.tools and "memory.search" in agent.tools
     assert resolve_default_agent(paths.agents) == "chief"
 
-    # persona (SOUL/AGENTS) authored into its workspace → context pack will inject it
+    # persona (SOUL/AGENTS) authored into its workspace → context pack will inject it.
+    # The AUTHORED soul must land, not the workspace scaffold's generic starter —
+    # the posture and the chosen style line are the regression markers (they were
+    # silently discarded when the create-only write lost to the generic seed).
     ws = ensure_agent_workspace(paths.home, paths.teams, agent)
-    assert "chief of staff" in (read_file(paths.home, ws, "roles/chief/SOUL.md") or "").lower()
+    soul = read_file(paths.home, ws, "roles/chief/SOUL.md") or ""
+    assert "Default to **delegating**" in soul          # archetype posture, not the generic seed
+    assert "Communicate concisely" in soul              # style answer (1=concise) applied
 
 
 def test_onboarding_assistant_role_option(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
-    out = run_onboarding(paths, input_fn=_scripted(["Sam", "", "", "2", "3"]),
+    out = run_onboarding(paths, input_fn=_scripted(["Sam", "", "", "2", "", "3"]),
                          print_fn=lambda *a, **k: None)
     assert out["agent_id"] == "assistant" and out["role_kind"] == "assistant" and out["style"] == "warm"
     assert load_agents(paths.agents)["assistant"].default is True
@@ -47,13 +53,36 @@ def test_onboarding_assistant_role_option(tmp_path: Path) -> None:
 def test_onboarding_does_not_clobber_filled_user_md(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
     (paths.home / "USER.md").write_text("# USER.md\n- **What to call them:** ExistingName\n", encoding="utf-8")
-    run_onboarding(paths, input_fn=_scripted(["NewName", "", "", "1", "1"]),
+    run_onboarding(paths, input_fn=_scripted(["NewName", "", "", "1", "", "1"]),
                    print_fn=lambda *a, **k: None)
     assert "ExistingName" in (paths.home / "USER.md").read_text()   # preserved
     # ...but --overwrite replaces it
-    run_onboarding(paths, input_fn=_scripted(["NewName", "", "", "1", "1"]),
+    run_onboarding(paths, input_fn=_scripted(["NewName", "", "", "1", "", "1"]),
                    print_fn=lambda *a, **k: None, overwrite=True)
     assert "NewName" in (paths.home / "USER.md").read_text()
+
+
+def test_onboarding_custom_agent_name(tmp_path: Path) -> None:
+    """The name step: what you type becomes the agent's display name and flows
+    into its identity files; the id stays the stable archetype id so routing
+    and workspaces never depend on the name."""
+    paths = init_runtime(tmp_path)
+    out = run_onboarding(paths, input_fn=_scripted(["RJ", "", "", "1", "Hermes", "1"]),
+                         print_fn=lambda *a, **k: None)
+    assert out["name"] == "Hermes"
+    assert out["agent_id"] == "chief"               # id unchanged — stable references
+
+    agent = load_agents(paths.agents)["chief"]
+    assert agent.name == "Hermes"
+    assert agent.default is True
+    assert "chief" in agent.description.lower()     # description keeps the archetype, not "the hermes"
+
+    ws = ensure_agent_workspace(paths.home, paths.teams, agent)
+    soul = read_file(paths.home, ws, "roles/chief/SOUL.md") or ""
+    charter = read_file(paths.home, ws, "roles/chief/AGENTS.md") or ""
+    assert "Your name is Hermes." in soul
+    assert "chief of staff" in soul.lower()         # posture still the archetype's
+    assert charter.startswith("# Hermes — charter")
 
 
 def test_nothing_personal_shipped_in_repo() -> None:
@@ -70,9 +99,9 @@ def test_onboarding_grants_extra_directories(tmp_path: Path) -> None:
     filesystem allowlist (as recursive globs), alongside its JIGGA home."""
     from jigga.runtime.policy import evaluate_filesystem
     paths = init_runtime(tmp_path)
-    # answers: call_you, tz, purpose, role(1), style(1), dirs
+    # answers: call_you, tz, purpose, role(1), name(default), style(1), dirs
     run_onboarding(paths, input_fn=_scripted(
-        ["RJ", "", "", "1", "1", "~/Projects/site, /data/reports"]),
+        ["RJ", "", "", "1", "", "1", "~/Projects/site, /data/reports"]),
         print_fn=lambda *a, **k: None)
     agent = load_agents(paths.agents)["chief"]
     allow = agent.permissions["filesystem"]["allow"]
