@@ -27,6 +27,13 @@ from jigga.runtime.audit import new_id
 
 SUPPORTED_ACTIONS = ("webchat.send_message", "webchat.poll_messages")
 DEFAULT_CONVERSATION = "web"
+# Thread-context injection: how many recent turns of the conversation ride
+# along with each agent run (config `channels.webchat.context_turns`; 0
+# disables), and the hard char budget the rendered turns may occupy in the
+# prompt (~1k tokens). Models are stateless — JIGGA is the chat client, so it
+# re-sends the recent tail the way every chat app does invisibly.
+DEFAULT_CONTEXT_TURNS = 12
+CONTEXT_CHAR_CAP = 4000
 
 
 def _dir(home: Path) -> Path:
@@ -152,6 +159,33 @@ def history(home: Path, *, conversation_id: str = DEFAULT_CONVERSATION,
     return merged[-limit:]
 
 
+def thread_context(home: Path, conversation_id: Any, *,
+                   exclude_message_id: str | None = None) -> str:
+    """The conversation's recent tail, rendered for the agent's prompt —
+    `sender: text` lines, oldest first. Excludes the message currently being
+    handled (it's already the task body). Capped by `context_turns` config
+    (0 disables) and a char budget that drops the OLDEST overflow — the newest
+    turns are the ones a follow-up question refers to."""
+    from jigga.core.config import load_runtime_config
+
+    cfg = (load_runtime_config(home).get("channels") or {}).get("webchat") or {}
+    try:
+        turns = int(cfg.get("context_turns", DEFAULT_CONTEXT_TURNS))
+    except (TypeError, ValueError):
+        turns = DEFAULT_CONTEXT_TURNS
+    if turns <= 0:
+        return ""
+    entries = [e for e in history(home, conversation_id=str(conversation_id), limit=turns + 1)
+               if e.get("id") != exclude_message_id][-turns:]
+    text = "\n".join(f"{e.get('sender') or 'you'}: {e.get('text') or ''}" for e in entries)
+    if len(text) > CONTEXT_CHAR_CAP:
+        text = text[-CONTEXT_CHAR_CAP:]
+        cut = text.find("\n")           # drop the partial oldest line
+        if 0 <= cut < len(text) - 1:
+            text = text[cut + 1:]
+    return text
+
+
 def webchat_handler(step, _capability, resolved_input, _memory_context, runtime) -> Any:
     """Capability handler: `webchat.send_message` is how an agent replies in
     the browser (poll is runtime-only — the ingest pipeline owns it)."""
@@ -192,3 +226,11 @@ class WebchatAdapter:
 
     def send(self, home: Path, *, conversation_id: Any, text: str) -> dict[str, Any]:
         return send_message(home, conversation_id, text)
+
+    def thread_context(self, home: Path, *, conversation_id: Any,
+                       exclude_message_id: str | None = None) -> str:
+        """Optional adapter hook: channels with a local transcript provide the
+        thread's recent tail for the agent's prompt. The agent loop probes for
+        this via getattr — channels without one (telegram has no local
+        transcript store) simply don't inject."""
+        return thread_context(home, conversation_id, exclude_message_id=exclude_message_id)
