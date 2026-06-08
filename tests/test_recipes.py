@@ -344,20 +344,71 @@ def test_cli_recipes_list_and_show(tmp_path: Path, capsys) -> None:
     assert "morning_day_summary" in shown["workflows"]
 
 
-def test_cli_recipes_list_flags_bundled_vs_local(tmp_path: Path, capsys) -> None:
-    """`recipes list --json` marks each recipe `bundled` unless a user-dir copy
-    shadows it — the UI splits "builtin" (templates) from "local" (editable
-    copies) on this flag."""
+def test_cli_recipes_list_full_catalog_shows_bundled_and_local(tmp_path: Path, capsys) -> None:
+    """`recipes list --json` shows the FULL catalog with no cross-dedup: a
+    bundled template AND a user-dir copy of the same id both appear (each
+    tagged `bundled`), keyed by unique `source`."""
     init_runtime(tmp_path)
-    # A user copy shadows the bundled marketing-team; everything else is bundled.
     edited = "---\nid: marketing_team\nname: Marketing Team\nkind: team\nversion: 9.9.9\n---\nMINE\n"
     (tmp_path / "recipes").mkdir(parents=True, exist_ok=True)
     (tmp_path / "recipes" / "marketing-team.md").write_text(edited, encoding="utf-8")
 
     assert main(["--home", str(tmp_path), "recipes", "list", "--json"]) == 0
-    by_id = {r["id"]: r for r in json.loads(capsys.readouterr().out)}
-    assert by_id["marketing_team"]["bundled"] is False  # shadowed by a user copy
-    assert by_id["researcher"]["bundled"] is True        # bundled only
+    listed = json.loads(capsys.readouterr().out)
+    mkt = [r for r in listed if r["id"] == "marketing_team"]
+    assert {r["bundled"] for r in mkt} == {True, False}  # both the template and the local copy
+    assert len({r["source"] for r in listed}) == len(listed)  # source is unique per entry
+
+
+def test_cli_recipes_create_instance_writes_local_copy_and_scaffolds(tmp_path: Path, capsys) -> None:
+    """`recipes create` writes an editable user-dir recipe under the new id with
+    instance-scoped agents (<id>-<role>), and scaffolds the team."""
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "create", "marketing-team",
+                 "--id", "mktg-east", "--name", "Marketing East", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["id"] == "mktg-east" and result["kind"] == "team"
+
+    # An editable user-dir recipe copy now exists → shows as Local.
+    user_copy = tmp_path / "recipes" / "mktg-east.md"
+    assert user_copy.exists()
+    copy_recipe = load_recipe(user_copy)
+    assert copy_recipe.id == "mktg-east" and copy_recipe.name == "Marketing East"
+    # Members were unpinned → instance-scoped agent yamls, not the template's.
+    assert (tmp_path / "agents" / "mktg-east-strategy.yaml").exists()
+    assert not (tmp_path / "agents" / "marketing_lead.yaml").exists()
+    assert result["scaffold"]["lead"] == "mktg-east-strategy"
+
+
+def test_cli_recipes_create_two_independent_copies(tmp_path: Path) -> None:
+    """Two copies of the same template produce two teams with DISTINCT agents —
+    the bug this fixes (pinned ids used to collapse copies into one)."""
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "create", "marketing-team", "--id", "mktg-a"]) == 0
+    assert main(["--home", str(tmp_path), "recipes", "create", "marketing-team", "--id", "mktg-b"]) == 0
+    teams = set(load_teams(tmp_path / "teams"))
+    assert {"mktg-a", "mktg-b"} <= teams
+    agents = set(load_agents(tmp_path / "agents"))
+    assert {"mktg-a-strategy", "mktg-b-strategy"} <= agents  # independent agents per copy
+
+
+def test_cli_recipes_create_rejects_duplicate_id(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "create", "marketing-team", "--id", "dup-team"]) == 0
+    capsys.readouterr()
+    # Same id again without --overwrite → refused (exit 1), no clobber.
+    assert main(["--home", str(tmp_path), "recipes", "create", "researcher", "--id", "dup-team"]) == 1
+    assert "already exists" in capsys.readouterr().out.lower()
+
+
+def test_cli_recipes_create_agent_instance(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "create", "researcher",
+                 "--id", "researcher-2", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["kind"] == "agent" and result["id"] == "researcher-2"
+    assert (tmp_path / "agents" / "researcher-2.yaml").exists()
+    assert (tmp_path / "recipes" / "researcher-2.md").exists()
 
 
 def test_cli_recipes_show_unknown_recipe_fails(tmp_path: Path, capsys) -> None:
