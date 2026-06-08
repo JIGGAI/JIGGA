@@ -344,6 +344,22 @@ def test_cli_recipes_list_and_show(tmp_path: Path, capsys) -> None:
     assert "morning_day_summary" in shown["workflows"]
 
 
+def test_cli_recipes_list_flags_bundled_vs_local(tmp_path: Path, capsys) -> None:
+    """`recipes list --json` marks each recipe `bundled` unless a user-dir copy
+    shadows it — the UI splits "builtin" (templates) from "local" (editable
+    copies) on this flag."""
+    init_runtime(tmp_path)
+    # A user copy shadows the bundled marketing-team; everything else is bundled.
+    edited = "---\nid: marketing_team\nname: Marketing Team\nkind: team\nversion: 9.9.9\n---\nMINE\n"
+    (tmp_path / "recipes").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "recipes" / "marketing-team.md").write_text(edited, encoding="utf-8")
+
+    assert main(["--home", str(tmp_path), "recipes", "list", "--json"]) == 0
+    by_id = {r["id"]: r for r in json.loads(capsys.readouterr().out)}
+    assert by_id["marketing_team"]["bundled"] is False  # shadowed by a user copy
+    assert by_id["researcher"]["bundled"] is True        # bundled only
+
+
 def test_cli_recipes_show_unknown_recipe_fails(tmp_path: Path, capsys) -> None:
     init_runtime(tmp_path)
     assert main(["--home", str(tmp_path), "recipes", "show", "nope"]) == 1
