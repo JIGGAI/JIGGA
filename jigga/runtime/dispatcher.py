@@ -29,6 +29,7 @@ from jigga.runtime.handlers import (
     _summarization_handler,
     _team_insight_handler,
     _team_orchestration_handler,
+    _tickets_handler,
 )
 from jigga.runtime.policy import (
     PolicyDecision,
@@ -55,7 +56,7 @@ __all__ = [
 # Filesystem and network use their own structured evaluators. Memory is handled
 # separately via memory_scope. Secrets are handled explicitly because their
 # manifest shape is `{required: [...]}`. Delegation is enforced inside spawn_subagent.
-SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications", "mailbox")
+SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications", "mailbox", "tickets")
 
 
 def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
@@ -151,6 +152,7 @@ HANDLERS: dict[str, Handler] = {
     "dry_run.notifications": _notifications_dry_run_handler,
     "runtime.notifications": _notifications_handler,
     "runtime.mailbox": _mailbox_handler,
+    "runtime.tickets": _tickets_handler,
     "dry_run.summarization": _summarization_handler,
     "dry_run.generic": _generic_handler,
     "runtime.spawn_subagent": _spawn_subagent_handler,

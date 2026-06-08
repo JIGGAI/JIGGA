@@ -303,6 +303,49 @@ def _mailbox_handler(
     return {"source": "capability.mailbox", "sent": message, "workspace": recipient_ws}
 
 
+def _tickets_handler(
+    _step: WorkflowStep,
+    _capability: CapabilityManifest,
+    resolved_input: Any,
+    _memory_context: dict[str, Any],
+    runtime: RuntimeContext,
+) -> Any:
+    """`tickets.move` / `tickets.list` (W3). A ticket is a team task; lanes are
+    the team's declared board vocabulary. The acting agent IS the actor, so a
+    lane's `gate` is enforced against the moving agent's id/role. File-first:
+    every move is appended to the team's tickets.jsonl and the audit log."""
+    from jigga.core.config import load_teams
+    from jigga.runtime.lanes import move_task_lane, team_tickets, team_lanes
+    from jigga.runtime.workspaces import find_agent_teams
+
+    payload = resolved_input if isinstance(resolved_input, dict) else {}
+    action = str(payload.get("action") or "move").strip()
+    actor = runtime.agent.id if runtime.agent else None
+    tasks_dir = runtime.home / "tasks"
+    teams_dir = runtime.home / "teams"
+
+    if action == "list":
+        team_id = str(payload.get("team") or "").strip()
+        if not team_id and actor:
+            teams = find_agent_teams(teams_dir, actor)
+            team_id = teams[0].id if teams else ""
+        if not team_id:
+            raise ValueError("tickets.list needs a 'team' (or an agent that belongs to one).")
+        team = load_teams(teams_dir).get(team_id)
+        lanes = [lane.id for lane in team_lanes(team)] if team else []
+        tickets = [{"id": t.id, "title": t.title, "lane": t.lane, "state": t.state,
+                    "assignee": t.assignee} for t in team_tickets(tasks_dir, team_id)]
+        return {"source": "capability.tickets", "team": team_id, "lanes": lanes, "tickets": tickets}
+
+    task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
+    to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
+    if not task_id or not to_lane:
+        raise ValueError("tickets.move needs a 'task' id and a destination 'lane'.")
+    task = move_task_lane(runtime.home, tasks_dir, runtime.logs_dir, teams_dir,
+                          task_id, to_lane, actor=actor)
+    return {"source": "capability.tickets", "moved": {"id": task.id, "lane": task.lane}, "actor": actor}
+
+
 def _summarization_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,

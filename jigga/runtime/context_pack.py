@@ -209,6 +209,20 @@ def _inbox_layer(home: Path, team_id: str, member: str) -> str:
 
     return render_unread(unread_messages(home, team_id, member))
 
+def _lanes_layer(team_id: str, teams: dict[str, Any]) -> str:
+    """The team's ticket-board lane vocabulary + meanings, so agents know what
+    each column means and who gates it. Empty when the team has no board."""
+    from jigga.runtime.lanes import LaneError, render_lanes
+
+    team = teams.get(team_id)
+    if team is None:
+        return ""
+    try:
+        return render_lanes(team)
+    except LaneError:
+        return ""
+
+
 def _shared_context(home: Path, team_id: str) -> str:
     parts: list[str] = []
     plan = read_file(home, team_id, "notes/plan.md")
@@ -251,6 +265,7 @@ def assemble_agent_context(
         ("Your persona", authored(f"roles/{member}/SOUL.md"), "SOUL", False, False),
         ("Your role on the team", authored(f"roles/{member}/AGENTS.md") or _gen_agents(agent, team_id, teams), "AGENTS", False, False),
         ("Team charter", authored("TEAM.md"), "TEAM", False, False),
+        ("Your team's ticket board", _lanes_layer(team_id, teams), "lanes", False, False),
         ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False, False),
         ("Your long-term memory", _curated_memory(home, team_id, member), "MEMORY", True, False),
         ("Your inbox", _inbox_layer(home, team_id, member), "inbox", True, True),

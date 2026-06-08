@@ -227,6 +227,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.mailbox",
     },
     {
+        "name": "tickets",
+        "version": "0.1.0",
+        "summary": "Move a team ticket across its board lanes, or list the team's tickets by lane (file-first, audited).",
+        "actions": ["tickets.move", "tickets.list"],
+        "permissions": {"tickets": "move"},
+        "risk_level": "low",
+        "handler": "runtime.tickets",
+    },
+    {
         "name": "summarization",
         "version": "0.1.0",
         "summary": "MVP text/context summarization actions.",

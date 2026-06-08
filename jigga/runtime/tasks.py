@@ -29,6 +29,7 @@ def create_task(
     assignee: str | None = None,
     workflow_id: str | None = None,
     metadata: dict | None = None,
+    lane: str | None = None,
 ) -> Task:
     ensure_dir(tasks_dir)
     task = Task(
@@ -37,6 +38,7 @@ def create_task(
         description=description,
         assignee=assignee,
         workflow_id=workflow_id,
+        lane=lane,
         metadata=metadata or {},
     )
     write_task(tasks_dir, task)

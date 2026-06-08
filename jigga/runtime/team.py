@@ -56,11 +56,14 @@ def run_team(
     workflow_runs = []
     default_assignee = routing.get("default_assignee")
     if default_assignee:
+        from jigga.runtime.lanes import default_lane
+
         task = create_task(
             tasks_dir,
             title=f"Team {team_id} coordination task",
             description=f"Created by team runtime {run_id}.",
             assignee=default_assignee,
+            lane=default_lane(team),  # land on the team's first lane (None if no board)
             metadata={
                 "team_id": team_id,
                 "run_id": run_id,
