@@ -67,9 +67,11 @@ from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
 from jigga.runtime.recipes import (
+    add_agent_to_team,
     create_recipe_instance,
     find_recipe,
     installed_recipes,
+    lint_recipe,
     list_recipe_files,
     list_recipes,
     load_recipe,
@@ -694,6 +696,10 @@ def build_parser() -> argparse.ArgumentParser:
     recipes_create.add_argument("--overwrite", action="store_true",
                                 help="Overwrite an existing user-dir recipe / files with this id")
     recipes_create.add_argument("--json", action="store_true", dest="json_output")
+    recipes_lint = recipes_sub.add_parser(
+        "lint", help="Check recipe(s) for structural / reference errors before scaffolding")
+    recipes_lint.add_argument("recipe", nargs="?", help="Recipe name/path (default: lint all)")
+    recipes_lint.add_argument("--json", action="store_true", dest="json_output")
 
     team = sub.add_parser("team", help="List/run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
@@ -723,6 +729,16 @@ def build_parser() -> argparse.ArgumentParser:
     team_staff.add_argument("member_id")
     team_staff.add_argument("--role", dest="role_text", help="Role sentence for the new agent")
     team_staff.add_argument("--json", action="store_true", dest="json_output")
+    team_add_agent = team_sub.add_parser(
+        "add-agent", help="Add an existing agent to a team: copy its config into the team's recipe "
+                          "as a new member and scaffold it")
+    team_add_agent.add_argument("team_id")
+    team_add_agent.add_argument("agent_id", help="Source agent to copy (see: jigga agents list)")
+    team_add_agent.add_argument("--role", help="Member role key on the team (default: the source agent id)")
+    team_add_agent.add_argument("--member-id", dest="member_id",
+                                help="Id for the new member (default: <team>-<role>)")
+    team_add_agent.add_argument("--overwrite", action="store_true", help="Replace an existing member with this id")
+    team_add_agent.add_argument("--json", action="store_true", dest="json_output")
     team_files = team_sub.add_parser("files", help="List a team's workspace files (required/missing)")
     team_files.add_argument("team_id")
     team_files.add_argument("--json", action="store_true", dest="json_output")
@@ -1925,6 +1941,24 @@ def _cmd_team(args: argparse.Namespace) -> int:
             print(f"  agent:  agents/{args.member_id}.yaml"
                   + ("" if result["agent_written"] else "  (already existed)"))
         return 0
+    if args.team_command == "add-agent":
+        try:
+            result = add_agent_to_team(paths, args.team_id, args.agent_id, role=args.role,
+                                       member_id=args.member_id, overwrite=args.overwrite)
+        except ValueError as exc:
+            if args.json_output:
+                print_json({"error": str(exc)})
+            else:
+                print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"✓ Added {args.agent_id!r} to {args.team_id!r} as member {result['member']!r} (role {result['role']!r})")
+            print(f"  recipe: {result['recipe']}")
+            print(f"  agent:  agents/{result['member']}.yaml"
+                  + ("" if result["agent_written"] else "  (already existed)"))
+        return 0
     if args.team_command in ("files", "file"):
         from jigga.runtime.entity_files import list_team_files
         return _entity_file_cmd(
@@ -2136,6 +2170,42 @@ def _recipes_create(paths: Any, source: str, *, new_id: str, name: str | None,
     return 0
 
 
+def _recipes_lint(paths: Any, name: str | None, *, json_output: bool) -> int:
+    """Lint one recipe, or every recipe in the catalog. Exit 1 if any recipe has
+    an error-level issue (or fails to load)."""
+    if name:
+        path = find_recipe(paths.home, name)
+        targets = [(name, path)] if path else [(name, None)]
+    else:
+        targets = [(r["id"], Path(r["source"])) for r in list_recipe_files(paths.home)]
+
+    report: list[dict[str, Any]] = []
+    for label, path in targets:
+        if path is None:
+            report.append({"recipe": label, "source": None,
+                           "issues": [{"level": "error", "code": "not_found", "message": "recipe not found"}]})
+            continue
+        try:
+            issues = lint_recipe(load_recipe(path))
+        except ValueError as exc:
+            issues = [{"level": "error", "code": "load_failed", "message": str(exc)}]
+        report.append({"recipe": label, "source": str(path), "issues": issues})
+
+    has_error = any(i["level"] == "error" for entry in report for i in entry["issues"])
+    if json_output:
+        print_json(report)
+        return 1 if has_error else 0
+
+    flagged = [e for e in report if e["issues"]]
+    if not flagged:
+        print(f"✓ {len(report)} recipe(s) OK — no issues.")
+        return 0
+    for entry in flagged:
+        print(f"{entry['recipe']}  ({entry['source']})")
+        for issue in entry["issues"]:
+            mark = "✗" if issue["level"] == "error" else "⚠"
+            print(f"  {mark} [{issue['code']}] {issue['message']}")
+    return 1 if has_error else 0
 
 
 
@@ -2365,6 +2435,8 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     if args.recipes_command == "create":
         return _recipes_create(paths, args.recipe, new_id=args.new_id, name=args.name,
                                overwrite=args.overwrite, json_output=args.json_output)
+    if args.recipes_command == "lint":
+        return _recipes_lint(paths, args.recipe, json_output=args.json_output)
     if args.recipes_command == "delete":
         from jigga.runtime.audit import append_event
         from jigga.runtime.recipes import RECIPE_SUFFIX  # noqa: PLC0415

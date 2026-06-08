@@ -10,6 +10,7 @@ from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_teams
 from jigga.runtime.recipes import (
     find_recipe,
+    lint_recipe,
     list_recipes,
     load_recipe,
     recipe_summary,
@@ -409,6 +410,72 @@ def test_cli_recipes_create_agent_instance(tmp_path: Path, capsys) -> None:
     assert result["kind"] == "agent" and result["id"] == "researcher-2"
     assert (tmp_path / "agents" / "researcher-2.yaml").exists()
     assert (tmp_path / "recipes" / "researcher-2.md").exists()
+
+
+def test_cli_team_add_agent_copies_config_as_new_member(tmp_path: Path, capsys) -> None:
+    """`team add-agent` copies an existing agent's config into the team's recipe
+    as a new (team-scoped) member and scaffolds it."""
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "marketing-team"]) == 0
+    assert main(["--home", str(tmp_path), "recipes", "scaffold", "researcher"]) == 0
+    capsys.readouterr()
+
+    assert main(["--home", str(tmp_path), "team", "add-agent", "marketing_team", "researcher", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["member"] == "marketing_team-researcher" and result["role"] == "researcher"
+    # new, team-scoped agent yaml generated (a COPY, not the shared researcher)
+    assert (tmp_path / "agents" / "marketing_team-researcher.yaml").exists()
+    roster = load_teams(tmp_path / "teams")["marketing_team"].agents
+    assert any(m.get("id") == "marketing_team-researcher" for m in roster)
+    # the member's agent: block is folded into the team's user-dir recipe
+    recipe = load_recipe(tmp_path / "recipes" / "marketing-team.md")
+    added = next(m for m in recipe.agents if m.get("id") == "marketing_team-researcher")
+    assert isinstance(added.get("agent"), dict)
+
+
+def test_cli_team_add_agent_rejects_duplicate_member(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    main(["--home", str(tmp_path), "recipes", "scaffold", "marketing-team"])
+    main(["--home", str(tmp_path), "recipes", "scaffold", "researcher"])
+    assert main(["--home", str(tmp_path), "team", "add-agent", "marketing_team", "researcher"]) == 0
+    capsys.readouterr()
+    assert main(["--home", str(tmp_path), "team", "add-agent", "marketing_team", "researcher"]) == 1
+    assert "already has a member" in capsys.readouterr().out.lower()
+
+
+def test_cli_team_add_unknown_agent_fails(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    main(["--home", str(tmp_path), "recipes", "scaffold", "marketing-team"])
+    assert main(["--home", str(tmp_path), "team", "add-agent", "marketing_team", "ghost"]) == 1
+    assert "agent not found" in capsys.readouterr().out.lower()
+
+
+def test_lint_recipe_flags_structural_and_reference_issues(tmp_path: Path) -> None:
+    raw = (
+        "---\nid: bad_team\nname: Bad\nkind: team\n"
+        "routing:\n  lead: ghost\n  handoffs:\n    - {from: a, to: nobody}\n"
+        "lanes:\n  - {id: x, gate: nope}\n"
+        "default_workflows: [missing_wf]\nworkflows:\n  - {id: real_wf, steps: []}\n"
+        "agents:\n  - {role: a, id: m1}\n  - {role: a, id: m1}\n---\nbody\n"
+    )
+    p = tmp_path / "bad.md"
+    p.write_text(raw, encoding="utf-8")
+    codes = {i["code"] for i in lint_recipe(load_recipe(p))}
+    assert {"team.member.dup_id", "lanes.invalid"} <= codes  # errors
+    assert {"routing.lead_unknown", "routing.handoff_unknown", "workflow.default_unknown"} <= codes  # warns
+
+
+def test_lint_clean_recipe_has_no_issues() -> None:
+    bundled = Path(__file__).resolve().parents[1] / "examples" / "recipes"
+    assert lint_recipe(load_recipe(bundled / "marketing-team.md")) == []
+    assert lint_recipe(load_recipe(bundled / "researcher.md")) == []
+
+
+def test_cli_recipes_lint_all_clean(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    assert main(["--home", str(tmp_path), "recipes", "lint", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report and all(entry["issues"] == [] for entry in report)
 
 
 def test_cli_recipes_show_unknown_recipe_fails(tmp_path: Path, capsys) -> None:
