@@ -552,7 +552,7 @@ def scaffold_team(
         "agents": members,
         "routing": routing,
     }
-    for key in ("memory_scope", "default_workflows", "policies"):
+    for key in ("memory_scope", "default_workflows", "policies", "lanes"):
         if meta.get(key) is not None:
             team_doc[key] = _template(meta[key], ctx)
     team_path = teams_dir / f"{team_id}.yaml"

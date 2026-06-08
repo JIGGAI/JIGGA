@@ -75,6 +75,10 @@ class TeamConfig:
     default_workflows: list[str] = field(default_factory=list)
     policies: dict[str, Any] = field(default_factory=dict)
     routing: dict[str, Any] = field(default_factory=dict)
+    # Ticket-board lane vocabulary (raw passthrough; normalized by
+    # runtime/lanes.py). `True` = default lanes; a list = a custom vocabulary;
+    # None/False = no board (tickets behave like plain tasks).
+    lanes: Any = None
     source: str | None = None
 
     @classmethod
@@ -158,6 +162,10 @@ class Task:
     assignee: str | None = None
     workflow_id: str | None = None
     state: str = "pending"
+    # Kanban lane (ticket board column) for team tasks — a per-team declared
+    # vocabulary (see runtime/lanes.py). Orthogonal to `state` (execution
+    # lifecycle); None for non-team tasks or teams without lanes.
+    lane: str | None = None
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
     metadata: dict[str, Any] = field(default_factory=dict)

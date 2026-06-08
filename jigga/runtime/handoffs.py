@@ -100,6 +100,8 @@ def fire_handoffs(
                      reason="max_hops_exceeded")
         return []
 
+    from jigga.runtime.lanes import default_lane
+    lane = default_lane(team)  # new tickets land in the team's first lane (None if no board)
     created: list[dict[str, Any]] = []
     for rule in rules:
         to = rule["to"]
@@ -111,6 +113,7 @@ def fire_handoffs(
                          + (f" on '{when}'." if when else ".")
                          + (f"\nEvidence: {evidence}" if evidence else "")),
             assignee=to,
+            lane=lane,
             metadata={
                 "team_id": team_id,
                 "handoff_from": from_member,

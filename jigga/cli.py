@@ -742,6 +742,9 @@ def build_parser() -> argparse.ArgumentParser:
     team_decisions = team_sub.add_parser("decisions", help="Show a team's handoff decision log")
     team_decisions.add_argument("team_id")
     team_decisions.add_argument("--json", action="store_true", dest="json_output")
+    team_lanes = team_sub.add_parser("lanes", help="Show a team's ticket-board lane vocabulary")
+    team_lanes.add_argument("team_id")
+    team_lanes.add_argument("--json", action="store_true", dest="json_output")
     team_init = team_sub.add_parser("init", help="Scaffold a team's shared workspace (notes/ + shared-context/ + roles/)")
     team_init.add_argument("team_id")
     team_init.add_argument("--json", action="store_true", dest="json_output")
@@ -796,10 +799,18 @@ def build_parser() -> argparse.ArgumentParser:
     task_create.add_argument("--assignee")
     task_create.add_argument("--workflow", dest="workflow_id")
     task_list = task_sub.add_parser("list")
+    task_list.add_argument("--lane", help="Only tasks in this ticket lane")
     task_list.add_argument("--json", action="store_true", dest="json_output")
     task_set = task_sub.add_parser("set-state")
     task_set.add_argument("task_id")
     task_set.add_argument("state")
+    task_move = task_sub.add_parser(
+        "move", help="Move a ticket (team task) to another lane on its team's board")
+    task_move.add_argument("task_id")
+    task_move.add_argument("lane", help="Destination lane id (see: jigga team lanes <team>)")
+    task_move.add_argument("--as", dest="as_member",
+                           help="Act as this member/role (required to move OUT of a gated lane)")
+    task_move.add_argument("--json", action="store_true", dest="json_output")
     return parser
 
 
@@ -1965,6 +1976,30 @@ def _cmd_team(args: argparse.Namespace) -> int:
                 when = f" on '{entry['when']}'" if entry.get("when") else ""
                 print(f"{entry['time'][:19]}  {entry['from']} → {entry['to']}{when}  (task {entry['task_id']})")
         return 0
+    if args.team_command == "lanes":
+        from jigga.runtime.lanes import LaneError, team_lanes
+
+        teams = load_teams(paths.teams)
+        team = teams.get(args.team_id)
+        if team is None:
+            raise ValueError(f"Team not found: {args.team_id}")
+        try:
+            lanes = team_lanes(team)
+        except LaneError as exc:
+            if args.json_output:
+                print_json({"error": str(exc)})
+            else:
+                print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json([{"id": lane.id, "description": lane.description, "gate": lane.gate} for lane in lanes])
+        elif not lanes:
+            print(f"Team {args.team_id!r} has no ticket lanes (add a `lanes:` block to its recipe/yaml).")
+        else:
+            for lane in lanes:
+                gate = f"  [gate: {lane.gate}]" if lane.gate else ""
+                print(f"{lane.id:16} {lane.description or ''}{gate}")
+        return 0
     if args.team_command == "init":
         teams = load_teams(paths.teams)
         team = teams.get(args.team_id)
@@ -2553,13 +2588,32 @@ def _cmd_task(args: argparse.Namespace) -> int:
         print_json(task.to_dict())
     elif args.task_command == "list":
         tasks = [task.to_dict() for task in list_tasks(paths.tasks)]
+        if getattr(args, "lane", None):
+            tasks = [t for t in tasks if t.get("lane") == args.lane]
         if args.json_output:
             print_json(tasks)
         else:
             for task in tasks:
-                print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}\t{task['title']}")
+                lane = f"\t[{task['lane']}]" if task.get("lane") else ""
+                print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}{lane}\t{task['title']}")
     elif args.task_command == "set-state":
         print_json(set_task_state(paths.tasks, args.task_id, args.state).to_dict())
+    elif args.task_command == "move":
+        from jigga.runtime.lanes import LaneError, LaneGateError, move_task_lane
+
+        try:
+            task = move_task_lane(paths.home, paths.tasks, paths.logs, paths.teams,
+                                  args.task_id, args.lane, actor=args.as_member)
+        except (LaneError, LaneGateError) as exc:
+            if args.json_output:
+                print_json({"error": str(exc)})
+            else:
+                print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(task.to_dict())
+        else:
+            print(f"Moved {task.id} → lane {task.lane!r}")
     return 0
 
 

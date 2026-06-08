@@ -10,6 +10,20 @@ routing:
   lead: strategy
 default_workflows:
   - team_launch
+# Ticket-board lanes — a CUSTOM vocabulary for this team (not the default
+# backlog/working/review/done). `description` is injected into each agent's
+# context so they know what a lane means; `gate` names the only member/role
+# allowed to move a ticket OUT of that lane (the single enforced rule).
+lanes:
+  - id: brief
+    description: Incoming product briefs to distill into a launch message.
+  - id: drafting
+    description: Copy actively being written.
+  - id: review
+    description: Drafted copy awaiting SEO/clarity review.
+    gate: review        # only the review role moves a ticket out of review
+  - id: published
+    description: Approved, platform-ready copy.
 # Extra workspace files written at scaffold time. `template` names an entry in
 # `templates:`; `{{teamId}}`/`{{teamName}}` are substituted. createOnly (default)
 # won't clobber edits on re-scaffold.
@@ -37,12 +51,13 @@ agents:
       # run `jigga model use chatgpt` / `jigga model login`). No tools — this agent
       # drafts text.
       model: profile:default
-      tools: [memory.search]
+      tools: [memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask
         shell:
           mode: deny
+        tickets: move
   - role: drafting
     id: copywriter
     required: true
@@ -52,12 +67,13 @@ agents:
       description: Drafting agent for the marketing team example.
       memory_scope: task_only
       model: profile:default
-      tools: [memory.search]
+      tools: [memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask
         shell:
           mode: deny
+        tickets: move
   - role: review
     id: seo_editor
     required: true
@@ -67,12 +83,13 @@ agents:
       description: Review agent for the marketing team example.
       memory_scope: task_only
       model: profile:default
-      tools: [memory.search]
+      tools: [memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask
         shell:
           mode: deny
+        tickets: move
 workflows:
   - id: team_launch
     name: Team Launch
