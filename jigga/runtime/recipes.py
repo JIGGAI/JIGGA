@@ -45,7 +45,7 @@ import copy
 import hashlib
 import re
 
-from jigga.core.io import ensure_dir, read_json, write_json, write_yaml
+from jigga.core.io import ensure_dir, read_json, read_yaml, write_json, write_yaml
 from jigga.core.models import TeamConfig, now_iso
 from jigga.core.paths import examples_dir
 from jigga.runtime.workspaces import scaffold_workspace
@@ -438,6 +438,76 @@ def recipe_summary(recipe: Recipe) -> dict[str, Any]:
     return summary
 
 
+def lint_recipe(recipe: Recipe) -> list[dict[str, str]]:
+    """Conservative structural + reference-integrity checks on a loaded recipe.
+    Returns issues `[{level: error|warn, code, message}]`: errors mean it won't
+    scaffold cleanly; warnings flag likely mistakes (a lead/handoff/workflow that
+    names something not in the recipe). Frontmatter parse / missing id+name are
+    caught earlier by `load_recipe`."""
+    issues: list[dict[str, str]] = []
+
+    def add(level: str, code: str, message: str) -> None:
+        issues.append({"level": level, "code": code, "message": message})
+
+    if recipe.kind not in ("team", "agent"):
+        add("error", "kind.invalid", f"kind must be 'team' or 'agent' (got {recipe.kind!r})")
+
+    if recipe.kind == "agent":
+        if not isinstance(recipe.meta.get("agent"), dict):
+            add("error", "agent.missing", "a `kind: agent` recipe needs a top-level `agent:` map")
+        return issues
+
+    members = recipe.agents or []
+    if not members:
+        add("error", "team.no_agents", "team recipe has no `agents:`")
+    ids: list[str] = []
+    roles: list[str] = []
+    for i, member in enumerate(members):
+        if not isinstance(member, dict):
+            add("error", "team.member.shape", f"agents[{i}] must be a mapping")
+            continue
+        role = member.get("role")
+        if not role:
+            add("error", "team.member.no_role", f"agents[{i}] has no role")
+        member_id = str(member.get("id") or f"{recipe.id}-{role}")
+        if member_id in ids:
+            add("error", "team.member.dup_id", f"duplicate member id {member_id!r}")
+        ids.append(member_id)
+        if role:
+            if role in roles:
+                add("warn", "team.member.dup_role", f"duplicate role {role!r}")
+            roles.append(str(role))
+
+    lead = recipe.routing.get("lead")
+    if lead and lead not in roles:
+        add("warn", "routing.lead_unknown", f"routing.lead {lead!r} is not a declared role")
+
+    names = set(ids) | set(roles)
+    for handoff in recipe.routing.get("handoffs") or []:
+        if isinstance(handoff, dict):
+            for key in ("from", "to"):
+                value = handoff.get(key)
+                if value and value not in names:
+                    add("warn", "routing.handoff_unknown", f"handoff {key}={value!r} is not a team member/role")
+
+    if recipe.meta.get("lanes") is not None:
+        from jigga.core.models import TeamConfig
+        from jigga.runtime.lanes import LaneError, team_lanes
+        try:
+            team_lanes(TeamConfig(id=recipe.id, name=recipe.name, agents=members,
+                                  lanes=recipe.meta.get("lanes")))
+        except LaneError as exc:
+            add("error", "lanes.invalid", str(exc))
+
+    workflow_ids = {str(w.get("id")) for w in (recipe.meta.get("workflows") or [])
+                    if isinstance(w, dict) and w.get("id")}
+    for workflow in recipe.meta.get("default_workflows") or []:
+        if workflow_ids and workflow not in workflow_ids:
+            add("warn", "workflow.default_unknown",
+                f"default_workflows names {workflow!r}, not among this recipe's embedded workflows")
+    return issues
+
+
 def scaffold_agent(
     home: Path, recipe: Recipe, *, agent_id: str | None = None, overwrite: bool = False,
     agents_dir: Path | None = None, workflows_dir: Path | None = None,
@@ -729,6 +799,84 @@ def staff_member(paths: Any, team_id: str, member_id: str, *,
     return {"team": team_id, "member": member_id, "recipe": str(user_copy),
             "agent_written": member_id in summary["agents_written"],
             "scaffold": summary}
+
+
+def _agent_definition_for(home: Path, source_agent_id: str) -> dict[str, Any]:
+    """The `agent:` block to copy into a team when adding an existing agent —
+    the source agent's live yaml minus its identity/provenance fields."""
+    agent_path = home / "agents" / f"{source_agent_id}.yaml"
+    if not agent_path.exists():
+        raise ValueError(f"Agent not found: {source_agent_id!r}. List with: jigga agents list")
+    definition = dict(read_yaml(agent_path) or {})
+    for drop in ("id", "source", "default"):
+        definition.pop(drop, None)
+    return definition
+
+
+def add_agent_to_team(
+    paths: Any, team_id: str, source_agent_id: str, *,
+    role: str | None = None, member_id: str | None = None, overwrite: bool = False,
+) -> dict[str, Any]:
+    """Add an EXISTING agent to a team: copy that agent's config into the
+    target team's user-dir recipe as a new member, then create-only re-scaffold
+    so the team gains its own agent yaml (recipe stays the source of truth, like
+    `staff_member`). Mirrors ClawRecipes' add-role-to-team. The new member is
+    team-scoped by default (`<team>-<role>`) so copies in different teams don't
+    collide; pass `member_id` to share an id instead. Both agents and humans use
+    this; it's the core surface behind the UI's 'add agent' picker."""
+    home = Path(paths.home)
+    record_path = _records_dir(home) / f"{_SAFE_NAME.sub('_', team_id)}.json"
+    if not record_path.exists():
+        raise ValueError(f"Team {team_id!r} has no install record — scaffold it from a recipe first.")
+    source = Path(str(read_json(record_path).get("source") or ""))
+    if not source.exists():
+        raise ValueError(f"Recipe source {source} no longer exists")
+    recipe = load_recipe(source)
+    if recipe.kind != "team":
+        raise ValueError(f"{team_id!r} was scaffolded from a non-team recipe")
+
+    definition = _agent_definition_for(home, source_agent_id)
+    role = role or source_agent_id
+    new_member_id = member_id or f"{team_id}-{role}"
+
+    meta = dict(recipe.meta)
+    members = [dict(m) for m in (meta.get("agents") or [])]
+    existing = next((m for m in members
+                     if str(m.get("id") or f"{team_id}-{m.get('role')}") == new_member_id), None)
+    if existing is not None and not overwrite:
+        raise ValueError(f"Team {team_id!r} already has a member {new_member_id!r} (use --overwrite to replace).")
+    member_entry = {"id": new_member_id, "role": role, "required": True, "agent": definition}
+    if existing is not None:
+        members[members.index(existing)] = member_entry
+    else:
+        members.append(member_entry)
+    meta["agents"] = members
+
+    user_copy = home / "recipes" / source.name
+    user_copy.parent.mkdir(parents=True, exist_ok=True)
+    user_copy.write_text(emit_recipe(meta, recipe.body), encoding="utf-8")
+    load_recipe(user_copy)  # validate before touching the live system
+
+    summary = scaffold_team(home, load_recipe(user_copy), team_id=team_id, overwrite=overwrite,
+                            agents_dir=home / "agents", teams_dir=home / "teams",
+                            workflows_dir=home / "workflows")
+    # The live team yaml already existed, so the create-only scaffold skipped its
+    # roster — append the new member there explicitly (additive).
+    team_path = home / "teams" / f"{team_id}.yaml"
+    if team_path.exists():
+        team_doc = yaml.safe_load(team_path.read_text(encoding="utf-8")) or {}
+        roster = list(team_doc.get("agents") or [])
+        if not any(isinstance(m, dict) and m.get("id") == new_member_id for m in roster):
+            roster.append({"id": new_member_id, "role": role, "required": True})
+            team_doc["agents"] = roster
+            write_yaml(team_path, team_doc)
+
+    from jigga.runtime.audit import append_event
+    append_event(paths.logs, "team.member_added", team=team_id, member=new_member_id,
+                 source_agent=source_agent_id, recipe=str(user_copy))
+    return {"team": team_id, "member": new_member_id, "role": role, "source_agent": source_agent_id,
+            "recipe": str(user_copy),
+            "agent_written": new_member_id in summary["agents_written"], "scaffold": summary}
 
 
 def _owning_record(home: Path, agent_id: str) -> dict[str, Any] | None:
