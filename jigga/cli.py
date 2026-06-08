@@ -1983,8 +1983,13 @@ def _cmd_team(args: argparse.Namespace) -> int:
 def _recipes_list(paths: Any, *, json_output: bool) -> int:
     recipes = list_recipes(paths.home)
     installed_ids = {rec.get("recipe_id") for rec in installed_recipes(paths.home)}
+    user_recipes_dir = Path(paths.home) / "recipes"
     for r in recipes:
         r["installed"] = r["id"] in installed_ids
+        # `bundled` = no user-dir copy shadows it (its winning source is the
+        # packaged example, not ~/.jigga/recipes). The UI splits "local"
+        # (editable user copies) from "builtin" (shipped templates) on this.
+        r["bundled"] = Path(r["source"]).parent != user_recipes_dir
     if json_output:
         print_json(recipes)
     elif not recipes:
