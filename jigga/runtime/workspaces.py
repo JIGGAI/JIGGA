@@ -43,6 +43,27 @@ def workspace_dir(home: Path, team_id: str) -> Path:
     return workspaces_root(home) / team_id
 
 
+def plan_workspace_gc(home: Path, teams_dir: Path, agents_dir: Path,
+                      *, protect: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """Workspace dirs with no owning team or solo agent — orphan candidates for
+    GC (e.g. a team deleted by hand, a renamed team, a failed teardown). A dir
+    is LIVE if its name matches a team id OR any agent id (solo agents own a
+    same-named workspace; member agents live under their team's) — conservative
+    on purpose: we never propose deleting something that might be referenced.
+    Read-only; returns `[{id, path, reason}]`."""
+    from jigga.core.config import load_agents
+
+    live = set(load_teams(teams_dir)) | set(load_agents(agents_dir)) | set(protect)
+    root = workspaces_root(home)
+    if not root.exists():
+        return []
+    return [
+        {"id": ws.name, "path": str(ws), "reason": "no team or solo agent owns this workspace"}
+        for ws in sorted(p for p in root.iterdir() if p.is_dir())
+        if ws.name not in live
+    ]
+
+
 def members(team: TeamConfig) -> list[str]:
     return [str(a.get("id")) for a in (team.agents or []) if a.get("id")]
 

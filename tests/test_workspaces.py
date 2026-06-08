@@ -134,3 +134,46 @@ def test_solo_agent_recipe_scaffold_gets_memory_starter(tmp_path: Path) -> None:
     scaffold_agent(paths.home, recipe, agents_dir=paths.agents)
     memory = read_file(paths.home, "researcher", "roles/researcher/MEMORY.md")
     assert memory and "Curate your durable notes" in memory
+
+
+def test_workspace_gc_finds_and_removes_orphans(tmp_path: Path) -> None:
+    """A workspace dir with no owning team or solo agent is an orphan: dry-run
+    lists it, --apply backs it up and removes it; live + protected stay."""
+    from jigga.runtime.deletion import gc_workspaces
+    from jigga.core.paths import get_paths
+
+    init_runtime(tmp_path, examples=True)
+    main(["--home", str(tmp_path), "recipes", "scaffold", "marketing-team"])
+    # an orphan (no team/agent named ghost_team) + a live team workspace
+    (tmp_path / "workspaces" / "ghost_team" / "notes").mkdir(parents=True)
+    (tmp_path / "workspaces" / "ghost_team" / "notes" / "plan.md").write_text("x", encoding="utf-8")
+
+    plan = gc_workspaces(get_paths(tmp_path), apply=False)
+    assert {o["id"] for o in plan["orphans"]} == {"ghost_team"}
+    assert plan["applied"] is False and (tmp_path / "workspaces" / "ghost_team").exists()
+
+    done = gc_workspaces(get_paths(tmp_path), apply=True)
+    assert done["removed"] == ["ghost_team"] and done["backups"]
+    assert not (tmp_path / "workspaces" / "ghost_team").exists()
+    assert (tmp_path / "workspaces" / "marketing_team").exists()  # live team untouched
+    # backed up before removal
+    assert any((tmp_path / "state" / "backups").rglob("ghost_team/notes/plan.md"))
+
+
+def test_workspace_gc_protect_keeps_dir(tmp_path: Path) -> None:
+    from jigga.runtime.deletion import gc_workspaces
+    from jigga.core.paths import get_paths
+
+    init_runtime(tmp_path)
+    (tmp_path / "workspaces" / "scratch").mkdir(parents=True)
+    plan = gc_workspaces(get_paths(tmp_path), apply=True, protect=("scratch",))
+    assert plan["removed"] == [] and (tmp_path / "workspaces" / "scratch").exists()
+
+
+def test_cli_workspace_gc_dry_run_default(tmp_path: Path, capsys) -> None:
+    init_runtime(tmp_path)
+    (tmp_path / "workspaces" / "orphan").mkdir(parents=True)
+    assert main(["--home", str(tmp_path), "workspace", "gc", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["applied"] is False and {o["id"] for o in out["orphans"]} == {"orphan"}
+    assert (tmp_path / "workspaces" / "orphan").exists()  # dry-run doesn't delete

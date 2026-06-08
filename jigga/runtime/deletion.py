@@ -182,3 +182,30 @@ def delete_team(paths: Any, team_id: str) -> dict[str, Any]:
 
     append_event(paths.logs, "team.deleted", team=team_id, removed=removed, backups=backups)
     return {"team": team_id, "removed": removed, "backups": backups}
+
+
+def gc_workspaces(paths: Any, *, apply: bool = False,
+                  protect: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Garbage-collect orphaned team/agent workspace dirs (no owning team or
+    solo agent). Dry-run by default — returns the plan. With `apply=True`, each
+    orphan is backed up to state/backups/<date>/ then removed, and the sweep is
+    audited (`workspace.gc`)."""
+    from jigga.runtime.workspaces import plan_workspace_gc
+
+    home = Path(paths.home)
+    orphans = plan_workspace_gc(home, paths.teams, paths.agents, protect=protect)
+    if not apply:
+        return {"applied": False, "orphans": orphans, "removed": [], "backups": []}
+
+    removed: list[str] = []
+    backups: list[str] = []
+    for orphan in orphans:
+        path = Path(orphan["path"])
+        saved = _backup_file(home, path, f"workspaces/{orphan['id']}")
+        if saved:
+            backups.append(saved)
+        shutil.rmtree(path, ignore_errors=True)
+        removed.append(orphan["id"])
+    append_event(paths.logs, "workspace.gc", removed=removed, backups=backups,
+                 protect=list(protect))
+    return {"applied": True, "orphans": orphans, "removed": removed, "backups": backups}
