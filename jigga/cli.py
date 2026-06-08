@@ -768,6 +768,17 @@ def build_parser() -> argparse.ArgumentParser:
     team_ws.add_argument("team_id")
     team_run.add_argument("team_id")
 
+    workspace = sub.add_parser("workspace", help="Manage shared workspaces (housekeeping)")
+    workspace_sub = workspace.add_subparsers(dest="workspace_command", required=True)
+    workspace_gc = workspace_sub.add_parser(
+        "gc", help="Find (and with --apply, back up + remove) orphaned workspace dirs "
+                   "— those with no owning team or solo agent")
+    workspace_gc.add_argument("--apply", action="store_true",
+                              help="Delete the orphans (backed up to state/backups/ first)")
+    workspace_gc.add_argument("--protect", nargs="*", default=[],
+                              help="Workspace ids to never touch")
+    workspace_gc.add_argument("--json", action="store_true", dest="json_output")
+
     model = sub.add_parser("model", help="Inspect and test model execution")
     model_sub = model.add_subparsers(dest="model_command", required=True)
     model_test = model_sub.add_parser("test", help="Run a model call for a configured agent")
@@ -1898,6 +1909,31 @@ def _cmd_scheduler(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workspace(args: argparse.Namespace) -> int:
+    paths = get_paths(args.home)
+    if args.workspace_command == "gc":
+        from jigga.runtime.deletion import gc_workspaces
+
+        result = gc_workspaces(paths, apply=args.apply, protect=tuple(args.protect))
+        if args.json_output:
+            print_json(result)
+            return 0
+        orphans = result["orphans"]
+        if not orphans:
+            print("No orphaned workspaces — nothing to GC.")
+            return 0
+        if result["applied"]:
+            print(f"Removed {len(result['removed'])} orphaned workspace(s) (backed up to state/backups/):")
+            for wid in result["removed"]:
+                print(f"  - {wid}")
+        else:
+            print(f"{len(orphans)} orphaned workspace(s) — re-run with --apply to back up + remove:")
+            for orphan in orphans:
+                print(f"  - {orphan['id']}  ({orphan['path']})")
+        return 0
+    return 0
+
+
 def _cmd_team(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.team_command in ("get", "set"):
@@ -2718,6 +2754,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "sessions": _cmd_sessions,
     "scheduler": _cmd_scheduler,
     "team": _cmd_team,
+    "workspace": _cmd_workspace,
     "recipes": _cmd_recipes,
     "agents": _cmd_agents,
     "mailbox": _cmd_mailbox,
