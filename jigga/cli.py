@@ -67,8 +67,10 @@ from jigga.runtime.tasks import create_task, list_tasks, set_task_state
 from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.team import run_team
 from jigga.runtime.recipes import (
+    create_recipe_instance,
     find_recipe,
     installed_recipes,
+    list_recipe_files,
     list_recipes,
     load_recipe,
     recipe_summary,
@@ -682,6 +684,16 @@ def build_parser() -> argparse.ArgumentParser:
                                   help="Override the scaffolded team/agent id (default: the recipe's id)")
     recipes_scaffold.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     recipes_scaffold.add_argument("--json", action="store_true", dest="json_output")
+    recipes_create = recipes_sub.add_parser(
+        "create", help="Create a NEW team/agent instance from a recipe: writes an editable user-dir copy "
+                       "under --id (members become <id>-<role>) and scaffolds it — make as many copies as you like")
+    recipes_create.add_argument("recipe", help="Source recipe name (e.g. marketing-team) or path")
+    recipes_create.add_argument("--id", dest="new_id", required=True,
+                                help="Id for the new instance (must be unused, e.g. marketing-east)")
+    recipes_create.add_argument("--name", help="Display name for the new instance")
+    recipes_create.add_argument("--overwrite", action="store_true",
+                                help="Overwrite an existing user-dir recipe / files with this id")
+    recipes_create.add_argument("--json", action="store_true", dest="json_output")
 
     team = sub.add_parser("team", help="List/run teams, scaffold workspaces, and drive handoffs")
     team_sub = team.add_subparsers(dest="team_command", required=True)
@@ -1981,23 +1993,22 @@ def _cmd_team(args: argparse.Namespace) -> int:
 
 
 def _recipes_list(paths: Any, *, json_output: bool) -> int:
-    recipes = list_recipes(paths.home)
+    # Full catalog, NO cross-dedup: every bundled template (always) + every
+    # user-dir copy, each tagged `bundled`. The UI shows the complete builtin
+    # catalog alongside your local copies; `source` is the unique key.
+    recipes = list_recipe_files(paths.home)
     installed_ids = {rec.get("recipe_id") for rec in installed_recipes(paths.home)}
-    user_recipes_dir = Path(paths.home) / "recipes"
     for r in recipes:
         r["installed"] = r["id"] in installed_ids
-        # `bundled` = no user-dir copy shadows it (its winning source is the
-        # packaged example, not ~/.jigga/recipes). The UI splits "local"
-        # (editable user copies) from "builtin" (shipped templates) on this.
-        r["bundled"] = Path(r["source"]).parent != user_recipes_dir
     if json_output:
         print_json(recipes)
     elif not recipes:
         print("No recipes found.")
     else:
         for r in recipes:
+            origin = "builtin" if r.get("bundled") else "local"
             marker = "installed" if r["installed"] else ""
-            print(f"{r['id']:24} {r['kind']:6} {marker:10} {r.get('description') or ''}")
+            print(f"{r['id']:24} {r['kind']:6} {origin:8} {marker:10} {r.get('description') or ''}")
     return 0
 
 
@@ -2060,6 +2071,33 @@ def _recipes_scaffold(paths: Any, name: str, *, override_id: str | None,
         if summary.get("files_written"):
             print(f"  files:     {', '.join(summary['files_written'])}")
         print("Next: jigga team run " + summary['team_id'] + "   (or dispatch a task to the lead)")
+    return 0
+
+
+def _recipes_create(paths: Any, source: str, *, new_id: str, name: str | None,
+                    overwrite: bool, json_output: bool) -> int:
+    try:
+        result = create_recipe_instance(paths.home, source, new_id=new_id, name=name,
+                                        overwrite=overwrite, agents_dir=paths.agents,
+                                        teams_dir=paths.teams, workflows_dir=paths.workflows)
+    except ValueError as exc:
+        if json_output:
+            print_json({"error": str(exc)})
+        else:
+            print(f"! {exc}")
+        return 1
+    if json_output:
+        print_json(result)
+    else:
+        scaffold = result["scaffold"]
+        print(f"Created {result['kind']} {result['id']!r} from {source!r}")
+        print(f"  recipe:    {result['recipe']}  (editable — now a Local recipe)")
+        if result["kind"] == "agent":
+            print(f"  agent:     {scaffold['agent_file']}")
+        else:
+            print(f"  team:      {scaffold['team_file']} (lead: {scaffold['lead']})")
+            print(f"  agents:    {', '.join(scaffold['agents_written']) or '(none new)'}")
+        print(f"  workspace: {scaffold['workspace']}")
     return 0
 
 
@@ -2289,6 +2327,9 @@ def _cmd_recipes(args: argparse.Namespace) -> int:
     if args.recipes_command == "scaffold":
         return _recipes_scaffold(paths, args.recipe, override_id=args.override_id,
                                  overwrite=args.overwrite, json_output=args.json_output)
+    if args.recipes_command == "create":
+        return _recipes_create(paths, args.recipe, new_id=args.new_id, name=args.name,
+                               overwrite=args.overwrite, json_output=args.json_output)
     if args.recipes_command == "delete":
         from jigga.runtime.audit import append_event
         from jigga.runtime.recipes import RECIPE_SUFFIX  # noqa: PLC0415

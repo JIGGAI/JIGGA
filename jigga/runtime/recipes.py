@@ -41,6 +41,7 @@ from typing import Any
 
 import yaml
 
+import copy
 import hashlib
 import re
 
@@ -124,6 +125,28 @@ def list_recipes(home: Path) -> list[dict[str, Any]]:
             found.setdefault(recipe.id, {"id": recipe.id, "name": recipe.name, "kind": recipe.kind,
                                          "description": recipe.description, "source": str(path)})
     return list(found.values())
+
+
+def list_recipe_files(home: Path) -> list[dict[str, Any]]:
+    """Every recipe FILE across the user dir + bundled examples, with NO
+    cross-dedup — a bundled template and a user-dir copy of the same id BOTH
+    appear (tagged `bundled`). The UI renders the full builtin catalog (always)
+    alongside your local copies; `source` is the unique key. Contrast with
+    `list_recipes`, which dedups user-first for name→path resolution."""
+    user_dir = Path(home) / "recipes"
+    out: list[dict[str, Any]] = []
+    for directory in recipes_dirs(home):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob(f"*{RECIPE_SUFFIX}")):
+            try:
+                recipe = load_recipe(path)
+            except ValueError:
+                continue
+            out.append({"id": recipe.id, "name": recipe.name, "kind": recipe.kind,
+                        "description": recipe.description, "source": str(path),
+                        "bundled": directory != user_dir})
+    return out
 
 
 def _template(value: Any, ctx: dict[str, str]) -> Any:
@@ -558,6 +581,61 @@ def scaffold_team(
         "workflows_written": workflows["written"], "workflows_updated": workflows["updated"],
         "workflows_skipped": workflows["skipped"],
     }
+
+
+_VALID_INSTANCE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+
+def create_recipe_instance(
+    home: Path, source_name: str, *, new_id: str, name: str | None = None, overwrite: bool = False,
+    agents_dir: Path | None = None, teams_dir: Path | None = None, workflows_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Create a NEW, independent team/agent instance from a recipe (bundled or
+    user). Writes an editable user-dir recipe copy `<new_id>.md` with id/name
+    rewritten, then scaffolds it under `new_id`.
+
+    For team recipes the members' explicit `id:` is UNPINNED so each copy gets
+    instance-scoped agents (`<new_id>-<role>`) instead of colliding on the
+    template's shared agent yamls — that's what lets you create multiple copies.
+    Roles are untouched, so `routing.lead` (a role) still resolves. Mirrors
+    ClawRecipes' write-workspace-recipe → scaffold flow (a copy becomes a local,
+    editable recipe). Returns `{recipe, id, kind, scaffold}`."""
+    home = Path(home)
+    new_id = str(new_id).strip()
+    if not _VALID_INSTANCE_ID.match(new_id):
+        raise ValueError(f"Invalid id {new_id!r}: start with a letter; use letters, digits, '.', '_', '-'.")
+    src = find_recipe(home, source_name)
+    if src is None:
+        raise ValueError(f"Recipe not found: {source_name!r}. List options with: jigga recipes list")
+    recipe = load_recipe(src)
+
+    user_copy = home / "recipes" / f"{new_id}{RECIPE_SUFFIX}"
+    if user_copy.exists() and not overwrite:
+        raise ValueError(f"A recipe named {new_id!r} already exists — pick another id.")
+
+    meta = copy.deepcopy(recipe.meta)
+    meta["id"] = new_id
+    meta["name"] = name.strip() if name and name.strip() else f"{recipe.name} ({new_id})"
+    if recipe.kind == "team":
+        for spec in meta.get("agents") or []:
+            if isinstance(spec, dict):
+                spec.pop("id", None)
+
+    user_copy.parent.mkdir(parents=True, exist_ok=True)
+    user_copy.write_text(emit_recipe(meta, recipe.body), encoding="utf-8")
+    try:
+        new_recipe = load_recipe(user_copy)  # validate the emitted copy before scaffolding
+    except ValueError:
+        user_copy.unlink(missing_ok=True)
+        raise
+
+    if new_recipe.kind == "agent":
+        summary = scaffold_agent(home, new_recipe, agent_id=new_id, overwrite=overwrite,
+                                 agents_dir=agents_dir, workflows_dir=workflows_dir)
+    else:
+        summary = scaffold_team(home, new_recipe, team_id=new_id, overwrite=overwrite,
+                                agents_dir=agents_dir, teams_dir=teams_dir, workflows_dir=workflows_dir)
+    return {"recipe": str(user_copy), "id": new_id, "kind": new_recipe.kind, "scaffold": summary}
 
 
 # --- staffing: membership-only member → defined agent, recipe-first ------------
