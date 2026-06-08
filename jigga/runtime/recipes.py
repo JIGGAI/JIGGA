@@ -685,7 +685,9 @@ def create_recipe_instance(
 
     meta = copy.deepcopy(recipe.meta)
     meta["id"] = new_id
-    meta["name"] = name.strip() if name and name.strip() else f"{recipe.name} ({new_id})"
+    # Keep the source name when none is given — the instance id is shown
+    # alongside the name everywhere, so appending it would just duplicate it.
+    meta["name"] = name.strip() if name and name.strip() else recipe.name
     if recipe.kind == "team":
         for spec in meta.get("agents") or []:
             if isinstance(spec, dict):

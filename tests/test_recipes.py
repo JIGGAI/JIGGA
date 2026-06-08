@@ -410,6 +410,9 @@ def test_cli_recipes_create_agent_instance(tmp_path: Path, capsys) -> None:
     assert result["kind"] == "agent" and result["id"] == "researcher-2"
     assert (tmp_path / "agents" / "researcher-2.yaml").exists()
     assert (tmp_path / "recipes" / "researcher-2.md").exists()
+    # No custom name → keep the source name (the id is shown separately, so we
+    # don't append it).
+    assert load_recipe(tmp_path / "recipes" / "researcher-2.md").name == "Researcher"
 
 
 def test_cli_team_add_agent_copies_config_as_new_member(tmp_path: Path, capsys) -> None:
