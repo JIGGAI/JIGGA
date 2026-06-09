@@ -43,7 +43,11 @@ def test_workflow_inference_suggests_and_requires_approval_to_apply(tmp_path: Pa
     assert suggestions
     suggestion_id = suggestions[0]["id"]
     assert suggestions[0]["workflow"]["status"] == "suggested"
-    assert suggestions[0]["workflow"]["steps"][0]["approval"] == "required"
+    # Steps are runnable task.assign actions — no hardcoded per-step approval gate
+    # (governed by the normal capability policy instead). Creating the workflow
+    # still needs approval (the apply gate below).
+    assert suggestions[0]["workflow"]["steps"][0]["action"] == "task.assign"
+    assert "approval" not in suggestions[0]["workflow"]["steps"][0]
 
     pending = apply_suggestion(paths.workflows, suggestion_id, paths.logs)
     assert pending["status"] == "needs_approval"

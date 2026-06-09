@@ -89,12 +89,21 @@ def _modal_hour(sessions: list[list[dict[str, Any]]]) -> int | None:
     return None
 
 
-def _build_step(index: int, agent_id: str, title: str) -> dict[str, Any]:
+def _build_step(index: int, agent_id: str, title: str, orchestrator: str | None) -> dict[str, Any]:
+    """A RUNNABLE step: the orchestrator (chief/default agent) re-dispatches the
+    observed task to the agent that did it, via the bundled `task.assign` action.
+    Running the workflow re-runs the recurring sequence. `orchestrator=None`
+    leaves the executor unset (the plan flags it until a default agent exists)."""
+    assignee = "supervisor" if agent_id == "supervisor" else agent_id
+    # No hardcoded `approval: required` — the step is a real `task.assign` action
+    # governed by the normal capability policy (medium risk → needs approval
+    # unless the orchestrator is autonomous), so an autonomous chief can run the
+    # workflow end-to-end while others still get the gate.
     return {
         "id": f"step_{index}",
-        "agent": None if agent_id == "supervisor" else agent_id,
-        "action": title,
-        "approval": "required",
+        "agent": orchestrator,
+        "action": "task.assign",
+        "input": {"assignee": assignee, "title": title},
     }
 
 
@@ -109,11 +118,13 @@ def _build_suggestion(
     count: int,
     source_event_id: str | None,
     modal_hour: int | None,
+    orchestrator: str | None = None,
 ) -> dict[str, Any]:
     label = _format_label(shape)
     first_agent = shape[0][0]
     workflow_id = f"suggested_{_slug(first_agent)}_{_slug(label)}"
-    steps = [_build_step(idx, agent_id, title) for idx, (agent_id, title) in enumerate(shape, start=1)]
+    steps = [_build_step(idx, agent_id, title, orchestrator)
+             for idx, (agent_id, title) in enumerate(shape, start=1)]
     purpose = (
         f"Inferred from {count} repeated occurrence(s) covering {len(shape)} step(s)."
     )
@@ -149,6 +160,7 @@ def suggest_workflows(
     logs_dir: Path,
     min_count: int = 2,
     session_gap_minutes: int = 5,
+    orchestrator: str | None = None,
 ) -> list[dict[str, Any]]:
     events = _read_events(logs_dir)
     candidates = [event for event in events if event.get("type") in CANDIDATE_EVENT_TYPES]
@@ -195,6 +207,7 @@ def suggest_workflows(
                 count=count,
                 source_event_id=sess_list[0][0].get("id"),
                 modal_hour=modal_hour,
+                orchestrator=orchestrator,
             )
         )
         suppressed_keys.update(shape)
@@ -214,6 +227,7 @@ def suggest_workflows(
                 count=count,
                 source_event_id=single_examples[(agent_id, title)].get("id"),
                 modal_hour=modal_hour,
+                orchestrator=orchestrator,
             )
         )
     return suggestions
@@ -233,8 +247,10 @@ def apply_suggestion(
     suggestion_id: str,
     logs_dir: Path,
     approve: bool = False,
+    orchestrator: str | None = None,
 ) -> dict[str, Any]:
-    suggestions = {suggestion["id"]: suggestion for suggestion in suggest_workflows(logs_dir)}
+    suggestions = {suggestion["id"]: suggestion
+                   for suggestion in suggest_workflows(logs_dir, orchestrator=orchestrator)}
     suggestion = suggestions.get(suggestion_id)
     if suggestion is None:
         return {"status": "not_found", "suggestion_id": suggestion_id}

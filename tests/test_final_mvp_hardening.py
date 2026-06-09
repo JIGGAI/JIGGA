@@ -19,8 +19,10 @@ def test_actual_agent_runs_feed_workflow_inference(tmp_path: Path) -> None:
 
     suggestions = suggest_workflows(paths.logs)
     assert suggestions
-    assert suggestions[0]["workflow"]["steps"][0]["agent"] == "daily_briefing_agent"
-    assert suggestions[0]["workflow"]["steps"][0]["approval"] == "required"
+    # Runnable step: re-dispatches the observed task to the agent that did it.
+    step = suggestions[0]["workflow"]["steps"][0]
+    assert step["action"] == "task.assign"
+    assert step["input"]["assignee"] == "daily_briefing_agent"
 
 
 def test_completed_workflow_runs_feed_workflow_inference(tmp_path: Path) -> None:
@@ -29,7 +31,8 @@ def test_completed_workflow_runs_feed_workflow_inference(tmp_path: Path) -> None
     run_workflow(paths, "morning_day_summary")
 
     suggestions = suggest_workflows(paths.logs)
-    assert any(suggestion["workflow"]["steps"][0]["agent"] == "morning_day_summary" for suggestion in suggestions)
+    assert any(suggestion["workflow"]["steps"][0]["input"]["assignee"] == "morning_day_summary"
+               for suggestion in suggestions)
 
 
 def test_supervisor_start_cli_runs_bounded_loop(tmp_path: Path, capsys) -> None:
