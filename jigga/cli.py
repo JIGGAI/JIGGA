@@ -1496,7 +1496,10 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
             )
         )
     elif args.workflow_command == "suggest":
-        print_json(suggest_workflows(paths.logs, min_count=args.min_count))
+        from jigga.core.config import resolve_default_agent
+
+        print_json(suggest_workflows(paths.logs, min_count=args.min_count,
+                                     orchestrator=resolve_default_agent(paths.agents)))
     elif args.workflow_command == "suggestions":
         from jigga.runtime.discovery import open_suggestions
 
@@ -1506,7 +1509,10 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
                      for wf in load_workflows(paths.workflows).values()]
         print_json(workflows)
     elif args.workflow_command == "apply":
-        print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs, approve=args.approve))
+        from jigga.core.config import resolve_default_agent
+
+        print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs,
+                                    approve=args.approve, orchestrator=resolve_default_agent(paths.agents)))
     return 0
 
 

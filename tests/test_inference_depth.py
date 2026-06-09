@@ -51,8 +51,12 @@ def test_inference_detects_multi_step_session_shape(tmp_path: Path) -> None:
     assert multi_step, f"Expected a multi-step suggestion, got: {[s['step_count'] for s in suggestions]}"
     top = multi_step[0]
     assert top["evidence_count"] == 3
-    actions = [step["action"] for step in top["workflow"]["steps"]]
-    assert actions == ["read_calendar", "read_email", "summarize_day"]
+    # Runnable steps: each re-dispatches the observed task via task.assign; the
+    # inferred title rides on the step input.
+    steps = top["workflow"]["steps"]
+    assert [step["action"] for step in steps] == ["task.assign", "task.assign", "task.assign"]
+    assert [step["input"]["title"] for step in steps] == ["read_calendar", "read_email", "summarize_day"]
+    assert all(step["input"]["assignee"] == "daily_briefing_agent" for step in steps)
     # All sessions started at 07:30 UTC → modal hour hint set
     assert top["modal_hour_utc"] == 7
     assert "hint" in top

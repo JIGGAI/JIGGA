@@ -115,3 +115,33 @@ def test_open_suggestions_marks_applied(tmp_path: Path, monkeypatch):
     (tmp_path / "workflows" / f"{s['id']}.yaml").write_text("id: x\nname: x\n", encoding="utf-8")
     [s2] = discovery.open_suggestions(tmp_path, paths.logs)
     assert s2["applied"] is True
+
+
+def test_applied_suggestion_is_runnable_and_dispatches_tasks(tmp_path: Path):
+    """The point of 'runnable': applying a suggestion and running the workflow
+    re-dispatches the observed sequence as real tasks (no per-step approval gate
+    when the orchestrator is autonomous)."""
+    from jigga.core.io import write_yaml
+    from jigga.core.paths import get_paths
+    from jigga.runtime.inference import apply_suggestion, suggest_workflows
+    from jigga.runtime.tasks import list_tasks
+    from jigga.runtime.workflow import run_workflow
+
+    paths = init_runtime(tmp_path)
+    # an autonomous, default orchestrator holding team-orchestration (task.assign)
+    write_yaml(paths.agents / "chief.yaml", {"id": "chief", "name": "Chief", "role": "orchestrator",
+               "default": True, "permission_mode": "autonomous", "tools": ["task.assign"], "permissions": {}})
+    for worker in ("researcher", "writer"):
+        write_yaml(paths.agents / f"{worker}.yaml",
+                   {"id": worker, "name": worker, "role": worker, "tools": [], "permissions": {}})
+    _seed_pattern(tmp_path)
+
+    sid = suggest_workflows(paths.logs, orchestrator="chief")[0]["id"]
+    applied = apply_suggestion(paths.workflows, sid, paths.logs, approve=True, orchestrator="chief")
+    assert applied["status"] == "applied"
+
+    run = run_workflow(get_paths(tmp_path), sid)
+    assert run["status"] == "completed"  # ran without per-step approval (autonomous chief)
+    dispatched = {(t.assignee, t.title) for t in list_tasks(paths.tasks)}
+    assert ("researcher", "gather sources") in dispatched
+    assert ("writer", "draft summary") in dispatched

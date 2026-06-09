@@ -33,10 +33,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from jigga.core.config import load_runtime_config
+from jigga.core.config import load_runtime_config, resolve_default_agent
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.runtime.audit import append_event
 from jigga.runtime.inference import suggest_workflows
+
+
+def _orchestrator(home: Path) -> str | None:
+    """The agent that runs a suggested workflow's `task.assign` steps — the
+    default/chief agent (it holds team-orchestration)."""
+    return resolve_default_agent(Path(home) / "agents")
 
 _MARKER = ".discovery.json"
 _DEFAULTS = {"enabled": True, "interval_hours": 24, "min_count": 2,
@@ -116,7 +122,7 @@ def open_suggestions(home: Path, logs_dir: Path, min_count: int = 2) -> list[dic
     Each gains `applied: False` here; the CLI/UI can mark applied ones too."""
     workflows_dir = Path(home) / "workflows"
     out: list[dict[str, Any]] = []
-    for suggestion in suggest_workflows(logs_dir, min_count=min_count):
+    for suggestion in suggest_workflows(logs_dir, min_count=min_count, orchestrator=_orchestrator(home)):
         applied = (workflows_dir / f"{suggestion['id']}.yaml").exists()
         out.append({**suggestion, "applied": applied})
     return out
@@ -144,7 +150,8 @@ def maybe_surface_suggestions(home: Path, logs_dir: Path, *, now: datetime | Non
     workflows_dir = home / "workflows"
     min_confidence = float(cfg["min_confidence"])
     new_ids: list[str] = []
-    for suggestion in suggest_workflows(logs_dir, min_count=int(cfg["min_count"])):
+    for suggestion in suggest_workflows(logs_dir, min_count=int(cfg["min_count"]),
+                                        orchestrator=_orchestrator(home)):
         sid = suggestion["id"]
         if (float(suggestion.get("confidence", 0)) < min_confidence
                 or sid in surfaced
