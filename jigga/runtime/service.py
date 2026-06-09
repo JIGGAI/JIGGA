@@ -214,6 +214,33 @@ def install_service(
     return result
 
 
+def start_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+    """Start/restart an ALREADY-INSTALLED service without rewriting its unit —
+    so a custom interval is preserved (unlike `install_service`, which re-renders
+    the unit with a fresh interval). Used by `doctor --fix` for the
+    installed-but-not-running case."""
+    backend = detect_backend()
+    result: dict = {"backend": backend, "commands": []}
+    if backend == "launchd":
+        commands = [["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]]
+    elif backend == "systemd":
+        commands = [["systemctl", "--user", "restart", SYSTEMD_UNIT]]
+    else:
+        result["started"] = False
+        return result
+    started = True
+    for cmd in commands:
+        proc = run_fn(cmd)
+        ok = proc.returncode == 0
+        entry = {"argv": cmd, "ran": True, "returncode": proc.returncode}
+        if not ok:
+            entry["stderr"] = (proc.stderr or "").strip()
+            started = False
+        result["commands"].append(entry)
+    result["started"] = started
+    return result
+
+
 def uninstall_service(
     paths: JiggaPaths,
     *,

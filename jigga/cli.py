@@ -401,6 +401,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="Health check: runtime, config, model, channels, backends, service")
     doctor.add_argument("--json", action="store_true", dest="json_output", help="Machine-readable output")
+    doctor.add_argument("--fix", action="store_true",
+                        help="Apply safe auto-fixes (repair runtime layout, install/start the service), then re-check")
 
     memory = sub.add_parser("memory", help="Inspect memory scopes and layers")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -1359,12 +1361,25 @@ def _cmd_update(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    from jigga.runtime.doctor import run_checks
+    from jigga.runtime.doctor import run_checks, run_fixes
 
-    report = run_checks(get_paths(args.home))
+    paths = get_paths(args.home)
+    report = run_checks(paths)
+    fixes: list[dict] = []
+    if getattr(args, "fix", False):
+        fixes = run_fixes(paths, report)
+        report = run_checks(paths)  # re-check so the report reflects what was fixed
     if args.json_output:
-        print_json(report.to_dict())
+        out = report.to_dict()
+        if getattr(args, "fix", False):
+            out["fixes"] = fixes
+        print_json(out)
     else:
+        if fixes:
+            print("Applied fixes:")
+            for f in fixes:
+                print(f"  {'✓' if f['fixed'] else '✗'} {f['check']}: {f['message']}")
+            print()
         for c in report.checks:
             print(f"{_DOCTOR_GLYPH.get(c.status, '?')} {c.name}: {c.detail}")
             if c.hint and c.status != "ok":

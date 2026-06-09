@@ -210,6 +210,55 @@ def _check_service(paths: JiggaPaths) -> Check:
                  hint="Check `jigga service status`.")
 
 
+def _fix_runtime(paths: JiggaPaths, _check: Check) -> str | None:
+    from jigga.commands.init import init_runtime
+
+    init_runtime(paths.home)  # idempotent: recreates the dir layout, never clobbers
+    return "Repaired the runtime layout (jigga init)."
+
+
+def _fix_service(paths: JiggaPaths, check: Check) -> str | None:
+    from jigga.runtime.service import detect_backend, install_service, start_service
+
+    if detect_backend() == "unsupported":
+        return None
+    if "not running" in check.detail:
+        res = start_service(paths)
+        return f"Restarted the supervisor service ({res['backend']})." if res.get("started") else None
+    # not installed (won't survive reboot)
+    res = install_service(paths)
+    return f"Installed the supervisor service ({res['backend']})." if res.get("started") else None
+
+
+# check name → a SAFE, non-interactive remediation. Only structural/operational
+# fixes belong here — config errors, model login, channel setup etc. need the
+# user, so they stay hint-only.
+_FIXERS = {
+    "runtime": _fix_runtime,
+    "service": _fix_service,
+}
+
+
+def run_fixes(paths: JiggaPaths, report: Report) -> list[dict]:
+    """Apply the safe auto-fix for each fixable non-OK check. Returns
+    `[{check, fixed, message}]`. Mirrors OpenClaw's `doctor --repair`."""
+    actions: list[dict] = []
+    for check in report.checks:
+        if check.status == OK:
+            continue
+        fixer = _FIXERS.get(check.name)
+        if fixer is None:
+            continue
+        try:
+            message = fixer(paths, check)
+        except Exception as exc:  # noqa: BLE001 — a failed fix is reported, never fatal
+            actions.append({"check": check.name, "fixed": False, "message": f"fix failed: {exc}"})
+            continue
+        if message:
+            actions.append({"check": check.name, "fixed": True, "message": message})
+    return actions
+
+
 def run_checks(paths: JiggaPaths) -> Report:
     """Run all health checks against the runtime and return the aggregated report."""
     report = Report()

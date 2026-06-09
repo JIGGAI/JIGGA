@@ -134,3 +134,60 @@ def test_cli_exit_code_and_json(tmp_path: Path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert "summary" in payload and payload["summary"]["fail"] == 0
+
+
+# --- doctor --fix ----------------------------------------------------------
+
+
+def test_fix_repairs_broken_runtime(tmp_path: Path, monkeypatch):
+    _unsupported_service(monkeypatch)
+    home = tmp_path / "nope"
+    report = doctor.run_checks(get_paths(home))
+    assert report.failed
+    actions = doctor.run_fixes(get_paths(home), report)
+    assert any(a["check"] == "runtime" and a["fixed"] for a in actions)
+    after = doctor.run_checks(get_paths(home))
+    assert not after.failed and (home / "agents").exists()
+
+
+def test_fix_installs_service_when_missing(tmp_path: Path, monkeypatch):
+    calls: dict[str, bool] = {}
+    monkeypatch.setattr("jigga.runtime.service.detect_backend", lambda: "systemd")
+    monkeypatch.setattr("jigga.runtime.service.install_service",
+                        lambda p, **k: (calls.__setitem__("install", True), {"backend": "systemd", "started": True})[1])
+    monkeypatch.setattr("jigga.runtime.service.start_service",
+                        lambda p, **k: (calls.__setitem__("start", True), {"backend": "systemd", "started": True})[1])
+    report = doctor.Report(checks=[doctor.Check(
+        "service", doctor.WARN, "Supervisor not installed as a service (won't survive reboot)")])
+    actions = doctor.run_fixes(get_paths(tmp_path), report)
+    assert calls.get("install") and not calls.get("start")
+    assert actions[0]["fixed"] and "install" in actions[0]["message"].lower()
+
+
+def test_fix_restarts_stopped_service(tmp_path: Path, monkeypatch):
+    calls: dict[str, bool] = {}
+    monkeypatch.setattr("jigga.runtime.service.detect_backend", lambda: "systemd")
+    monkeypatch.setattr("jigga.runtime.service.install_service",
+                        lambda p, **k: (calls.__setitem__("install", True), {"started": True})[1])
+    monkeypatch.setattr("jigga.runtime.service.start_service",
+                        lambda p, **k: (calls.__setitem__("start", True), {"backend": "systemd", "started": True})[1])
+    report = doctor.Report(checks=[doctor.Check(
+        "service", doctor.WARN, "Supervisor service installed but not running (systemd)")])
+    actions = doctor.run_fixes(get_paths(tmp_path), report)
+    assert calls.get("start") and not calls.get("install")
+    assert "restart" in actions[0]["message"].lower()
+
+
+def test_fix_skips_unfixable_checks(tmp_path: Path, monkeypatch):
+    # config/model/etc have no auto-fix — run_fixes leaves them to the hint.
+    report = doctor.Report(checks=[doctor.Check("model", doctor.WARN, "No model provider configured")])
+    assert doctor.run_fixes(get_paths(tmp_path), report) == []
+
+
+def test_cli_doctor_fix_json_includes_fixes(tmp_path: Path, monkeypatch, capsys):
+    _unsupported_service(monkeypatch)
+    home = tmp_path / "nope"
+    rc = main(["--home", str(home), "doctor", "--fix", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert "fixes" in out and any(f["check"] == "runtime" and f["fixed"] for f in out["fixes"])
+    assert out["ok"] is True and rc == 0  # runtime repaired → no failures
