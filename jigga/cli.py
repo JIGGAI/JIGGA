@@ -437,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_run.add_argument("workflow_id")
     workflow_suggest = workflow_sub.add_parser("suggest")
     workflow_suggest.add_argument("--min-count", type=int, default=2)
+    workflow_suggestions = workflow_sub.add_parser(
+        "suggestions", help="Open workflow suggestions (with whether each is already created)")
+    workflow_suggestions.add_argument("--min-count", type=int, default=2)
+    workflow_suggestions.add_argument("--json", action="store_true", dest="json_output")
+    workflow_list = workflow_sub.add_parser("list", help="List installed workflows")
+    workflow_list.add_argument("--json", action="store_true", dest="json_output")
     workflow_apply = workflow_sub.add_parser("apply")
     workflow_apply.add_argument("suggestion_id")
     workflow_apply.add_argument("--approve", action="store_true")
@@ -1491,6 +1497,14 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
         )
     elif args.workflow_command == "suggest":
         print_json(suggest_workflows(paths.logs, min_count=args.min_count))
+    elif args.workflow_command == "suggestions":
+        from jigga.runtime.discovery import open_suggestions
+
+        print_json(open_suggestions(paths.home, paths.logs, min_count=args.min_count))
+    elif args.workflow_command == "list":
+        workflows = [{"id": wf.id, "name": wf.name, "status": getattr(wf, "status", None)}
+                     for wf in load_workflows(paths.workflows).values()]
+        print_json(workflows)
     elif args.workflow_command == "apply":
         print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs, approve=args.approve))
     return 0
