@@ -214,30 +214,63 @@ def install_service(
     return result
 
 
-def start_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
-    """Start/restart an ALREADY-INSTALLED service without rewriting its unit —
-    so a custom interval is preserved (unlike `install_service`, which re-renders
-    the unit with a fresh interval). Used by `doctor --fix` for the
-    installed-but-not-running case."""
-    backend = detect_backend()
-    result: dict = {"backend": backend, "commands": []}
-    if backend == "launchd":
-        commands = [["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]]
-    elif backend == "systemd":
-        commands = [["systemctl", "--user", "restart", SYSTEMD_UNIT]]
-    else:
-        result["started"] = False
-        return result
-    started = True
-    for cmd in commands:
+def _run_control(commands: list, run_fn: RunFn, *, optional_first: bool = False) -> tuple[list, bool]:
+    """Run a sequence of control commands; return (entries, all_required_ok).
+    `optional_first` lets a leading command (e.g. a launchd bootstrap that may
+    already be loaded) fail without marking the whole sequence failed."""
+    entries: list = []
+    ok_all = True
+    for i, cmd in enumerate(commands):
         proc = run_fn(cmd)
         ok = proc.returncode == 0
         entry = {"argv": cmd, "ran": True, "returncode": proc.returncode}
         if not ok:
             entry["stderr"] = (proc.stderr or "").strip()
-            started = False
-        result["commands"].append(entry)
-    result["started"] = started
+            if not (optional_first and i == 0):
+                ok_all = False
+        entries.append(entry)
+    return entries, ok_all
+
+
+def start_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+    """Start an INSTALLED-but-stopped service without rewriting its unit — so a
+    custom interval is preserved (unlike `install_service`, which re-renders).
+    Used by `doctor --fix` and `jigga service start`. On launchd a bootstrap is
+    attempted first so a previously `stop`ped (booted-out) agent re-loads."""
+    backend = detect_backend()
+    result: dict = {"backend": backend}
+    if backend == "launchd":
+        domain = f"gui/{os.getuid()}"
+        commands = [
+            ["launchctl", "bootstrap", domain, str(launchd_plist_path())],  # re-load if booted out (ok to fail)
+            ["launchctl", "kickstart", "-k", f"{domain}/{LAUNCHD_LABEL}"],
+        ]
+        optional_first = True
+    elif backend == "systemd":
+        commands = [["systemctl", "--user", "start", SYSTEMD_UNIT]]
+        optional_first = False
+    else:
+        result["started"] = False
+        return result
+    result["commands"], result["started"] = _run_control(commands, run_fn, optional_first=optional_first)
+    return result
+
+
+def stop_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+    """Stop the running service WITHOUT removing its unit — it still starts on
+    the next login/boot (use `uninstall_service` to remove it). On launchd this
+    boots the agent out (a plain kill would respawn under KeepAlive); the plist
+    stays so `start_service` / login re-loads it."""
+    backend = detect_backend()
+    result: dict = {"backend": backend}
+    if backend == "launchd":
+        commands = [["launchctl", "bootout", f"gui/{os.getuid()}", str(launchd_plist_path())]]
+    elif backend == "systemd":
+        commands = [["systemctl", "--user", "stop", SYSTEMD_UNIT]]
+    else:
+        result["stopped"] = False
+        return result
+    result["commands"], result["stopped"] = _run_control(commands, run_fn)
     return result
 
 
