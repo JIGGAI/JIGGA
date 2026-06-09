@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -11,6 +12,7 @@ from typing import Any
 
 from jigga.core.io import read_yaml
 from jigga.core.models import AgentConfig
+from jigga.runtime import model_throttle
 from jigga.runtime.audit import append_event, new_id
 from jigga.runtime.cost import (
     WARN_FRACTION,
@@ -30,6 +32,16 @@ class ModelProviderConfig:
     api_key_env: str | None = None
     default_model: str | None = None
     timeout_seconds: int = 60
+    # Client-side rate limiting (#83): refuse to fire this provider more often
+    # than this many seconds apart (0 = no spacing). Falls back to
+    # models.defaults.min_seconds_between_calls.
+    min_seconds_between_calls: float | None = None
+
+
+class RateLimitError(RuntimeError):
+    """A provider returned 429 and retries were exhausted — distinct from other
+    failures so the call loop can trip the circuit breaker (#84) before falling
+    through to the next provider (#85)."""
 
 
 @dataclass(frozen=True)
@@ -414,22 +426,27 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
             "input_tokens": input_tokens, "output_tokens": output_tokens}
 
 
-# How many times to retry a 429 (rate-limit) before giving up. Small bursts —
-# e.g. several chat messages in quick succession — usually clear within seconds.
-_CHATGPT_MAX_RETRIES = 3
+# How many times to retry a 429 (rate-limit) within a single call before giving
+# up. Kept low (#84): against a SUSTAINED cap, more in-call retries just fire
+# more requests and keep the cap pinned — the circuit breaker + provider
+# fallback handle the sustained case across calls. A `Retry-After` header is
+# still honored when present (one well-timed retry usually clears a brief burst).
+_CHATGPT_MAX_RETRIES = 2
 _CHATGPT_MAX_BACKOFF_SECONDS = 30.0
 
 
-def _retry_after_seconds(exc: urllib.error.HTTPError, attempt: int) -> float:
+def _retry_after_seconds(exc: urllib.error.HTTPError, attempt: int, *, rand: Any = random.random) -> float:
     """Backoff before retrying a 429: honor a `Retry-After` header (integer
-    seconds) if the server sent one, else exponential (1, 2, 4, …), capped."""
+    seconds) if the server sent one, else exponential (1, 2, 4, …) with jitter
+    (#84 — desynchronize concurrent retriers), capped."""
     header = exc.headers.get("Retry-After") if getattr(exc, "headers", None) else None
     if header:
         try:
             return min(float(header), _CHATGPT_MAX_BACKOFF_SECONDS)
         except (TypeError, ValueError):
             pass
-    return min(2.0 ** attempt, _CHATGPT_MAX_BACKOFF_SECONDS)
+    base = min(2.0 ** attempt, _CHATGPT_MAX_BACKOFF_SECONDS)
+    return base + rand() * base * 0.25  # up to +25% jitter
 
 
 def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str, home: Path) -> ModelCallResult:
@@ -471,11 +488,13 @@ def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest
             if exc.code == 429 and attempt < _CHATGPT_MAX_RETRIES:
                 time.sleep(_retry_after_seconds(exc, attempt))
                 continue
+            if exc.code == 429:  # retries exhausted on a 429 → typed so the caller can break the circuit
+                raise RateLimitError("ChatGPT rate-limited (429), retries exhausted") from exc
             detail = exc.read().decode("utf-8", errors="replace")
             suffix = " after refresh" if refreshed else ""
             raise RuntimeError(f"ChatGPT request failed{suffix}: HTTP {exc.code}: {detail}") from exc
     if response is None:  # exhausted retries without a definitive HTTPError to raise
-        raise RuntimeError("ChatGPT request failed: rate-limited (429), retries exhausted")
+        raise RateLimitError("ChatGPT rate-limited (429), retries exhausted")
 
     with response:
         parsed = parse_responses_stream(response)
@@ -519,6 +538,40 @@ def _parse_tool_calls(raw: Any) -> list[ModelToolCall]:
 
 def _provider_order(profile: ModelProfileConfig) -> list[str]:
     return [profile.primary, *profile.fallback]
+
+
+# Circuit-breaker defaults (#84): after this many consecutive 429s a provider is
+# parked for the cooldown so a sustained cap isn't hammered.
+_RATE_LIMIT_THRESHOLD = 3
+_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
+
+
+def _defaults(home: Path) -> dict[str, Any]:
+    return load_model_config(home).get("defaults", {}) or {}
+
+
+def _min_spacing(home: Path, provider: ModelProviderConfig) -> float:
+    """Min seconds between calls for a provider — its own setting, else the
+    `models.defaults.min_seconds_between_calls`, else 0 (disabled)."""
+    if provider.min_seconds_between_calls is not None:
+        return max(0.0, float(provider.min_seconds_between_calls))
+    try:
+        return max(0.0, float(_defaults(home).get("min_seconds_between_calls", 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _breaker_config(home: Path) -> tuple[int, float]:
+    defaults = _defaults(home)
+    try:
+        threshold = int(defaults.get("rate_limit_threshold", _RATE_LIMIT_THRESHOLD))
+    except (TypeError, ValueError):
+        threshold = _RATE_LIMIT_THRESHOLD
+    try:
+        cooldown = float(defaults.get("rate_limit_cooldown_seconds", _RATE_LIMIT_COOLDOWN_SECONDS))
+    except (TypeError, ValueError):
+        cooldown = _RATE_LIMIT_COOLDOWN_SECONDS
+    return threshold, cooldown
 
 
 def _budget_spent_before(home: Path, logs_dir: Path, agent_id: str, budget: dict[str, Any] | None) -> float:
@@ -604,12 +657,28 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
         result = replace(base, cost_usd=price_call(base.model, base.input_tokens, base.output_tokens, pricing))
         return _emit_and_return(logs_dir, request, result, budget, spent_before)
 
+    threshold, cooldown = _breaker_config(home)
     failures: list[str] = []
     for index, provider_id in enumerate(_provider_order(profile)):
         provider = providers.get(provider_id)
         if provider is None:
             failures.append(f"{provider_id}: provider not configured")
             continue
+        # Circuit breaker (#84): skip a provider parked after repeated 429s and
+        # fall straight to the fallback instead of pinning a sustained cap.
+        if provider.kind != "dry_run" and model_throttle.breaker_open(home, provider_id, now=time.time()):
+            failures.append(f"{provider_id}: in rate-limit cooldown")
+            append_event(logs_dir, "model.rate_limited", status="ask", agent_id=request.agent_id,
+                         provider=provider_id, reason="cooldown")
+            continue
+        # Client-side min spacing (#83): don't let our own bursts trip the cap.
+        # Only touches the throttle file when spacing is actually configured.
+        spacing = _min_spacing(home, provider) if provider.kind != "dry_run" else 0.0
+        if spacing > 0:
+            wait = model_throttle.due_wait(home, provider_id, spacing, now=time.time())
+            if wait > 0:
+                time.sleep(wait)
+            model_throttle.record_call(home, provider_id, now=time.time())
         model = request.model or provider.default_model or provider.id
         try:
             if provider.kind == "dry_run":
@@ -620,6 +689,8 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
                 result = _call_chatgpt_oauth(provider, request, model, home)
             else:
                 raise ValueError(f"Unsupported provider kind: {provider.kind}")
+            if provider.kind != "dry_run":
+                model_throttle.note_success(home, provider_id)  # clear any 429 streak
             # Use replace (not to_dict round-trip) so typed tool_calls survive.
             result = replace(
                 result,
@@ -629,6 +700,12 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
             return _emit_and_return(logs_dir, request, result, budget, spent_before)
         except DuplicateModelInputError:
             raise
+        except RateLimitError as exc:  # 429 after retries → trip the breaker, then fall through (#85)
+            opened = model_throttle.note_rate_limited(home, provider_id, now=time.time(),
+                                                      threshold=threshold, cooldown=cooldown)
+            failures.append(f"{provider_id}: {exc}")
+            append_event(logs_dir, "model.rate_limited", status="error", agent_id=request.agent_id,
+                         provider=provider_id, breaker_opened=opened)
         except Exception as exc:  # provider fallback boundary
             failures.append(f"{provider_id}: {exc}")
             append_event(logs_dir, "model.call.failed", status="error", agent_id=request.agent_id, provider=provider_id, error=str(exc))
