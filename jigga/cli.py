@@ -819,6 +819,8 @@ def build_parser() -> argparse.ArgumentParser:
     service_install.add_argument("--dry-run", action="store_true", help="Show the unit + commands without installing")
     service_sub.add_parser("uninstall", help="Stop and remove the supervisor user service")
     service_sub.add_parser("status", help="Show whether the supervisor service is installed and running")
+    service_sub.add_parser("stop", help="Stop the running supervisor (stays installed; restarts on next login/boot)")
+    service_sub.add_parser("start", help="Start an installed-but-stopped supervisor service")
 
     task = sub.add_parser("task", help="Manage local task queue")
     task_sub = task.add_subparsers(dest="task_command", required=True)
@@ -2684,7 +2686,13 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
 
 
 def _cmd_service(args: argparse.Namespace) -> int:
-    from jigga.runtime.service import install_service, status_service, uninstall_service
+    from jigga.runtime.service import (
+        install_service,
+        start_service,
+        status_service,
+        stop_service,
+        uninstall_service,
+    )
 
     paths = get_paths(args.home)
     if args.service_command == "install":
@@ -2698,6 +2706,14 @@ def _cmd_service(args: argparse.Namespace) -> int:
     if args.service_command == "uninstall":
         print_json(uninstall_service(paths))
         return 0
+    if args.service_command == "stop":
+        result = stop_service(paths)
+        print_json(result)
+        return 0 if result.get("stopped") else 1
+    if args.service_command == "start":
+        result = start_service(paths)
+        print_json(result)
+        return 0 if result.get("started") else 1
     # status
     result = status_service(paths)
     print_json(result)

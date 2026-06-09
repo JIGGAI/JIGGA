@@ -203,3 +203,50 @@ def test_systemd_install_explicitly_restarts(tmp_path) -> None:
         install_app_service("viewer", ["node", "s.js"], cwd=tmp_path, env={},
                             logs_dir=paths.logs, run_fn=record)
         assert ["systemctl", "--user", "restart", "jigga-plugin-viewer.service"] in calls
+
+
+# ---- stop / start -----------------------------------------------------------
+
+def test_stop_systemd(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    run_fn = _recorder()
+    result = service.stop_service(paths, run_fn=run_fn)
+    assert result["stopped"] is True
+    assert run_fn.calls == [["systemctl", "--user", "stop", service.SYSTEMD_UNIT]]
+
+
+def test_start_systemd(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    run_fn = _recorder()
+    result = service.start_service(paths, run_fn=run_fn)
+    assert result["started"] is True
+    assert run_fn.calls == [["systemctl", "--user", "start", service.SYSTEMD_UNIT]]
+
+
+def test_start_launchd_bootstrap_optional_then_kickstart(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "launchd")
+    monkeypatch.setattr(service, "launchd_plist_path", lambda: tmp_path / "x.plist")
+    # bootstrap fails (already loaded) but that's optional → still started
+    run_fn = _recorder(codes={0: 1})
+    result = service.start_service(paths, run_fn=run_fn)
+    assert result["started"] is True
+    assert run_fn.calls[0][:2] == ["launchctl", "bootstrap"]
+    assert run_fn.calls[1][:3] == ["launchctl", "kickstart", "-k"]
+
+
+def test_stop_unsupported_backend(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "unsupported")
+    assert service.stop_service(paths, run_fn=_recorder())["stopped"] is False
+    assert service.start_service(paths, run_fn=_recorder())["started"] is False
+
+
+def test_cli_service_stop_start(tmp_path, monkeypatch):
+    from jigga.cli import main
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    monkeypatch.setattr(service, "_default_run", lambda argv: _proc(argv, 0))
+    assert main(["--home", str(tmp_path), "service", "stop"]) == 0
+    assert main(["--home", str(tmp_path), "service", "start"]) == 0
