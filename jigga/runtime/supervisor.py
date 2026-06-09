@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,37 @@ from jigga.runtime.tasks import create_task, pending_summary
 from jigga.runtime.workflow import run_workflow
 
 
-def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
+class _Backoff:
+    """Exponential backoff for a repeatedly-failing channel poll. Resets on the
+    first success. State lives in the long-running supervisor process (cleared on
+    restart). Stops a sustained fault — e.g. a Telegram 409 'terminated by other
+    getUpdates request' (two pollers on one token) — from retrying (and logging)
+    every tick."""
+
+    def __init__(self, base: float, cap: float) -> None:
+        self.base, self.cap = base, cap
+        self.fails = 0
+        self.skip_until = 0.0
+
+    def should_skip(self, now: float) -> bool:
+        return now < self.skip_until
+
+    def record_success(self) -> None:
+        self.fails = 0
+        self.skip_until = 0.0
+
+    def record_failure(self, now: float) -> float:
+        self.fails += 1
+        delay = min(self.base * (2 ** (self.fails - 1)), self.cap)
+        self.skip_until = now + delay
+        return delay
+
+
+# 5s after the first failure, doubling to a 5-minute cap on a sustained fault.
+_channel_backoff = _Backoff(5.0, 300.0)
+
+
+def _poll_channels(paths: Any, long_poll_seconds: int = 0, *, clock: Any = time.monotonic) -> None:
     """Poll enabled channels into tasks on the heartbeat (B2) and run the agent
     on them immediately (`process_agents=True`). No-op when no channel is
     enabled. Errors are contained so a flaky network or channel can't take the
@@ -44,11 +75,16 @@ def _poll_channels(paths: Any, long_poll_seconds: int = 0) -> None:
     loop run channels in near-real-time instead of once per cron interval."""
     if not enabled_channels(paths.home):
         return
+    if _channel_backoff.should_skip(clock()):
+        return  # in cooldown after repeated failures — don't hammer (or spam the log)
     try:
         ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
                     long_poll_seconds=long_poll_seconds, process_agents=True)
+        _channel_backoff.record_success()
     except Exception as exc:  # noqa: BLE001 — the supervisor must survive any channel fault
-        append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc))
+        delay = _channel_backoff.record_failure(clock())
+        append_event(paths.logs, "channel.ingest_error", status="error", error=str(exc),
+                     consecutive=_channel_backoff.fails, retry_in_seconds=round(delay))
 
 
 def _mail_wake_targets(home: Path, agents: dict[str, Any], *, skip: set[str]) -> list[str]:
