@@ -26,6 +26,7 @@ Design notes:
 
 from __future__ import annotations
 
+import getpass
 import os
 import platform
 import shutil
@@ -68,12 +69,26 @@ def _fmt_interval(interval_seconds: float) -> str:
     return str(int(interval_seconds)) if float(interval_seconds).is_integer() else str(interval_seconds)
 
 
-def launchd_plist_path() -> Path:
+def launchd_plist_path(system: bool = False) -> Path:
+    if system:
+        return Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
     return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
 
-def systemd_unit_path() -> Path:
+def systemd_unit_path(system: bool = False) -> Path:
+    if system:
+        return Path("/etc/systemd/system") / SYSTEMD_UNIT
     return Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT
+
+
+def _systemctl(system: bool) -> list[str]:
+    """The systemctl prefix: system bus (root) vs the per-user bus."""
+    return ["systemctl"] if system else ["systemctl", "--user"]
+
+
+def _launchd_domain(system: bool) -> str:
+    """The launchctl domain target: the system domain (root) vs the GUI domain."""
+    return "system" if system else f"gui/{os.getuid()}"
 
 
 def _xml_escape(value: str) -> str:
@@ -81,15 +96,18 @@ def _xml_escape(value: str) -> str:
             .replace('"', "&quot;").replace("'", "&apos;"))
 
 
-def render_launchd_plist(argv: list[str], home: Path, logs_dir: Path) -> str:
+def render_launchd_plist(argv: list[str], home: Path, logs_dir: Path, *, run_as: str | None = None) -> str:
     args_xml = "\n".join(f"    <string>{_xml_escape(a)}</string>" for a in argv)
+    # A system LaunchDaemon runs as root by default — `UserName` drops it to the
+    # owning user so the runtime's files/permissions match a normal install.
+    user_xml = f"  <key>UserName</key>\n  <string>{_xml_escape(run_as)}</string>\n" if run_as else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>{LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
+{user_xml}  <key>ProgramArguments</key>
   <array>
 {args_xml}
   </array>
@@ -113,22 +131,27 @@ def render_launchd_plist(argv: list[str], home: Path, logs_dir: Path) -> str:
 """
 
 
-def render_systemd_unit(argv: list[str], home: Path) -> str:
+def render_systemd_unit(argv: list[str], home: Path, *, run_as: str | None = None) -> str:
     exec_start = " ".join(argv)
+    # A /etc/systemd/system unit runs as root by default — `User=` drops it to
+    # the owning user. System units boot before login, so WantedBy is
+    # multi-user.target (a user unit's default.target only reaches login).
+    user_line = f"User={run_as}\n" if run_as else ""
+    wanted_by = "multi-user.target" if run_as else "default.target"
     return f"""[Unit]
 Description=JIGGA supervisor (always-on agent scheduler)
 After=network-online.target
 
 [Service]
 Type=simple
-Environment=JIGGA_HOME={home}
+{user_line}Environment=JIGGA_HOME={home}
 WorkingDirectory={home}
 ExecStart={exec_start}
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy={wanted_by}
 """
 
 
@@ -144,9 +167,13 @@ def install_service(
     interval_seconds: float = 60.0,
     python: str | None = None,
     dry_run: bool = False,
+    system: bool = False,
     run_fn: RunFn = _default_run,
 ) -> dict:
-    """Write the user-service unit and register it so it starts now and on login.
+    """Write the supervisor service unit and register it so it starts now and on
+    boot/login. `system=True` installs a system-level unit (systemd
+    `/etc/systemd/system` / a launchd LaunchDaemon) that runs as the current user
+    and survives logout — but writing it needs root (run under `sudo`).
 
     Returns a structured result: ``backend``, ``unit_path``, the ``argv`` the
     service runs, the control ``commands`` executed (or that would be, when
@@ -157,16 +184,17 @@ def install_service(
     backend = detect_backend()
     py = python or sys.executable
     argv = service_argv(py, interval_seconds)
-    result: dict = {"backend": backend, "argv": argv, "dry_run": dry_run, "commands": []}
+    run_as = getpass.getuser() if system else None
+    result: dict = {"backend": backend, "argv": argv, "dry_run": dry_run, "system": system, "commands": []}
 
     if backend == "unsupported":
         result["instructions"] = _manual_instructions(argv)
         return result
 
     if backend == "launchd":
-        unit_path = launchd_plist_path()
-        content = render_launchd_plist(argv, paths.home, paths.logs)
-        domain = f"gui/{os.getuid()}"
+        unit_path = launchd_plist_path(system)
+        content = render_launchd_plist(argv, paths.home, paths.logs, run_as=run_as)
+        domain = _launchd_domain(system)
         target = f"{domain}/{LAUNCHD_LABEL}"
         commands = [
             ["launchctl", "bootout", domain, str(unit_path)],   # clear a prior load (ok to fail)
@@ -176,15 +204,16 @@ def install_service(
         ]
         optional_first = True  # the bootout may legitimately fail when not yet loaded
     else:  # systemd
-        unit_path = systemd_unit_path()
-        content = render_systemd_unit(argv, paths.home)
+        unit_path = systemd_unit_path(system)
+        content = render_systemd_unit(argv, paths.home, run_as=run_as)
+        ctl = _systemctl(system)
         commands = [
-            ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT],
+            [*ctl, "daemon-reload"],
+            [*ctl, "enable", "--now", SYSTEMD_UNIT],
             # enable --now is a NO-OP on an already-active unit — an explicit
             # restart is what makes re-install pick up new code/unit content
             # (launchd gets this via kickstart -k).
-            ["systemctl", "--user", "restart", SYSTEMD_UNIT],
+            [*ctl, "restart", SYSTEMD_UNIT],
         ]
         optional_first = False
 
@@ -232,22 +261,22 @@ def _run_control(commands: list, run_fn: RunFn, *, optional_first: bool = False)
     return entries, ok_all
 
 
-def start_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+def start_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
     """Start an INSTALLED-but-stopped service without rewriting its unit — so a
     custom interval is preserved (unlike `install_service`, which re-renders).
     Used by `doctor --fix` and `jigga service start`. On launchd a bootstrap is
     attempted first so a previously `stop`ped (booted-out) agent re-loads."""
     backend = detect_backend()
-    result: dict = {"backend": backend}
+    result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
-        domain = f"gui/{os.getuid()}"
+        domain = _launchd_domain(system)
         commands = [
-            ["launchctl", "bootstrap", domain, str(launchd_plist_path())],  # re-load if booted out (ok to fail)
+            ["launchctl", "bootstrap", domain, str(launchd_plist_path(system))],  # re-load if booted out (ok to fail)
             ["launchctl", "kickstart", "-k", f"{domain}/{LAUNCHD_LABEL}"],
         ]
         optional_first = True
     elif backend == "systemd":
-        commands = [["systemctl", "--user", "start", SYSTEMD_UNIT]]
+        commands = [[*_systemctl(system), "start", SYSTEMD_UNIT]]
         optional_first = False
     else:
         result["started"] = False
@@ -256,17 +285,17 @@ def start_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
     return result
 
 
-def stop_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+def stop_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
     """Stop the running service WITHOUT removing its unit — it still starts on
     the next login/boot (use `uninstall_service` to remove it). On launchd this
     boots the agent out (a plain kill would respawn under KeepAlive); the plist
     stays so `start_service` / login re-loads it."""
     backend = detect_backend()
-    result: dict = {"backend": backend}
+    result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
-        commands = [["launchctl", "bootout", f"gui/{os.getuid()}", str(launchd_plist_path())]]
+        commands = [["launchctl", "bootout", _launchd_domain(system), str(launchd_plist_path(system))]]
     elif backend == "systemd":
-        commands = [["systemctl", "--user", "stop", SYSTEMD_UNIT]]
+        commands = [[*_systemctl(system), "stop", SYSTEMD_UNIT]]
     else:
         result["stopped"] = False
         return result
@@ -278,19 +307,21 @@ def uninstall_service(
     paths: JiggaPaths,
     *,
     dry_run: bool = False,
+    system: bool = False,
     run_fn: RunFn = _default_run,
 ) -> dict:
-    """Stop and remove the user service (no-op-safe if it was never installed)."""
+    """Stop and remove the service (no-op-safe if it was never installed).
+    `system=True` targets the system-level unit (needs root)."""
     backend = detect_backend()
-    result: dict = {"backend": backend, "dry_run": dry_run, "commands": []}
+    result: dict = {"backend": backend, "dry_run": dry_run, "system": system, "commands": []}
     if backend == "launchd":
-        unit_path = launchd_plist_path()
-        commands = [["launchctl", "bootout", f"gui/{os.getuid()}", str(unit_path)]]
+        unit_path = launchd_plist_path(system)
+        commands = [["launchctl", "bootout", _launchd_domain(system), str(unit_path)]]
     elif backend == "systemd":
-        unit_path = systemd_unit_path()
+        unit_path = systemd_unit_path(system)
         commands = [
-            ["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT],
-            ["systemctl", "--user", "daemon-reload"],
+            [*_systemctl(system), "disable", "--now", SYSTEMD_UNIT],
+            [*_systemctl(system), "daemon-reload"],
         ]
     else:
         result["instructions"] = "No user service manager found; nothing to remove."
@@ -313,23 +344,23 @@ def uninstall_service(
     return result
 
 
-def status_service(paths: JiggaPaths, *, run_fn: RunFn = _default_run) -> dict:
+def status_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
     """Report whether the service is installed (unit file present) and what the
-    OS reports for its run state."""
+    OS reports for its run state. `system=True` inspects the system-level unit."""
     backend = detect_backend()
-    result: dict = {"backend": backend}
+    result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
-        unit_path = launchd_plist_path()
+        unit_path = launchd_plist_path(system)
         result["installed"] = unit_path.exists()
         result["unit_path"] = str(unit_path)
-        proc = run_fn(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
+        proc = run_fn(["launchctl", "print", f"{_launchd_domain(system)}/{LAUNCHD_LABEL}"])
         result["running"] = proc.returncode == 0
         result["detail"] = (proc.stdout or proc.stderr or "").strip()[:2000]
     elif backend == "systemd":
-        unit_path = systemd_unit_path()
+        unit_path = systemd_unit_path(system)
         result["installed"] = unit_path.exists()
         result["unit_path"] = str(unit_path)
-        proc = run_fn(["systemctl", "--user", "is-active", SYSTEMD_UNIT])
+        proc = run_fn([*_systemctl(system), "is-active", SYSTEMD_UNIT])
         state = (proc.stdout or "").strip()
         result["running"] = state == "active"
         result["detail"] = state or (proc.stderr or "").strip()
