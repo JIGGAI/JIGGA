@@ -142,6 +142,17 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
                          facts_archived=compacted["facts_archived"], tasks_archived=len(compacted["tasks_archived"]))
     except Exception as exc:  # noqa: BLE001 — compaction must not break the tick
         append_event(paths.logs, "memory.compact_error", status="error", error=str(exc))
+    # Proactive workflow discovery (once per interval, marker-guarded): surface
+    # NEW high-confidence suggestions to the audit log + the user's channel + the
+    # jiggaview Workflows badge. Contained so a discovery fault can't break the tick.
+    try:
+        from jigga.runtime.discovery import maybe_surface_suggestions
+
+        surfaced = maybe_surface_suggestions(paths.home, paths.logs)
+        if surfaced and surfaced.get("surfaced"):
+            append_event(paths.logs, "workflow.discovery", surfaced=surfaced["surfaced"])
+    except Exception as exc:  # noqa: BLE001 — discovery must not break the tick
+        append_event(paths.logs, "workflow.discovery_error", status="error", error=str(exc))
     # Channels poll on the heartbeat (B2): enabled bots always respond whenever
     # the supervisor runs — no separate `jigga channels listen` needed. We only
     # create tasks here; the tick's own agent-waking loop below runs them, so
