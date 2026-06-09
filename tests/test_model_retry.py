@@ -71,11 +71,31 @@ def _patch_creds(monkeypatch):
 
 def test_retry_after_seconds_prefers_header_else_exponential():
     assert _retry_after_seconds(_http_429("5"), 0) == 5.0
-    # no header → exponential 1, 2, 4 …
-    assert _retry_after_seconds(_http_429(None), 0) == 1.0
-    assert _retry_after_seconds(_http_429(None), 2) == 4.0
+    # no header → exponential 1, 2, 4 … (jitter pinned to 0 for the assertion)
+    no_jit = {"rand": lambda: 0.0}
+    assert _retry_after_seconds(_http_429(None), 0, **no_jit) == 1.0
+    assert _retry_after_seconds(_http_429(None), 2, **no_jit) == 4.0
     # capped
     assert _retry_after_seconds(_http_429("9999"), 0) == model_router._CHATGPT_MAX_BACKOFF_SECONDS
+
+
+def test_retry_after_jitter_is_bounded():
+    # jitter adds 0–25% to the exponential base, never below it (#84).
+    lo = _retry_after_seconds(_http_429(None), 2, rand=lambda: 0.0)
+    hi = _retry_after_seconds(_http_429(None), 2, rand=lambda: 1.0)
+    assert lo == 4.0 and hi == 5.0  # 4 + 25%
+
+
+def test_chatgpt_429_exhaustion_raises_rate_limit_error(tmp_path: Path, monkeypatch):
+    from jigga.runtime.model_router import RateLimitError
+
+    _patch_creds(monkeypatch)
+    monkeypatch.setattr("jigga.runtime.model_router.time.sleep", lambda s: None)
+    monkeypatch.setattr("jigga.runtime.model_router.urllib.request.urlopen",
+                        lambda _req, timeout=None: (_ for _ in ()).throw(_http_429("0")))
+    provider = ModelProviderConfig(id="chatgpt", kind="chatgpt_oauth", default_model="gpt-5")
+    with pytest.raises(RateLimitError):  # typed so call_model can trip the breaker
+        _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
 
 
 def test_chatgpt_retries_429_then_succeeds(tmp_path: Path, monkeypatch):
