@@ -812,15 +812,21 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_start.add_argument("--channel-poll-seconds", type=int, default=DEFAULT_LONG_POLL_SECONDS,
                                   help="Channel long-poll timeout — how responsive chat is (0 = legacy per-tick poll)")
 
-    service = sub.add_parser("service", help="Install the supervisor as an always-on user service (launchd/systemd)")
+    service = sub.add_parser("service", help="Install the supervisor as an always-on service (launchd/systemd)")
     service_sub = service.add_subparsers(dest="service_command", required=True)
-    service_install = service_sub.add_parser("install", help="Register + start the supervisor as a user service")
+    _system_help = "Target the system-level unit (survives logout; writing it needs root — run under sudo)"
+    service_install = service_sub.add_parser("install", help="Register + start the supervisor as a service")
     service_install.add_argument("--interval-seconds", type=float, default=60)
     service_install.add_argument("--dry-run", action="store_true", help="Show the unit + commands without installing")
-    service_sub.add_parser("uninstall", help="Stop and remove the supervisor user service")
-    service_sub.add_parser("status", help="Show whether the supervisor service is installed and running")
-    service_sub.add_parser("stop", help="Stop the running supervisor (stays installed; restarts on next login/boot)")
-    service_sub.add_parser("start", help="Start an installed-but-stopped supervisor service")
+    service_install.add_argument("--system", action="store_true", help=_system_help)
+    service_uninstall = service_sub.add_parser("uninstall", help="Stop and remove the supervisor service")
+    service_uninstall.add_argument("--system", action="store_true", help=_system_help)
+    service_status = service_sub.add_parser("status", help="Show whether the supervisor service is installed and running")
+    service_status.add_argument("--system", action="store_true", help=_system_help)
+    service_stop = service_sub.add_parser("stop", help="Stop the running supervisor (stays installed; restarts on login/boot)")
+    service_stop.add_argument("--system", action="store_true", help=_system_help)
+    service_start = service_sub.add_parser("start", help="Start an installed-but-stopped supervisor service")
+    service_start.add_argument("--system", action="store_true", help=_system_help)
 
     task = sub.add_parser("task", help="Manage local task queue")
     task_sub = task.add_subparsers(dest="task_command", required=True)
@@ -2695,8 +2701,9 @@ def _cmd_service(args: argparse.Namespace) -> int:
     )
 
     paths = get_paths(args.home)
+    system = getattr(args, "system", False)
     if args.service_command == "install":
-        result = install_service(paths, interval_seconds=args.interval_seconds, dry_run=args.dry_run)
+        result = install_service(paths, interval_seconds=args.interval_seconds, dry_run=args.dry_run, system=system)
         print_json(result)
         if result["backend"] == "unsupported":
             return 1
@@ -2704,18 +2711,18 @@ def _cmd_service(args: argparse.Namespace) -> int:
             return 0
         return 0 if result.get("started") else 1
     if args.service_command == "uninstall":
-        print_json(uninstall_service(paths))
+        print_json(uninstall_service(paths, system=system))
         return 0
     if args.service_command == "stop":
-        result = stop_service(paths)
+        result = stop_service(paths, system=system)
         print_json(result)
         return 0 if result.get("stopped") else 1
     if args.service_command == "start":
-        result = start_service(paths)
+        result = start_service(paths, system=system)
         print_json(result)
         return 0 if result.get("started") else 1
     # status
-    result = status_service(paths)
+    result = status_service(paths, system=system)
     print_json(result)
     return 0
 

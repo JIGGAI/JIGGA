@@ -8,6 +8,7 @@ injecting a fake ``run_fn``, so these run identically on any CI host.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from jigga.core.paths import get_paths
 from jigga.runtime import service
@@ -70,7 +71,7 @@ def test_install_systemd_writes_unit_and_starts(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     unit_path = tmp_path / "systemd" / service.SYSTEMD_UNIT
     monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
-    monkeypatch.setattr(service, "systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
     run_fn = _recorder()
 
     result = service.install_service(paths, interval_seconds=45, python="/venv/bin/python", run_fn=run_fn)
@@ -89,7 +90,7 @@ def test_install_dry_run_writes_nothing(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     unit_path = tmp_path / "systemd" / service.SYSTEMD_UNIT
     monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
-    monkeypatch.setattr(service, "systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
     run_fn = _recorder()
 
     result = service.install_service(paths, dry_run=True, run_fn=run_fn)
@@ -107,7 +108,7 @@ def test_install_launchd_tolerates_failing_bootout(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     plist = tmp_path / "LaunchAgents" / f"{service.LAUNCHD_LABEL}.plist"
     monkeypatch.setattr(service, "detect_backend", lambda: "launchd")
-    monkeypatch.setattr(service, "launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(service, "launchd_plist_path", lambda system=False: plist)
     run_fn = _recorder(codes={0: 1})  # bootout fails, bootstrap/enable/kickstart succeed
 
     result = service.install_service(paths, run_fn=run_fn)
@@ -120,7 +121,7 @@ def test_install_launchd_fails_when_bootstrap_fails(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     plist = tmp_path / "LaunchAgents" / f"{service.LAUNCHD_LABEL}.plist"
     monkeypatch.setattr(service, "detect_backend", lambda: "launchd")
-    monkeypatch.setattr(service, "launchd_plist_path", lambda: plist)
+    monkeypatch.setattr(service, "launchd_plist_path", lambda system=False: plist)
     run_fn = _recorder(codes={1: 1})  # bootstrap (the real load) fails
 
     result = service.install_service(paths, run_fn=run_fn)
@@ -147,7 +148,7 @@ def test_uninstall_removes_unit(tmp_path, monkeypatch):
     unit_path.parent.mkdir(parents=True)
     unit_path.write_text("stub")
     monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
-    monkeypatch.setattr(service, "systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
     run_fn = _recorder()
 
     result = service.uninstall_service(paths, run_fn=run_fn)
@@ -161,7 +162,7 @@ def test_status_reflects_unit_presence_and_run_state(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     unit_path = tmp_path / "systemd" / service.SYSTEMD_UNIT
     monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
-    monkeypatch.setattr(service, "systemd_unit_path", lambda: unit_path)
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
 
     # not installed, inactive
     inactive = service.status_service(paths, run_fn=lambda a: _proc(a, stdout="inactive\n"))
@@ -228,7 +229,7 @@ def test_start_systemd(tmp_path, monkeypatch):
 def test_start_launchd_bootstrap_optional_then_kickstart(tmp_path, monkeypatch):
     paths = get_paths(tmp_path / "home")
     monkeypatch.setattr(service, "detect_backend", lambda: "launchd")
-    monkeypatch.setattr(service, "launchd_plist_path", lambda: tmp_path / "x.plist")
+    monkeypatch.setattr(service, "launchd_plist_path", lambda system=False: tmp_path / "x.plist")
     # bootstrap fails (already loaded) but that's optional → still started
     run_fn = _recorder(codes={0: 1})
     result = service.start_service(paths, run_fn=run_fn)
@@ -250,3 +251,56 @@ def test_cli_service_stop_start(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "_default_run", lambda argv: _proc(argv, 0))
     assert main(["--home", str(tmp_path), "service", "stop"]) == 0
     assert main(["--home", str(tmp_path), "service", "start"]) == 0
+
+
+# ---- --system (system-level units) -----------------------------------------
+
+def test_systemd_system_unit_runs_as_user_and_multi_user_target(tmp_path):
+    argv = service.service_argv("/venv/bin/python", 60)
+    unit = service.render_systemd_unit(argv, tmp_path / ".jigga", run_as="alice")
+    assert "User=alice" in unit
+    assert "WantedBy=multi-user.target" in unit  # boots before login (vs default.target)
+
+
+def test_launchd_daemon_has_username(tmp_path):
+    argv = service.service_argv("py", 60)
+    plist = service.render_launchd_plist(argv, tmp_path, tmp_path / "logs", run_as="bob")
+    assert "<key>UserName</key>" in plist and "<string>bob</string>" in plist
+
+
+def test_system_paths():
+    assert service.systemd_unit_path(system=True) == Path("/etc/systemd/system") / service.SYSTEMD_UNIT
+    assert service.launchd_plist_path(system=True) == Path("/Library/LaunchDaemons") / f"{service.LAUNCHD_LABEL}.plist"
+
+
+def test_install_system_uses_system_bus_and_path(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    unit_path = tmp_path / "etc" / service.SYSTEMD_UNIT
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
+    run_fn = _recorder()
+    result = service.install_service(paths, system=True, python="/venv/bin/python", run_fn=run_fn)
+    assert result["system"] is True and result["started"] is True
+    # system bus → no `--user`
+    assert run_fn.calls[0] == ["systemctl", "daemon-reload"]
+    assert "User=" in unit_path.read_text()
+
+
+def test_stop_start_system_use_system_bus(tmp_path, monkeypatch):
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    stop = service.stop_service(paths, system=True, run_fn=_recorder())
+    start = service.start_service(paths, system=True, run_fn=_recorder())
+    assert stop["commands"][0]["argv"] == ["systemctl", "stop", service.SYSTEMD_UNIT]
+    assert start["commands"][0]["argv"] == ["systemctl", "start", service.SYSTEMD_UNIT]
+
+
+def test_user_install_unchanged_no_user_directive(tmp_path, monkeypatch):
+    # regression: a plain --user install still targets the user bus + no User=.
+    paths = get_paths(tmp_path / "home")
+    unit_path = tmp_path / "systemd" / service.SYSTEMD_UNIT
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    monkeypatch.setattr(service, "systemd_unit_path", lambda system=False: unit_path)
+    result = service.install_service(paths, run_fn=_recorder())
+    assert result["system"] is False
+    assert "User=" not in unit_path.read_text() and "WantedBy=default.target" in unit_path.read_text()
