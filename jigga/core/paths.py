@@ -55,6 +55,13 @@ def repo_root() -> Path:
 
 
 def examples_dir() -> Path:
+    """The bundled examples (recipes). In a pip/wheel install the build ships
+    them INSIDE the package at `jigga/examples` (top-level `examples/` isn't
+    packaged); in the source tree / an editable install that dir doesn't exist,
+    so we fall back to the repo-root `examples/`."""
+    packaged = Path(__file__).resolve().parent.parent / "examples"
+    if packaged.exists():
+        return packaged
     return repo_root() / "examples"
 
 
