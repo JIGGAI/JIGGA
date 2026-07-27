@@ -1072,6 +1072,16 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
     elif not interactive and not args.skip_channels:
         print("• Skipped channel setup (non-interactive). Run `jigga channels setup` later.")
 
+    # 3.5 Web search — optional provider so `web.search` works from any host
+    # (the zero-config DDG-lite endpoint bot-blocks datacenter IPs; #158).
+    if interactive and _confirm(
+        "\nSet up a web-search provider for agents (SearXNG or Brave API)?", default=False
+    ):
+        pick = input("  1. searxng — metasearch instance, no API key\n"
+                     "  2. brave-search — Brave Search API key (free tier)\n"
+                     "Choose [1]: ").strip()
+        install_capability(paths, name="brave-search" if pick == "2" else "searxng")
+
     # 4. Start it now + keep it running. Registering the user service is the
     #    right "start now": it runs in the background, independent of this shell
     #    (we can't activate the parent shell's venv from here), and survives
