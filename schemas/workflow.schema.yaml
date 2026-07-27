@@ -22,6 +22,24 @@ steps:
     on_fail:
       action: string
       target: string
+# --- v2 (DAG) form: declare `nodes` + `edges` INSTEAD of `steps`. ---
+# tool: a capability action (like a v1 step). llm: sugar for draft_with_model.
+# human_approval: parks the run until `approve <code>` on the user's channel.
+# writeback: copy a named upstream output to a file under ~/.jigga/workspaces/.
+nodes:
+  - id: string
+    type: tool|llm|human_approval|writeback
+    agent: string
+    action: string        # required for tool; llm defaults to draft_with_model
+    input: object         # writeback: {source|value, path}; human_approval: {prompt}
+    output: string
+    optional: boolean
+# Edges route the graph. `on` defaults to success; error edges are how a
+# failure is handled (an unhandled node failure fails the run).
+edges:
+  - from: string
+    to: string
+    on: success|error|always
 outputs:
   - string
 memory:

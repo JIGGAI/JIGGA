@@ -15,11 +15,20 @@ fields; model-backed steps (`draft_with_model`); `trigger.schedule` firing via
 the supervisor; per-step approval gating (explicit or risk-based); memory writes;
 and **workflow inference** (`jigga workflow suggest` / `apply`).
 
+**Also built — the v2 (DAG) engine** (see
+[`WORKFLOW_ENGINE_V2_RUNTIME_NOTES.md`](WORKFLOW_ENGINE_V2_RUNTIME_NOTES.md)):
+declare `nodes` + `edges` instead of `steps` and the run becomes a persisted,
+resumable graph — branching via `on: success|error|always` edges (this is the
+`on_fail` story: route a failure to a recovery node), `human_approval` nodes
+that park the run until `approve <code>` arrives on your channel, `llm` and
+`writeback` nodes, and the supervisor heartbeat advancing parked runs
+(`jigga workflow runs` / `resume`).
+
 **Planned (described below but not yet implemented):** event triggers like
-`calendar_event_upcoming`/offsets (only `trigger.schedule` fires today),
-`on_fail` step handling (the field parses but isn't enforced yet), and
-conditional/branching steps (today's runner is a linear pipeline — branch
-*across agents* with team handoffs instead).
+`calendar_event_upcoming`/offsets (only `trigger.schedule` fires today), media
+nodes (image/video/audio generation — lands with the media-drivers parity
+work), and the v1 `on_fail` field on linear steps (parses but isn't enforced —
+use a v2 error edge instead).
 
 ## Definition
 

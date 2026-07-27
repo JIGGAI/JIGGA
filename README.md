@@ -35,7 +35,7 @@ Three things make it distinctive in practice:
 ## Capabilities (what's built today)
 
 - **Agents / teams / workflows / tasks as code** — plain YAML; `jigga plan` / `apply` / `validate` show and gate config changes (agents-as-code, not a reconcile engine).
-- **Workflows & inference** — declarative, schedulable playbooks (`jigga workflow plan` / `run`); steps chain by named output, can be model-backed, and gate risky steps for approval. **JIGGA also infers and proposes new workflows from your repeated work** (`jigga workflow suggest` / `apply`). See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
+- **Workflows & inference** — declarative, schedulable playbooks (`jigga workflow plan` / `run`); steps chain by named output, can be model-backed, and gate risky steps for approval. **DAG workflows (engine v2)**: declare `nodes` + `edges` for branching (`on: success|error`), `human_approval` nodes that park the run until you reply `approve <code>` on your channel, and per-node run state persisted to disk — runs resume across restarts on the supervisor heartbeat (`jigga workflow runs` / `resume`). **JIGGA also infers and proposes new workflows from your repeated work** (`jigga workflow suggest` / `apply`). See the [Workflows guide](docs/WORKFLOWS_GUIDE.md).
 - **Always-on supervisor daemon** — cron/event/channel-driven; wakes temporary agents; loop-prevention (wake throttle + cron dedup).
 - **Default agent + first-run setup** — `jigga setup` scaffolds a **chief-of-staff or personal-assistant** default agent (catch-all for inbound, oversees/dispatches to teams) and generates your `USER.md`.
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
@@ -264,7 +264,7 @@ jigga approvals list|approve <code># human-in-the-loop
 
 ## Status
 
-A working local-first runtime: **545 passing tests** across the supervisor, agent/team runtimes, scoped memory, channels, model routing, cost/budgets, observability, and the default-agent + setup flow. Standard library + PyYAML only.
+A working local-first runtime: **920 passing tests** across the supervisor, agent/team runtimes, the workflow engines (linear + DAG), scoped memory, channels, model routing, cost/budgets, observability, and the default-agent + setup flow. Standard library + PyYAML only.
 
 Roadmap to v1.0 (see [`docs/ROADMAP_TO_PRODUCTION.md`](docs/ROADMAP_TO_PRODUCTION.md)): finish real connectors (email), OS-level isolation (sandbox + secrets broker), and distribution (`pip install jigga`, service autostart, a dashboard).
 

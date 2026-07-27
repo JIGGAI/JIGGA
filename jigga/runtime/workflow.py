@@ -63,12 +63,64 @@ def _step_policy(
     }
 
 
+def _plan_workflow_v2(
+    workflow: WorkflowConfig,
+    agents: dict[str, AgentConfig],
+    default_mode: str,
+    registry: CapabilityRegistry | None,
+) -> dict[str, Any]:
+    """Plan for a DAG workflow. Unlike v1, `needs_approval` does not make the
+    plan unrunnable — the runner parks at that node and asks on the channel —
+    so `can_run` only fails on structural problems or blocked nodes."""
+    from jigga.core.models import WorkflowStep as _Step
+    from jigga.runtime.workflow_engine import validate_graph
+
+    problems = validate_graph(workflow)
+    nodes = []
+    for node in workflow.nodes:
+        if node.type == "human_approval":
+            policy: dict[str, Any] = {"status": "needs_approval", "reason": "human approval node",
+                                      "permission": None, "permission_mode": None,
+                                      "capability": None, "risk_level": None}
+        else:
+            action = node.action or ("draft_with_model" if node.type == "llm" else "")
+            step = _Step(id=node.id, action=action, agent=node.agent,
+                         input=dict(node.input or {}), output=node.output, optional=node.optional)
+            if node.type == "writeback":
+                policy = {"status": "allow", "reason": "workspace writeback", "permission": None,
+                          "permission_mode": None, "capability": None, "risk_level": None}
+            else:
+                policy = _step_policy(step, workflow, agents, default_mode, registry)
+        nodes.append({"id": node.id, "type": node.type, "agent": node.agent, "action": node.action,
+                      "output": node.output, "optional": node.optional, "policy": policy})
+    return {
+        "workflow": {
+            "id": workflow.id,
+            "name": workflow.name,
+            "purpose": workflow.purpose,
+            "status": workflow.status,
+            "source": workflow.source,
+        },
+        "engine": "v2",
+        "trigger": workflow.trigger,
+        "permissions": _required_permissions(workflow),
+        "memory": workflow.memory,
+        "default_permission_mode": default_mode,
+        "problems": problems,
+        "nodes": nodes,
+        "edges": workflow.edges,
+        "can_run": not problems and all(n["policy"]["status"] != "blocked" for n in nodes),
+    }
+
+
 def plan_workflow(
     workflow: WorkflowConfig,
     agents: dict[str, AgentConfig],
     default_mode: str = "ask",
     registry: CapabilityRegistry | None = None,
 ) -> dict[str, Any]:
+    if workflow.nodes:
+        return _plan_workflow_v2(workflow, agents, default_mode, registry)
     steps = []
     for step in workflow.steps:
         steps.append(
@@ -128,6 +180,13 @@ def _run_workflow(
     workflow = workflows.get(workflow_id)
     if workflow is None:
         raise ValueError(f"Workflow not found: {workflow_id}")
+
+    if workflow.nodes:
+        # DAG workflow → the v2 engine (persisted, resumable run state).
+        # Imported lazily: workflow_engine reuses this module's policy helper.
+        from jigga.runtime.workflow_engine import run_workflow_v2
+
+        return run_workflow_v2(paths, workflow, project_capabilities=project_capabilities)
 
     plan = plan_workflow(workflow, agents, default_mode=default_permission_mode(home), registry=registry)
     if not plan["can_run"]:

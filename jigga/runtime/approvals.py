@@ -124,6 +124,22 @@ def consume_if_approved(approvals_dir: Path, *, task_id: str, action: str) -> bo
     return False
 
 
+def consume_if_denied(approvals_dir: Path, *, task_id: str, action: str) -> bool:
+    """Denied twin of `consume_if_approved`, for callers that need to observe a
+    denial exactly once (the v2 workflow runner fails the parked node)."""
+    for record in _all(approvals_dir):
+        if (
+            record.get("status") == "denied"
+            and not record.get("consumed")
+            and record.get("task_id") == task_id
+            and record.get("action") == action
+        ):
+            record["consumed"] = True
+            write_json(_path(approvals_dir, record["id"]), record)
+            return True
+    return False
+
+
 def parse_approval_reply(text: str | None) -> tuple[bool, str] | None:
     """Parse `approve <code>` / `deny <code>` → (approved, code), else None."""
     match = _REPLY.match(text or "")

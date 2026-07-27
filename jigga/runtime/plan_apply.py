@@ -112,11 +112,13 @@ def validate_runtime_configs(paths: JiggaPaths) -> dict[str, Any]:
 
     agents = load_agents(paths.agents)
     teams = load_teams(paths.teams)
+    workflows = load_workflows(paths.workflows)
     return {
         "agents": sorted(agents.keys()),
         "teams": sorted(teams.keys()),
-        "workflows": sorted(load_workflows(paths.workflows).keys()),
+        "workflows": sorted(workflows.keys()),
         "memory_scopes": sorted(load_memory_scopes(paths.memory).keys()),
-        # Fail-fast config checks (cron strings, routing.handoffs shape/members).
-        "problems": validate_configs(agents, teams),
+        # Fail-fast config checks (cron strings, routing.handoffs shape/members,
+        # v2 workflow graphs).
+        "problems": validate_configs(agents, teams, workflows),
     }

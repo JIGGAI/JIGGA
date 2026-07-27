@@ -162,6 +162,18 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     # when a channel is enabled, so a message is picked up the instant it arrives
     # rather than waiting for the next cron interval (near-real-time chat).
     _poll_channels(paths, long_poll_seconds=channel_long_poll_seconds)
+    # Advance non-terminal v2 (DAG) workflow runs on the heartbeat: parked
+    # approval nodes whose `approve <code>` arrived resume here, and a run
+    # that outran its per-tick node budget continues. Bounded + contained so
+    # a broken run can't break the tick.
+    try:
+        from jigga.runtime.workflow_engine import advance_all_runs
+
+        advanced = advance_all_runs(paths)
+        if advanced["advanced"]:
+            append_event(paths.logs, "workflow.runs_advanced", runs=advanced["advanced"])
+    except Exception as exc:  # noqa: BLE001 — run advancement must not break the tick
+        append_event(paths.logs, "workflow.advance_error", status="error", error=str(exc))
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)

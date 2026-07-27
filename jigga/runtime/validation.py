@@ -13,6 +13,7 @@ Errors are returned as human-readable strings; warnings are prefixed `warning:`
 
 from __future__ import annotations
 
+from typing import Any
 
 from jigga.core.models import AgentConfig, TeamConfig
 
@@ -116,13 +117,24 @@ def validate_team(team: TeamConfig) -> list[str]:
     return problems
 
 
-def validate_configs(agents: dict[str, AgentConfig], teams: dict[str, TeamConfig]) -> list[str]:
-    """All problems across the given agents + teams (errors and `warning:` lines)."""
+def validate_configs(
+    agents: dict[str, AgentConfig],
+    teams: dict[str, TeamConfig],
+    workflows: dict[str, Any] | None = None,
+) -> list[str]:
+    """All problems across the given agents + teams (errors and `warning:` lines).
+    When `workflows` is given, v2 (DAG) workflows get their graph checked too —
+    duplicate/unknown node refs, bad edge `on`, cycles."""
     problems: list[str] = []
     for agent in agents.values():
         problems.extend(validate_agent(agent))
     for team in teams.values():
         problems.extend(validate_team(team))
+    for workflow in (workflows or {}).values():
+        if getattr(workflow, "nodes", None):
+            from jigga.runtime.workflow_engine import validate_graph
+
+            problems.extend(f"workflow {workflow.id}: {problem}" for problem in validate_graph(workflow))
     return problems
 
 
