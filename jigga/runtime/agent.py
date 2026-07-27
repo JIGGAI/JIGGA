@@ -433,6 +433,7 @@ def _run_agent(
         system_context, layers = assemble_agent_context(
             home, agent, ws_team_id, registry=registry,
             memory_context=memory_context, restricted=restricted,
+            task_text=f"{task.title or ''} {task.description or ''}".strip(),
         )
         append_event(logs_dir, "agent.context.assembled", agent=agent_id, task_id=task.id,
                      run_id=run_id, layers=layers, restricted=restricted)
