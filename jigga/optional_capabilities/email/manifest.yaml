@@ -1,0 +1,19 @@
+name: email-imap
+version: 0.1.0
+summary: Provider-agnostic email — search and read via IMAP, draft locally, send via SMTP.
+type: native
+actions:
+  - email.search
+  - email.get
+  - email.draft
+  - email.send
+when_to_use: "Reading, triaging, drafting, or sending the user's email on any
+  IMAP/SMTP provider. Gmail/Google Workspace users may prefer the gog capability."
+permissions:
+  email: read
+  network:
+    mode: allow
+# Sending mail on someone's behalf is the blast radius here; medium risk means
+# every action (send above all) parks for approval outside autonomous mode.
+risk_level: medium
+handler: runtime.email_imap

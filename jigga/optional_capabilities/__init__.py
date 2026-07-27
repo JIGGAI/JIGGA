@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from jigga.optional_capabilities.email import setup as email_setup
 from jigga.optional_capabilities.gog import setup as gog_setup
 from jigga.optional_capabilities.google_calendar import (
     setup as google_calendar_setup,
@@ -52,6 +53,12 @@ def _here() -> Path:
 
 
 REGISTRY: dict[str, OptionalCapability] = {
+    "email-imap": OptionalCapability(
+        name="email-imap",
+        summary="Provider-agnostic email — IMAP search/read, local drafts, SMTP send",
+        manifest_path=_here() / "email" / "manifest.yaml",
+        setup_fn=email_setup,
+    ),
     "gog": OptionalCapability(
         name="gog",
         summary="Google Workspace (Gmail, Calendar, Drive, Sheets) via the gogcli tool",

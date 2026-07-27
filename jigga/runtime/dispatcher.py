@@ -9,6 +9,7 @@ from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
+from jigga.runtime.email_imap import email_imap_handler
 from jigga.runtime.filesystem import filesystem_handler
 from jigga.runtime.gog import gog_handler
 from jigga.runtime.google_calendar import google_calendar_handler
@@ -159,6 +160,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.draft_with_model": _draft_with_model_handler,
     "runtime.search_memory": _search_memory_handler,
     "runtime.remember": _remember_handler,
+    "runtime.email_imap": email_imap_handler,
     "runtime.filesystem": filesystem_handler,
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,
