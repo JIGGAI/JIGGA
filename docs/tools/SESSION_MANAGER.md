@@ -60,9 +60,8 @@ interface SessionManager {
 
 ```bash
 jigga sessions list
-jigga sessions history sess_123
+jigga sessions inspect sess_123
 jigga sessions cancel sess_123
-jigga sessions summarize sess_123
 ```
 
 ## Memory Boundary

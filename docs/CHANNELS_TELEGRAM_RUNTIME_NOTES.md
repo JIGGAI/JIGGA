@@ -1,6 +1,18 @@
 # Channels: Telegram Runtime Notes
 
-First **Milestone B** channel. A channel lets JIGGA receive messages from and reply to an external surface. Per the project direction, **each channel is a configurable opt-in capability** — users enable the ones they want (`jigga capabilities install telegram`, later `slack`, `imessage`, ...).
+> **2026-07 update:** this doc records the *original* Telegram capability
+> (pre-Milestone B). Since then the full gateway shipped: normalized
+> `JiggaEvent` + `ChannelAdapter` contract (PR #32), **supervisor-owned
+> polling** on the heartbeat with long-poll + failure backoff (PRs #34/#141 —
+> `jigga channels listen` is now optional/manual), activation modes (PR #35),
+> the **`jigga channels setup` wizard** (PR #36 — the primary setup path),
+> approval-queue-via-channel (`approve <code>`, PR #37), and a **webchat**
+> channel (PR #123). The agent tool-use loop also shipped, so the
+> receive → think → reply loop described below as a "limitation" works today.
+> Mechanics below (normalized shape, allowlist, adding a channel) remain
+> accurate.
+
+First **Milestone B** channel. A channel lets JIGGA receive messages from and reply to an external surface. Per the project direction, **each channel is a configurable opt-in capability** — users enable the ones they want (`jigga channels setup`, or `jigga capabilities install telegram`).
 
 ## Design: channel = capability with two actions
 
@@ -74,15 +86,14 @@ jigga telegram discover   # poll once, allowlist bypassed, to find your chat ID
 jigga telegram logout     # delete the stored bot token
 ```
 
-## The auto-reply loop (current limitation + follow-up)
+## The auto-reply loop — ✅ shipped since
 
-This PR delivers inbound (poll → messages) and outbound (send) as separate actions. A full **receive → think → reply** loop where an agent automatically answers each message needs the agent runtime to *invoke capabilities* (call `telegram.send_message` itself), which it doesn't do yet — `run_agent` currently does a model call and writes an artifact, it doesn't dispatch tool/capability actions.
-
-Two ways to reply today:
-1. A workflow that polls then sends to a known `chat_id` (static or single-recipient).
-2. Manual orchestration where the polled output drives subsequent `send_message` steps.
-
-The general loop lands when the agent runtime gains capability dispatch (a separate, larger piece — same gap noted for any "agent acts with tools" workflow).
+This section originally documented a limitation: `run_agent` couldn't invoke
+capabilities, so no automatic receive → think → reply. That gap closed when the
+agent runtime gained its per-task tool-use loop (`runtime/agent.py`) — a woken
+agent now dispatches `telegram.send_message` itself, and prod runs this loop
+end-to-end today (supervisor poll → task → agent → reply, with thread context
+from the channel transcript).
 
 ## Template: add another channel (Slack, iMessage, ...)
 
@@ -96,7 +107,7 @@ Telegram is the reference for channel capabilities. To add one:
 
 ## Follow-up work
 
-- Agent-runtime capability dispatch → true auto-reply loop.
+- ✅ ~~Agent-runtime capability dispatch → true auto-reply loop~~ (shipped — see above).
 - Push-based gateway (webhook receiver) for channels that support it, layered over the supervisor.
 - Per-message reply convenience: a `telegram.reply` action that takes a polled message and answers its `chat_id` in one step.
 - Slack and iMessage channels using the template above.

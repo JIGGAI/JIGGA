@@ -71,5 +71,5 @@ When `content`/`body` is a dict (e.g. the `summarize_day` output `{"summary": ".
 - Windows implementation (PowerShell + WinRT toast templates).
 - Quiet hours / urgency routing per `docs/tools/NOTIFICATION_ROUTER.md` (currently `urgency` is forwarded but not gated against quiet-hours config).
 - Digest mode (`low` urgency notifications batched into a single delivery).
-- Alternative channels (Slack DM, email, mobile push) via the same capability shape.
+- Alternative channels — **partially shipped**: runtime-level channel delivery routes `notifications.send` to the agent's configured channel (e.g. Telegram) today; Slack DM / email / mobile push remain open.
 - Approval gate for "high"/"critical" urgency when permission_mode is `ask`.

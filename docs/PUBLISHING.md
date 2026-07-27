@@ -1,6 +1,6 @@
 # Publishing JIGGA to PyPI
 
-Once published, users install the global command with:
+JIGGA is published to PyPI (first release via PR #145). Users install the global command with:
 
 ```bash
 pipx install jigga      # isolated, recommended for a CLI
@@ -36,9 +36,9 @@ On PyPI → the `jigga` project → **Publishing** → add a GitHub trusted publ
 
 - Owner: `JIGGAI` · Repository: `JIGGA` · Workflow: `publish.yml` · Environment: `pypi`
 
-For the **very first** upload (before the project exists on PyPI), add it as a
-**pending publisher** at <https://pypi.org/manage/account/publishing/> with the
-same values; the first workflow run creates the project.
+(Historical: for the **very first** upload — done with PR #145 — the project was
+added as a **pending publisher** at <https://pypi.org/manage/account/publishing/>
+with the same values; the first workflow run created the project.)
 
 Also create a GitHub environment named `pypi` (Settings → Environments) — you
 can add required reviewers there to gate releases.

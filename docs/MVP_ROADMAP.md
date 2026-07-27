@@ -1,5 +1,8 @@
 # MVP Roadmap
 
+> **Historical** — the MVP completed 2026-05; every command below exists.
+> Current planning lives in [`ROADMAP_TO_PRODUCTION.md`](ROADMAP_TO_PRODUCTION.md).
+
 ## Goal
 
 Build a minimal but real JIGGA runtime that proves the core concept:

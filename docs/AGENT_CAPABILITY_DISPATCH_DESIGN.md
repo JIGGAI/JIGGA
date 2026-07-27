@@ -1,10 +1,12 @@
 # Agent-Runtime Capability Dispatch — Design
 
-The keystone that turns JIGGA agents from *summarizers* into *actors*. Today
-`run_agent` does: model call → write text artifact → mark task done. The
-model's output is just text — the agent can't call `telegram.send_message`,
+The keystone that turned JIGGA agents from *summarizers* into *actors*. (This
+design has shipped — `run_agent` is the bounded tool-use loop described below;
+the motivation that follows is written from the pre-change world.) Before this
+change, `run_agent` did: model call → write text artifact → mark task done. The
+model's output was just text — the agent couldn't call `telegram.send_message`,
 `filesystem.write_file`, `gog.gmail_draft`, or `spawn_subagent`. Every real
-action must be a hardcoded workflow step. This design lets the model decide to
+action had to be a hardcoded workflow step. This design lets the model decide to
 call capabilities, dispatches them through the existing capability layer (with
 the same policy/approval/audit as workflow steps), feeds results back, and
 loops until done.

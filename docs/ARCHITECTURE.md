@@ -292,9 +292,9 @@ jigga plan
 jigga apply
 jigga state
 jigga run agent <agent_id>
-jigga run team <team_id>
+jigga team run <team_id>
 jigga workflow plan <workflow_id>
-jigga workflow apply <workflow_id>
+jigga workflow run <workflow_id>
 jigga supervisor start
-jigga supervisor status
+jigga service status
 ```

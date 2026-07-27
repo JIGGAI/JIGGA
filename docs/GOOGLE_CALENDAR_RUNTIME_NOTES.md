@@ -83,7 +83,7 @@ A future **cloud version of JIGGA** may use a JIGGA-managed OAuth app to simplif
 - **Write scope.** `events.insert` / `events.delete` for actually moving the calendar, gated by `permission_mode: ask` so every write requires user approval. Probably its own PR.
 - **Multiple calendars / multi-account.** Currently hardcoded to `primary`. Easy to extend `events.list` input to take a `calendar_id`, harder to handle multi-account auth (need per-account token files).
 - **Outlook Calendar capability.** Once the optional-install pattern proves out, the same shape extends to Microsoft Graph for Outlook users.
-- **Email connector (IMAP read + SMTP draft).** Next Milestone A slice, same optional-install pattern.
+- **Email connector (IMAP read + SMTP draft).** Still open (the last Milestone A gap); Gmail/Workspace users are covered by the `gog` capability meanwhile. Same optional-install pattern.
 
 ## Testing notes
 

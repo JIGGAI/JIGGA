@@ -4,6 +4,19 @@ Snapshot of where we are, what's specced-but-unbuilt, what's missing for product
 
 Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 passing tests, ~4,300 LOC implementation).
 
+> **Status as of 2026-07-27** (905 tests on main; ~20k LOC): Milestones A (minus
+> provider-agnostic email), B, C, D, and the Teams & Workspaces workstream
+> (including W3 ticket lanes, PR #136) are **done**. Much of Milestone F shipped
+> too: PyPI packaging (#145), service autostart + stop/start + `--system`
+> (#73/#143/#144), `jigga update` (#103), `jigga doctor` + `--fix` (#75/#142),
+> and the jiggaview dashboard runs as a plugin. Workflow engine v2 (DAG +
+> resumable runs + approval nodes) is PR #149. **Open:** Milestone E (isolation,
+> secrets broker, egress) in full, provider-agnostic email, more channels
+> (Slack/Discord/webhook/iMessage), marketplace UX, encrypted backup, telemetry,
+> crash-recovery sweep, W7, media nodes (#150), event triggers (#151).
+> Line-items below are kept as written; trust this banner and the ✅ marks where
+> they disagree.
+
 ---
 
 ## Where we are
@@ -29,7 +42,7 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 | Subagent delegation (`dry_run` + gated `codex_cli` + gated `claude_code`) with sandbox primitive | ✅ |
 | Audit log (JSONL, lifecycle events for every major boundary) | ✅ |
 
-**Footprint:** stdlib + PyYAML only; ~400 passing tests as of 2026-05-31.
+**Footprint:** stdlib + PyYAML only; 905 passing tests as of 2026-07-27 (920 once PR #149 merges).
 
 ### Shipped since the original plan (off-sequence — recorded here so the plan matches reality)
 
@@ -39,7 +52,7 @@ After Milestone C completed, work pivoted (user-directed) to making a real team 
 - **Model-backed workflow steps** (`draft_with_model`, PR #29) — a workflow step can route its brief through the agent's model and chain prose by named outputs, so a team becomes a declarative workflow. `docs/MODEL_BACKED_WORKFLOWS.md`.
 - **Marketing-team example** (PR #30) — `jigga init --examples` ships a lead→copywriter→SEO `team_launch` workflow.
 
-These are real and tested, but they were **not** milestone items; the milestone sequence below is otherwise unchanged. **Milestone B (channels) remains the next incomplete milestone** and is where the current channel work belongs.
+These are real and tested, but they were **not** milestone items; the milestone sequence below is otherwise unchanged. (Milestone B has since completed — see its section.)
 
 ---
 
@@ -59,27 +72,27 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 ### Channels (how users actually talk to JIGGA)
 
-> ⚠️ **The normalized gateway architecture in `docs/tools/CHANNEL_GATEWAY_MESSAGE_ADAPTERS.md` was bypassed.** Telegram (PR #15) + the `channel_listener` loop (PR #19) work, but as a *direct task-creator*: no `JiggaEvent` normalizer, no policy/identity layer beyond an allowlist, no activation modes, no `ChannelAdapter` contract, and **not integrated with the supervisor** (so bots only poll while `jigga channels listen` runs manually). Milestone B below rebuilds this to spec.
+> ✅ **(2026-07 update) The Milestone B rebuild happened** — normalized gateway + `ChannelAdapter` contract (PR #32), supervisor-owned always-poll (PR #34, exponential backoff PR #141), activation modes (PR #35), `jigga channels setup` wizard (PR #36), approval-queue-via-channel (PR #37), and a **webchat** channel for the jiggaview Chat page (PR #123). The table below reflects what's still missing.
 
 | Domain | Has | Missing |
 |---|---|---|
-| Telegram | ✅ poll + reply + allowlist (ad-hoc, via `channel_listener`) | Refactor onto the `ChannelAdapter` contract + normalized events |
-| Normalized event flow | ❌ messages → tasks directly | `JiggaEvent` (actor/conversation/target) + gateway normalizer + policy/identity check |
-| Always-on polling | ❌ manual `channels listen` | **Supervisor-owned** channel polling (poll on the heartbeat) |
-| Channel onboarding | ❌ manual config | `jigga channels setup` wizard (pick channel → guided auth → enable), pluggable registry |
-| Activation modes | ❌ `enabled` + allowlist only | `always` / `mention` / `direct_message_only` / `disabled` |
-| CLI channel | direct CLI calls work | Formalize through the normalizer (same path as the rest) |
+| Telegram | ✅ normalized adapter, supervisor-polled, activation modes, onboarding wizard | Webhook (push) mode; richer message types |
+| Webchat (jiggaview Chat page) | ✅ file-backed adapter (PR #123) + thread context/transcripts (#128-#132) | — |
+| Normalized event flow | ✅ `JiggaEvent` + gateway normalizer + identity/policy gate | — |
+| Always-on polling | ✅ supervisor-owned (heartbeat + long-poll, fault backoff) | — |
+| Channel onboarding | ✅ `jigga channels setup` (pluggable catalog) | — |
+| Activation modes | ✅ `always` / `mention` / `direct_message_only` / `disabled` | — |
+| Approval queue via channel | ✅ `approve <code>` / `deny <code>` (PR #37) | — |
 | Local webhook | not started | HTTP endpoint the supervisor watches; auth |
-| Slack / Discord | not started | OAuth + DM/mention routing + outbound reply (the doc's named third-party channel) |
-| Approval queue via channel | not started | `needs_approval` routes back to the user's channel to approve |
+| Slack / Discord | not started | OAuth + DM/mention routing + outbound reply (Slack deferred until a Slack app exists) |
 | Email-as-inbox / Mobile push / SMS bridge (iMessage) | not started | Per the channel doc; iMessage is macOS-only |
 
 ### Observability
 
 | Domain | Has | Missing |
 |---|---|---|
-| Audit JSONL | ✅ events at every boundary | CLI tail/inspect (`jigga logs tail`, `jigga trace <id>`, `jigga audit --agent X --since 24h`) |
-| Secret redaction | none | Middleware that scrubs API keys / tokens / cookies before write |
+| Audit JSONL | ✅ events at every boundary; ✅ CLI tail/inspect (`jigga logs tail`, `jigga trace <id>`, `jigga audit --agent X --since 24h`) | — |
+| Secret redaction | ✅ key-pattern + value-pattern scrubbing on every audit write | — |
 | Trace IDs | ✅ ambient `trace_id` propagated across tick → agent run → subagent | — |
 | Cost tracking | ✅ per-call cost on `model.call`; `jigga cost` rollups; opt-in per-agent budget caps (hard-stop + 80% warn) | Per-workflow rollup; running ledger (with log rotation) |
 | Log rotation | ✅ supervisor rolls over by day/size into dated archives + retention prune; `jigga logs rotate` | Running cost ledger (optimization) |
@@ -105,8 +118,8 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 | Has | Missing |
 |---|---|
-| Per-resource evaluators + permission_mode axis | Approval queue (currently a denied action just stays denied; no human-in-the-loop "approve this one action" path) |
-| Capability first-use approval | Project-local capability dir + capability install plan/apply flow |
+| Per-resource evaluators + permission_mode axis | ✅ Approval queue shipped (B6: code-gated, channel-routed `approve <code>`) |
+| Capability first-use approval | ✅ Project-local capability dir (PR #10) + `jigga capabilities install/approve/pending` shipped |
 | Manifest scanner (static) | Runtime monitoring — capabilities that *behave* unexpectedly vs declared |
 | sandbox.run_sandboxed seam | Actual OS-level isolation backend (firejail / bwrap / container) |
 
@@ -116,13 +129,13 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 The planning docs are strong on the "what JIGGA does" axis but quiet on a handful of operational concerns that you'll hit immediately the moment you run JIGGA past your own laptop:
 
-1. **Packaging and install.** Today: `pip install -e .` from the checkout. Missing: pip-publishable package, optional standalone binary, autostart for the supervisor (systemd unit / launchd plist / Windows Service template), uninstall + state-cleanup path.
+1. **Packaging and install.** ✅ Mostly shipped: PyPI package (`pipx install jigga`, PR #145), supervisor autostart (`jigga service install [--system]`, launchd/systemd, PRs #73/#144), `service stop/start/uninstall` (PR #143). Still missing: optional standalone binary, Windows Service template.
 2. **Secrets.** Today: env-var pull-through via `SandboxSpec.secrets_required`. Missing: a real secrets broker so capabilities request `GITHUB_TOKEN` and get it from a vault/keychain rather than the user's shell env. Mac Keychain / Linux Secret Service / Windows Credential Manager / 1Password CLI integration.
 3. **Network isolation per capability.** Today: env scrub on subprocesses. Missing: real egress controls (capability declares allowed domains; subprocess can only reach those — needs DNS/iptables or a proxy). This is the gap between "MCP server can't see my OPENAI_API_KEY" and "MCP server can't exfiltrate data to attacker.com."
 4. **Backup, restore, sync.** Today: everything in `~/.jigga/`, no backup story. Missing: encrypted backup target (S3/B2/local), restore command, optional encrypted cloud sync for the subset of state safe to sync (workflows, agents, summaries — not raw transcripts or secrets).
-5. **Update model.** Today: `git pull` for jigga itself; capability packs are user-managed files. Missing: `jigga update` for the runtime; `jigga capabilities update <name>` triggering scan + re-approval; rollback.
+5. **Update model.** ✅ `jigga update` shipped (PR #103: reconciles recipes, config keys, service). Still missing: `jigga capabilities update <name>` triggering scan + re-approval; rollback.
 6. **Telemetry (opt-in).** Today: nothing. For a real product: opt-in error reporting + usage telemetry so you can detect breakage in the wild without violating local-first. Default off; explicit opt-in; documented payload schema.
-7. **Cost / budget enforcement.** Today: `max_wakes_per_agent_per_hour` is a rate limit, not a cost limit. Missing: per-agent monthly spend cap, per-workflow run cap, soft warning at 80% / hard stop at 100%.
+7. **Cost / budget enforcement.** ✅ Shipped: per-agent budget caps with soft warning at 80% / hard stop at 100% (Milestone C), plus a derived spend ledger (H1a) and model rate-limit resilience (PR #146). Still missing: per-workflow run cap.
 8. **Crash recovery.** Today: the supervisor loop is single-process. If it crashes mid-tick (after task state transitions but before workflow.run.completed), the task is in a half-state. Missing: idempotent tick semantics + a recovery sweep that detects and resolves stale `claimed`/`running` tasks on startup.
 9. **Multi-tenant / multi-machine.** Today: single user, single machine. Missing: if/when a household or team wants shared JIGGA, the state model needs an `owner` field, per-user permission scoping, and a sync story.
 
@@ -193,7 +206,7 @@ ClawRecipes-parity map — where each feature lands in the JIGGA milestone proce
 | **Team/role memory** (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`) | **Milestone D (Memory at scale)** — NOT a Teams slice | memory is its own milestone; the workspace just provides the on-disk locations, D owns indexing/compaction/retrieval |
 | **Ticket lanes** (`backlog→in-progress→testing→done`) + `take`/`handoff`/`complete`/`assign` | **W3** | evolve JIGGA's task queue (states+assignee) toward lanes |
 | **Markdown recipes + `scaffold-team`** templating (`{{teamId}}`) | **W4** | JIGGA hand-writes yaml today; add a scaffolder |
-| **Workflow DAG** (nodes/edges, `human_approval`/media nodes, `workflow-runs/`) | future "workflow engine v2" | extends Milestone B6 (approval) + linear workflows; bigger lift, separate |
+| **Workflow DAG** (nodes/edges, `human_approval`/media nodes, `workflow-runs/`) | ✅ **workflow engine v2 (PR #149)** — DAG + resumable runs + approval nodes; media nodes remain (#150) | `docs/WORKFLOW_ENGINE_V2_RUNTIME_NOTES.md` |
 | **Channel approval-code flow** (Telegram `approve <code>`) | **Milestone B6** | already planned |
 | **ClawKitchen UI** (reads workspace files + shells the CLI, no cache) | **Milestone F dashboard** | the blueprint for JIGGA's dashboard |
 
@@ -203,7 +216,7 @@ Slices:
 - ✅ **W1.5 — workspaces created on first use + agent binding** (#39): `run_team`/`run_agent` scaffold idempotently (so the workspace exists however the team/agent was created); team members bind to their team workspace, team-less agents get a per-agent one; the agent loop reads the lead-curated plan/priorities into its prompt and appends results to `agent-outputs/` + `notes/status.md` (the read→act→write loop).
 - ✅ **W4 (slice 1) — recipe-driven scaffolding** (#40): Markdown-frontmatter recipes + `jigga recipes scaffold <recipe> --id` / `jigga recipes list` (originally under `jigga team`); bundled `examples/recipes/marketing-team.md`. Follow-ups deferred: `cronJobs` (scheduled role work-loops), `agentTools` policy, `files:`/`templates:`, `kind: agent` recipes.
 - ✅ **Member→member handoffs (file-first)** — Hardening H3 (2026-06-01): `routing.handoffs` now *execute*. When a `from` member completes its team task, JIGGA creates the next member's task and records it in `shared-context/handoffs.jsonl` (auditable, no ephemeral bus); a hop guard caps cyclic graphs. `jigga team handoff` / `jigga team decisions`; `runtime/handoffs.py`. This is the member→member routing piece; ticket lanes (below) remain separate/deferred.
-- ⏭️ **W3 — ticket lanes** (`backlog→in-progress→testing→done` + `take`/`complete`): **DEFERRED (2026-05-31), pending design.** Likely shape: an **opt-in per-team toggle** (lanes are a work-management mode over the existing task queue, not an agent action). Don't build until the design is decided. (Member→member `handoff` is now built — see above.)
+- ✅ **W3 — ticket lanes** (PR #136, 2026-06-08): per-team lane vocabulary (opt-in `lanes:` on the team — `true` for defaults or a custom list), `runtime/lanes.py`, `jigga team lanes`, `jigga task list --lane` — a work-management mode over the existing task queue, exactly the "likely shape" described here.
 - **Team/role memory is NOT a slice here — it's Milestone D.** The workspace provides the on-disk locations (`shared-context/memory/team.jsonl` + `pinned.jsonl`, per-role `MEMORY.md`); Milestone D owns indexing/compaction/retrieval.
 - ✅ **W5 — agent context pack** (#60, 2026-06-01): the agent system prompt is assembled from layered files (OpenClaw/ClawRecipes model) so agents wake grounded instead of per-task amnesiacs — `USER.md` → identity → `SOUL.md` → `AGENTS` (role+roster) → `TEAM.md` → `TOOLS` → `MEMORY.md`+dated daily logs+team facts → plan/priorities → task. Generate-unless-authored; honors `restricted_memory` (group sessions omit private USER/MEMORY); dated breadcrumbs in `roles/<member>/memory/<date>.md`. `runtime/context_pack.py`.
 - ✅ **W6 — file-backed mailbox** (#62, PRs #100/#101, 2026-06-04): durable agent→agent / human→agent messages as files (`workspaces/<team>/roles/<member>/inbox/<msg_id>.json`). `mailbox.send` bundled capability (delivers to the RECIPIENT's home workspace) + `jigga mailbox send|list`. Unread mail **wakes the recipient within a tick** (synthetic check-inbox task, wake-throttled); surfaced as a private context-pack layer; marked read only after a successful run; never moved/deleted (auditable correspondence, searchable via memory.search). Audit: `mailbox.sent`/`mailbox.read`/`supervisor.mail_wake`.
@@ -212,7 +225,7 @@ Slices:
 
 Pull remaining items in "when it makes sense" rather than all at once.
 
-**Exit (mostly met):** a JIGGA team has a real shared workspace it coordinates through — lead curates `plan.md`/`priorities.md`, members append outputs (read→act→write), and teams are scaffolded from recipes. Ticket lanes (W3, deferred) and the memory layers (Milestone D) extend it later.
+**Exit (met):** a JIGGA team has a real shared workspace it coordinates through — lead curates `plan.md`/`priorities.md`, members append outputs (read→act→write), teams are scaffolded from recipes, and ticket lanes (W3, PR #136) organize the board. W7 (self-directed protocol boot, issue #63) is the remaining slice.
 
 ### Milestone D — Memory at scale — **COMPLETE**
 *Goal: long-running agents don't drown.*
@@ -239,14 +252,15 @@ Pull remaining items in "when it makes sense" rather than all at once.
 ### Milestone F — Distribution & UX
 *Goal: someone other than the person who built it can install and run it.*
 
-- Pip-publishable package (`pip install jigga`).
-- Supervisor autostart templates (systemd / launchd / Windows Service) + a `jigga install-service` helper.
-- Headless-first GUI/dashboard — Electron or web-app pointing at a local API. Read-only at first: state, audit log, sessions, capability registry. Approve actions in v1.1. **Blueprint: `~/clawkitchen`** — the ClawRecipes UI reads workspace files directly + shells the CLI, with no cache (no hidden app state); adopt that integration boundary.
+- ✅ Pip-publishable package (`pipx install jigga`, PR #145; `docs/PUBLISHING.md`).
+- ✅ Supervisor autostart (launchd/systemd, `jigga service install [--system]` + `stop`/`start`, PRs #73/#143/#144). Windows Service template still open.
+- ✅ (largely) Headless-first GUI/dashboard — **jiggaview** runs as a supervised plugin (CLI-as-API, no cache), with Agents/Teams/Chat/Tasks/Workflows/Runs/Tickets pages. Remaining: ClawKitchen-parity tabs (channels, cron-jobs, goals) and the workflow graph view (jiggaview#13).
+- ✅ `jigga doctor` (+ `--fix` auto-remediations, PRs #75/#142) — the "can someone else install it" safety net.
+- ✅ `jigga update` (runtime reconcile, PR #103). Migration scripts for state-shape changes still open.
 - Capability marketplace UX: `jigga capabilities search <query>`, `jigga capabilities install <name>`, `jigga capabilities update`. Backed by a static registry index (git-based, no server needed for v1).
 - Encrypted backup with `jigga backup create / restore`. Cloud sync as an optional layer (S3-compatible, age-encrypted).
 - Opt-in telemetry: documented payload, off by default, `jigga telemetry on/off` toggle.
 - Crash recovery sweep on supervisor startup: any task in `claimed`/`running` for more than the configured runtime gets marked `failed` with an audit event.
-- `jigga update` (runtime self-update) + migration scripts for state-shape changes.
 
 **Exit:** v1.0 release-ready. A user with no JIGGA context can `brew install jigga` (or equivalent), run `jigga init`, and have something working in five minutes.
 
@@ -272,9 +286,9 @@ These choices will compound through the milestones; worth deciding before A.
 
 ---
 
-## Recommended next concrete PR
+## Recommended next concrete work (updated 2026-07-27)
 
-Milestones A and C are done; the off-sequence model-provider + workflow work shipped. **The next concrete PR is Milestone B, slice B1:** define the `JiggaEvent` shape + `ChannelAdapter` contract + gateway normalizer, and refactor the existing Telegram path onto it (no behavior change) with the allowlist becoming an identity rule. That unblocks B2 (supervisor-owned "always poll"), B4 (the `jigga channels setup` wizard), and B5 (Slack) — each a small PR on the same contract.
+Milestones A–D, Teams & Workspaces (minus W7), and most of F are done; workflow engine v2 is PR #149. The biggest remaining lift to v1.0 is **Milestone E (real isolation)** — OS sandbox backend, secrets broker, per-capability egress. Smaller open threads, roughly by value: provider-agnostic email (the last Milestone A gap), workflow media nodes (#150) and event triggers (#151), W7 self-directed protocol boot (#63), the remaining Milestone F items (marketplace UX, encrypted backup, crash-recovery sweep, telemetry), and additional channels (Slack when an app exists; webhook).
 
 ---
 

@@ -1,6 +1,6 @@
 # Observability Runtime Notes (Milestone C)
 
-The runtime writes a JSONL audit event at every trust boundary. Milestone C adds the **read** side — the ability to see what happened — plus **secret redaction** so the durable log never captures credentials, and **trace-id propagation** so one id returns a whole causal tree. Cost/budget tracking and log rotation are the remaining follow-up PRs (tracked in `ROADMAP_TO_PRODUCTION.md`).
+The runtime writes a JSONL audit event at every trust boundary. Milestone C adds the **read** side — the ability to see what happened — plus **secret redaction** so the durable log never captures credentials, and **trace-id propagation** so one id returns a whole causal tree. Cost/budget tracking and log rotation have since shipped too (documented below) — Milestone C is complete.
 
 ## Secret redaction (always on)
 

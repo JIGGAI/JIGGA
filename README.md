@@ -41,7 +41,7 @@ Three things make it distinctive in practice:
 - **Scoped, file-first memory** — raw/team/role layers, **keyword search (sqlite FTS5)**, compaction, an opt-in write-approval queue, and a **per-agent context pack** so agents wake grounded in who they are + what they've done.
 - **Teams & shared workspaces** — lead-curated plan/priorities (curator model), **recipe scaffolding** (`jigga recipes scaffold`), **file-first handoffs** with an auditable decision log, and an **agent mailbox** — durable agent→agent / human→agent messages that wake the recipient on the next tick (`jigga mailbox send`).
 - **Capabilities** — filesystem, desktop notifications, Google Calendar/Workspace, memory search/remember, model-backed drafting, controlled **subagent delegation** (incl. **local `codex` / `claude` CLI backends**, run directly instead of via API), **MCP servers**, and cross-team read + dispatch (`team.list` / `team.status` / `team.run` / `task.assign`).
-- **Channels** — a normalized **Telegram** gateway (supervisor-polled, activation modes, `jigga channels setup`) with an **approval queue routed back to the channel** (`approve <code>`).
+- **Channels** — normalized **Telegram + webchat** gateways (supervisor-polled, activation modes, `jigga channels setup`; webchat backs the jiggaview Chat page) with an **approval queue routed back to the channel** (`approve <code>`).
 - **Model routing** — dry-run, any OpenAI-compatible endpoint, and **ChatGPT-subscription (OAuth, no API key)**, with provider fallback.
 - **Cost & safety** — per-call cost + **per-agent budgets** (hard-stop + warn), **permission modes**, policy gating, a path-canonicalized filesystem gate, and human-in-the-loop approvals.
 - **Observability** — JSONL audit log, `jigga logs` / `jigga audit` / `jigga trace`, secret redaction, and log rotation.
@@ -188,7 +188,14 @@ examples/
 
 **Prerequisites:** Python **3.11+** and git. macOS and Linux are supported; Windows is experimental. The only runtime dependency is PyYAML (installed for you).
 
-### Quick start (one command)
+### Quickest: install from PyPI
+
+```bash
+pipx install jigga        # or: pip install jigga
+jigga onboard --examples  # guided setup: runtime -> assistant -> model -> channel
+```
+
+### Quick start from source (one command)
 
 ```bash
 git clone https://github.com/JIGGAI/JIGGA.git
@@ -253,7 +260,7 @@ jigga mailbox send|list            # message an agent's inbox (it wakes and read
 jigga workflow plan|run <id>       # plan or run a workflow
 jigga run agent <id>               # run one agent
 jigga supervisor start|tick        # the always-on daemon (or a single tick)
-jigga service install|status|uninstall  # run the supervisor as a launchd/systemd user service
+jigga service install|status|stop|start|uninstall [--system]  # supervisor as a launchd/systemd service
 jigga model setup|login|status     # configure / authenticate the model provider
 jigga channels setup|status        # connect a chat channel (Telegram)
 jigga memory search <query>        # search scoped memory
@@ -266,7 +273,7 @@ jigga approvals list|approve <code># human-in-the-loop
 
 A working local-first runtime: **545 passing tests** across the supervisor, agent/team runtimes, scoped memory, channels, model routing, cost/budgets, observability, and the default-agent + setup flow. Standard library + PyYAML only.
 
-Roadmap to v1.0 (see [`docs/ROADMAP_TO_PRODUCTION.md`](docs/ROADMAP_TO_PRODUCTION.md)): finish real connectors (email), OS-level isolation (sandbox + secrets broker), and distribution (`pip install jigga`, service autostart, a dashboard).
+Roadmap to v1.0 (see [`docs/ROADMAP_TO_PRODUCTION.md`](docs/ROADMAP_TO_PRODUCTION.md)): OS-level isolation (sandbox + secrets broker + egress allowlists) and a provider-agnostic email connector. Distribution already works: `pipx install jigga`, service autostart, and the jiggaview dashboard.
 
 See [`docs/PRODUCT_PLAN.md`](docs/PRODUCT_PLAN.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`docs/AGENT_TEAM_GUIDE.md`](docs/AGENT_TEAM_GUIDE.md) for the deeper design + how to build agent teams.
 

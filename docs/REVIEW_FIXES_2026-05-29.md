@@ -96,7 +96,7 @@ Status legend: ✅ done · 🟡 partial · ⏭️ deferred to Codex.
 
 **Conservative scope:** This is the agent-run boundary only. Per-action enforcement (shell allow/deny on every tool call, network domain checks) is still pending — but the evaluators in `policy.py` already exist for `safe_process` and `workflow.plan_workflow`, and Codex can extend them when real tool dispatch lands.
 
-**Note for Codex:** A `plan_only` agent's tasks accumulate as `needs_approval` and never auto-clear. There's no UI yet to approve them. Easiest interim path: a `jigga task approve <id>` CLI subcommand that moves a task back to `pending` and bumps a per-task `approval_granted_at` field. Beyond that, the approval flow likely deserves its own design pass (probably ties into the channel-gateway notion).
+**Note for Codex:** A `plan_only` agent's tasks accumulate as `needs_approval` and never auto-clear. There's no UI yet to approve them. *(Since shipped: `jigga approvals` + channel `approve <code>`, PR #37.)* Easiest interim path: a `jigga task approve <id>` CLI subcommand that moves a task back to `pending` and bumps a per-task `approval_granted_at` field. Beyond that, the approval flow likely deserves its own design pass (probably ties into the channel-gateway notion).
 
 ---
 
