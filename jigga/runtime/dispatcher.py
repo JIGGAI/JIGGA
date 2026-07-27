@@ -39,6 +39,7 @@ from jigga.runtime.policy import (
 )
 from jigga.runtime.runtime_context import Handler, RuntimeContext
 from jigga.runtime.telegram import telegram_handler
+from jigga.runtime.web import web_handler
 from jigga.runtime.webchat import webchat_handler
 
 # Re-exported for back-compat: callers historically import RuntimeContext and
@@ -163,6 +164,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,
     "runtime.telegram": telegram_handler,
+    "runtime.web": web_handler,
     "runtime.webchat": webchat_handler,
     "skill_pack.default": _skill_pack_handler,
     "mcp_server.subprocess": _mcp_server_handler,
