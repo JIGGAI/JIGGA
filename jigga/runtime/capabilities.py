@@ -350,6 +350,18 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.shell",
     },
     {
+        "name": "reminders",
+        "version": "0.1.0",
+        "summary": "One-shot reminders: remind.at schedules a single future wake (ISO time "
+                   "or a relative offset like 30m/2h/1d); the supervisor fires it exactly "
+                   "once as a task for the target agent. remind.list shows pending ones.",
+        "when_to_use": "\"Remind me at 5pm\", \"ping me in 2 hours\", any single future "
+                       "follow-up. For recurring schedules use wake.schedules (cron) instead.",
+        "actions": ["remind.at", "remind.list"],
+        "risk_level": "low",
+        "handler": "runtime.reminders",
+    },
+    {
         "name": "text-generation",
         "version": "0.1.0",
         "summary": "Generate or transform text with the executing agent's configured model. "

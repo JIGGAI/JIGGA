@@ -38,6 +38,7 @@ from jigga.runtime.policy import (
     evaluate_network,
     evaluate_resource_permission,
 )
+from jigga.runtime.reminders import reminders_handler
 from jigga.runtime.runtime_context import Handler, RuntimeContext
 from jigga.runtime.shell import shell_handler
 from jigga.runtime.telegram import telegram_handler
@@ -167,6 +168,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.google_calendar": google_calendar_handler,
     "runtime.gog": gog_handler,
     "runtime.shell": shell_handler,
+    "runtime.reminders": reminders_handler,
     "runtime.telegram": telegram_handler,
     "runtime.web": web_handler,
     "runtime.webchat": webchat_handler,

@@ -174,6 +174,17 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
             append_event(paths.logs, "workflow.runs_advanced", runs=advanced["advanced"])
     except Exception as exc:  # noqa: BLE001 — run advancement must not break the tick
         append_event(paths.logs, "workflow.advance_error", status="error", error=str(exc))
+    # One-shot reminders due by now become tasks for their target agent (fired
+    # exactly once, bounded per sweep). Contained so a bad reminder file can't
+    # break the tick.
+    try:
+        from jigga.runtime.reminders import fire_due_reminders
+
+        fired = fire_due_reminders(paths.home, paths.logs, paths.tasks, paths.agents)
+        if fired:
+            append_event(paths.logs, "reminders.swept", fired=[r["id"] for r in fired])
+    except Exception as exc:  # noqa: BLE001 — reminder sweep must not break the tick
+        append_event(paths.logs, "reminder.sweep_error", status="error", error=str(exc))
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)
