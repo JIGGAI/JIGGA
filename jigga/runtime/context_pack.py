@@ -45,6 +45,7 @@ from typing import Any
 from jigga.core.config import load_teams
 from jigga.core.models import AgentConfig
 from jigga.runtime.capabilities import CapabilityRegistry
+from jigga.runtime.skills import activated_skills_layer, skills_summary_layer
 from jigga.runtime.team_memory import read_pinned, read_team_memory
 from jigga.runtime.workspaces import read_file
 
@@ -243,6 +244,7 @@ def assemble_agent_context(
     memory_context: dict[str, Any] | None = None,
     restricted: bool = False,
     now: datetime | None = None,
+    task_text: str | None = None,
 ) -> tuple[str, list[str]]:
     """Build the agent's system-prompt body from the context-pack layers. Returns
     (text, layers_loaded). `restricted=True` (group/shared session) omits the
@@ -267,7 +269,12 @@ def assemble_agent_context(
         ("Team charter", authored("TEAM.md"), "TEAM", False, False),
         ("Your team's ticket board", _lanes_layer(team_id, teams), "lanes", False, False),
         ("Your tools", _tools_layer(home, team_id, member, agent, registry), "TOOLS", False, False),
+        ("Your skills", skills_summary_layer(registry, agent), "skills", False, False),
         ("Your long-term memory", _curated_memory(home, team_id, member), "MEMORY", True, False),
+        # Trigger-matched skill instructions vary per task → below the volatile
+        # boundary so they can't invalidate the provider's cached prefix.
+        ("Activated skill instructions", activated_skills_layer(registry, agent, task_text),
+         "skills-active", False, True),
         ("Your inbox", _inbox_layer(home, team_id, member), "inbox", True, True),
         ("What you've done recently", _recent_memory(home, team_id, member, memory_context, today), "recent", True, True),
         ("Team shared context", _shared_context(home, team_id), "shared-context", False, True),

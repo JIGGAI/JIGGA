@@ -428,6 +428,17 @@ def build_parser() -> argparse.ArgumentParser:
     memory_reject.add_argument("proposal_id")
     memory_reject.add_argument("--team")
 
+    skills = sub.add_parser("skills", help="List, inspect, and create skills (skill_pack capabilities)")
+    skills_sub = skills.add_subparsers(dest="skills_command", required=True)
+    skills_list = skills_sub.add_parser("list", help="Installed skills with triggers and actions")
+    skills_list.add_argument("--json", action="store_true", dest="json_output")
+    skills_show = skills_sub.add_parser("show", help="A skill's manifest + its instructions")
+    skills_show.add_argument("name")
+    skills_create = skills_sub.add_parser(
+        "create", help="Scaffold a user-local skill pack (approve it with `jigga capabilities approve`)")
+    skills_create.add_argument("name")
+    skills_create.add_argument("--summary")
+
     workflow = sub.add_parser("workflow", help="Plan and run workflows")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
     workflow_plan = workflow_sub.add_parser("plan")
@@ -2815,8 +2826,44 @@ def _cmd_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_skills(args: argparse.Namespace) -> int:
+    from jigga.runtime.skills import create_skill, installed_skills, read_instructions, skill_records
+
+    paths = get_paths(args.home)
+    registry = CapabilityRegistry.load(
+        user_capabilities=paths.capabilities,
+        project_capabilities=project_capabilities_dir(resolve_project_root(args.project)),
+        approvals_dir=paths.policies,
+    )
+    if args.skills_command == "list":
+        records = skill_records(registry)
+        pending = [c.name for c in registry.list_pending() if c.type == "skill_pack"]
+        if args.json_output:
+            print_json({"skills": records, "pending_approval": pending})
+        else:
+            for record in records:
+                triggers = f"  triggers: {', '.join(record['triggers'])}" if record["triggers"] else ""
+                print(f"- {record['name']} [{record['risk_level']}] — {record['summary']}{triggers}")
+            for name in pending:
+                print(f"- {name} (pending approval — jigga capabilities pending)")
+            if not records and not pending:
+                print("No skills installed. Create one: jigga skills create <name>")
+    elif args.skills_command == "show":
+        skill = next((s for s in installed_skills(registry) if s.name == args.name), None)
+        if skill is None:
+            raise ValueError(f"Skill not found: {args.name}")
+        print_json(skill.to_dict())
+        instructions = read_instructions(skill)
+        if instructions:
+            print("\n--- instructions ---\n" + instructions)
+    elif args.skills_command == "create":
+        print_json(create_skill(paths.capabilities, args.name, summary=args.summary))
+    return 0
+
+
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
+    "skills": _cmd_skills,
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,
     "doctor": _cmd_doctor,
