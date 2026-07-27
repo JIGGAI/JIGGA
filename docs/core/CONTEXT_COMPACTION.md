@@ -5,12 +5,14 @@ JIGGA needs explicit tools for inspecting and compacting context because persist
 ## Commands
 
 ```bash
-jigga context inspect
-jigga context inspect --agent engineer
-jigga memory compact
-jigga memory compact --scope project_view
-jigga memory summarize --task task_123
+jigga memory inspect              # scopes + layers (shipped)
+jigga memory compact [--dry-run]  # archive old raw/facts/tasks (shipped)
+jigga memory search <query>       # scope-aware retrieval (shipped)
 ```
+
+(Proposed, not yet built: per-agent context inspection — `jigga context
+inspect --agent <id>` — and model-backed task summarization in compaction;
+today compaction archives rather than summarizes.)
 
 ## Context Sources
 

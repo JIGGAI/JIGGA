@@ -49,9 +49,9 @@ EOF
 # From outside the project: capability is not visible
 jigga --home /tmp/demo capabilities list | grep mycap.run   # (empty)
 
-# From inside the project tree: auto-detect kicks in
-cd /tmp/myproject/some/subdir
-jigga --home /tmp/demo capabilities pending   # shows my-cap
+# With the project named explicitly (auto-detect was removed in PR #126 —
+# project root is explicit-only: --project or JIGGA_PROJECT):
+jigga --home /tmp/demo --project /tmp/myproject capabilities pending   # shows my-cap
 
 # Approve and use
 jigga --home /tmp/demo capabilities approve \
@@ -69,4 +69,4 @@ jigga --home /tmp/demo capabilities list | grep mycap.run   # now mapped to my-c
 ## Constraints / known edges
 
 - The approval index keys by capability `name`. Two different projects shipping a capability with the same `name` but different `manifest_hash` will require re-approval each time you switch projects (the hash mismatch falls back to pending). For workflows that need cross-project name reuse, this is mild friction; if it becomes painful, change the key shape to `(name, manifest_hash)` so both versions can be approved simultaneously.
-- Auto-detect walks the full filesystem path up to `/`. On a developer's machine with a `~/.jigga/` (the runtime home), JIGGA would correctly *not* match it — `~/.jigga` is the home dir, not a `.jigga` *subdirectory* of some project root. The auto-detect explicitly looks for `<x>/.jigga/`, where `<x>` is the project root.
+- ~~Auto-detect walks the full filesystem path up to `/`~~ — **removed (PR #126)**: cwd-walk auto-discovery reached the real `~/.jigga` from repo checkouts and bled runtime state into isolated contexts. The project root is now explicit-only (`--project <path>` / `JIGGA_PROJECT`), as noted at the top of this doc.

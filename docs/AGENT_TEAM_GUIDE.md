@@ -16,7 +16,7 @@ Python runtime version.)
 | **Capability** | An action an agent can invoke (a tool / workflow step) | registry (bundled + opt-in + local) |
 | **Workspace** | A team's (or solo agent's) shared file area | `~/.jigga/workspaces/<id>/` |
 | **Recipe** | A template that *generates* a team/agent | `~/.jigga/recipes/*.md` or `examples/recipes/` |
-| **Supervisor** | The always-on daemon that drives everything | `jigga supervisor run` |
+| **Supervisor** | The always-on daemon that drives everything | `jigga supervisor start` |
 | **Task** | A unit of work assigned to an agent | `~/.jigga/tasks/` |
 
 The flow, end to end:
@@ -134,7 +134,7 @@ routing:
 The **supervisor** is the always-on engine. Run it as a process (a real install
 runs it as a service):
 ```bash
-jigga supervisor run
+jigga supervisor start
 ```
 Each tick it:
 1. **rotates** the audit log (by day/size, prunes old archives);
@@ -334,7 +334,7 @@ jigga team workspace acme    # see the scaffolded workspace files
 #    edit ~/.jigga/workspaces/acme/notes/plan.md and shared-context/priorities.md
 
 # 3. run it
-jigga supervisor run         # always-on: schedules + channels + tasks
+jigga supervisor start         # always-on: schedules + channels + tasks
 #   …or one-shot a workflow:
 jigga workflow run team_launch
 
@@ -353,7 +353,7 @@ jigga approvals list         # anything waiting on you
 | Build | `jigga init [--examples]`, `jigga recipes list|show|scaffold <recipe> --id <id> [--overwrite]`, `jigga team init <id>`, `jigga team workspace <id>` |
 | Model | `jigga model setup`, `jigga model use <provider>`, `jigga model login [--device-code]`, `jigga model status` |
 | Channels | `jigga channels setup`, `jigga channels status`, `jigga channels listen` |
-| Run | `jigga supervisor run`, `jigga team run <id>`, `jigga workflow run <id>`, `jigga run agent <id>` |
+| Run | `jigga supervisor start`, `jigga team run <id>`, `jigga workflow run <id>`, `jigga run agent <id>` |
 | Coordination | `jigga team handoff <id> --from <member> [--signal S]`, `jigga team decisions <id>` |
 | Human-in-the-loop | `jigga approvals list`, `jigga approvals approve <code>`, `jigga approvals deny <code>` |
 | Observability | `jigga trace <id>`, `jigga cost [--since 7d]`, `jigga logs tail`, `jigga audit [--agent X --type T --since 24h]` |

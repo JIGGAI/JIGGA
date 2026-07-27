@@ -30,7 +30,7 @@ Bundled capabilities currently cover the MVP demo actions:
 - `summarization`
 - `content-drafting`
 
-Handlers are still dry-run implementations, but action resolution, plan metadata, audit events, and failure behavior now go through the capability seam. Bundled/user-local capability metadata includes `bundled`, `handler`, and `manifest_hash` fields so future UI and approval flows can distinguish built-in packs from user-installed packs and detect manifest changes.
+Most handlers are real adapters now (notifications, filesystem, Google Calendar, gog/Workspace, `draft_with_model`, MCP servers, subagents, channels); **email remains the dry-run stub**. Action resolution, plan metadata, audit events, and failure behavior all go through the capability seam. Bundled/user-local capability metadata includes `bundled`, `handler`, and `manifest_hash` fields so future UI and approval flows can distinguish built-in packs from user-installed packs and detect manifest changes.
 
 ## Safety gates in this slice
 
@@ -41,8 +41,8 @@ Handlers are still dry-run implementations, but action resolution, plan metadata
 
 ## Follow-up work
 
-- Add project-local capability paths.
-- Add capability install/plan/apply flow and persistent first-use approval records for user-local packs.
-- Move built-in capability manifests to package data files once the manifest shape stabilizes.
-- Replace dry-run handlers with real adapters behind the same dispatcher contract.
-- Build elastic delegation as a `spawn_subagent` capability/tool on top of this registry.
+- ✅ ~~Add project-local capability paths~~ (PR #10; `docs/PROJECT_LOCAL_CAPABILITIES_RUNTIME_NOTES.md`).
+- ✅ ~~Add capability install/plan/apply flow and persistent first-use approval records~~ (`jigga capabilities install/uninstall/approve/pending`; approvals at `policies/capability_approvals.json`).
+- Move built-in capability manifests to package data files once the manifest shape stabilizes. *(still open)*
+- ✅ ~~Replace dry-run handlers with real adapters~~ (all but email — see above).
+- ✅ ~~Build elastic delegation as a `spawn_subagent` capability~~ (`runtime/subagents.py`: dry_run/codex_cli/claude_code backends; `docs/SUBAGENT_RUNTIME_NOTES.md`).

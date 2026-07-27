@@ -7,6 +7,8 @@ JIGGA Phase 4 added workflow inference, not AI/model inference. This note docume
 - `jigga.runtime.model_router` loads model provider config from `~/.jigga/config.yaml`.
 - Default runtime uses a safe `dry_run` provider, so tests and demos do not require credentials.
 - OpenAI-compatible chat-completions providers are supported via env-var credentials.
+- **ChatGPT-subscription provider** (`chatgpt_oauth`) — run on a ChatGPT Plus/Pro subscription with no API key; see `CHATGPT_OAUTH_PROVIDER.md`.
+- **Rate-limit resilience** (PR #146) — per-provider min-spacing, a 429 circuit breaker honoring Retry-After, and automatic provider fallback via `profiles.<id>.fallback`; see `jigga/runtime/model_throttle.py` and `tools/MODEL_ROUTER_FALLBACKS.md`.
 - Agent task execution now routes through the model router and writes model call artifacts under `runs/agents/...`.
 - `jigga model test <agent_id> --prompt ...` exercises the model boundary.
 

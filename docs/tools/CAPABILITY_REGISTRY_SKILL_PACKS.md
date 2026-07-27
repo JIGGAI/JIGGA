@@ -158,5 +158,4 @@ Apply? [y/N]
 - Implement manifest validation.
 - Add `jigga capabilities list`.
 - Add `jigga capabilities inspect <name>`.
-- Add `jigga capabilities plan <path>`.
-- Add `jigga capabilities apply <path>`.
+- ✅ Shipped as `jigga capabilities validate <path>` (plan/scan) and `jigga capabilities install <name>` / `uninstall` (apply).

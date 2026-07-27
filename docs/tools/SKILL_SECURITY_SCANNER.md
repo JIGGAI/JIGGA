@@ -82,4 +82,4 @@ User enables with explicit permissions
 - Add manifest permission diff.
 - Add symlink detection.
 - Add dangerous command pattern detection.
-- Add `jigga capabilities scan <path>`.
+- ✅ Shipped as `jigga capabilities validate <path>` (scanner runs on validate + install).

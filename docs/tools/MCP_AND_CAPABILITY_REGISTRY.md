@@ -38,9 +38,9 @@ capability:
 ## Install Flow
 
 ```bash
-jigga capability add github_issues.yaml
-jigga capability plan github_issues
-jigga capability apply github_issues
+# (shipped syntax — the group is `capabilities`)
+jigga capabilities validate github_issues.yaml
+jigga capabilities install github_issues
 ```
 
 ## Safety Rules
