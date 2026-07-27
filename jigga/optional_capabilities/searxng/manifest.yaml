@@ -1,0 +1,13 @@
+name: searxng
+version: 0.1.0
+summary: Web search via a SearXNG metasearch instance (self-hosted or public) — no API key.
+type: native
+actions:
+  - web.search
+permissions:
+  network:
+    mode: allow
+risk_level: medium
+# Same handler as the bundled web capability: this pack just selects the
+# provider (web.search_provider: searxng) and records the instance URL.
+handler: runtime.web

@@ -1,0 +1,12 @@
+name: brave-search
+version: 0.1.0
+summary: Web search via the Brave Search API (free tier available; API key stored locally).
+type: native
+actions:
+  - web.search
+permissions:
+  network:
+    mode: allow
+    target: https://api.search.brave.com
+risk_level: medium
+handler: runtime.web

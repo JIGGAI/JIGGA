@@ -32,8 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from jigga.optional_capabilities.brave_search import setup as brave_search_setup
 from jigga.optional_capabilities.email import setup as email_setup
 from jigga.optional_capabilities.gog import setup as gog_setup
+from jigga.optional_capabilities.searxng import setup as searxng_setup
 from jigga.optional_capabilities.google_calendar import (
     setup as google_calendar_setup,
 )
@@ -53,6 +55,18 @@ def _here() -> Path:
 
 
 REGISTRY: dict[str, OptionalCapability] = {
+    "brave-search": OptionalCapability(
+        name="brave-search",
+        summary="Web search via the Brave Search API (API key, free tier)",
+        manifest_path=_here() / "brave_search" / "manifest.yaml",
+        setup_fn=brave_search_setup,
+    ),
+    "searxng": OptionalCapability(
+        name="searxng",
+        summary="Web search via a SearXNG metasearch instance (no API key)",
+        manifest_path=_here() / "searxng" / "manifest.yaml",
+        setup_fn=searxng_setup,
+    ),
     "email-imap": OptionalCapability(
         name="email-imap",
         summary="Provider-agnostic email — IMAP search/read, local drafts, SMTP send",

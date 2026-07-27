@@ -117,15 +117,15 @@ def test_confirm_survives_focus_escape_noise(monkeypatch):
 
 
 def test_onboard_interactive_start_now_installs(tmp_path: Path, monkeypatch, _no_real_service) -> None:
-    # 7 setup blanks, model "n", channel "n", start-now "y"
-    answers = iter(["", "", "", "", "", "", "", "n", "n", "y"])
+    # 7 setup blanks, model "n", channel "n", search "n", start-now "y"
+    answers = iter(["", "", "", "", "", "", "", "n", "n", "n", "y"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
     assert main(["--home", str(tmp_path), "onboard"]) == 0
     assert len(_no_real_service) == 1  # service installed on "y"
 
 
 def test_onboard_interactive_decline_start_now(tmp_path: Path, monkeypatch, _no_real_service) -> None:
-    answers = iter(["", "", "", "", "", "", "", "n", "n", "n"])
+    answers = iter(["", "", "", "", "", "", "", "n", "n", "n", "n"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(answers, ""))
     assert main(["--home", str(tmp_path), "onboard"]) == 0
     assert _no_real_service == []  # declined -> not installed

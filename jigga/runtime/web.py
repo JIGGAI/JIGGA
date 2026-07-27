@@ -146,18 +146,48 @@ def _clean_result_url(href: str) -> str:
     return href
 
 
-def search(home: Path, query: str, *, max_results: int = 8) -> dict[str, Any]:
-    """Keyword web search via the DuckDuckGo lite HTML endpoint (no API key,
-    stdlib-only). The endpoint's markup is unofficial — parsing is best-effort
-    and returns an explicit note when it yields nothing rather than guessing."""
-    if not query or not query.strip():
-        raise ValueError("web.search requires a query")
-    url = f"https://{_SEARCH_HOST}/html/?q={urllib.parse.quote_plus(query.strip())}"
+def _web_config(home: Path) -> dict[str, Any]:
+    return load_runtime_config(home).get("web") or {}
+
+
+def search_provider(home: Path) -> str:
+    """`web.search_provider` config: ddg_html (zero-config default), searxng
+    (self-hosted/public instance, no key), or brave (API key). Installed via
+    `jigga capabilities install searxng | brave-search` (#158)."""
+    return str(_web_config(home).get("search_provider") or "ddg_html")
+
+
+def search_host(home: Path) -> str:
+    """The host `web.search` will egress to — what the handler's per-agent
+    network-policy check evaluates."""
+    provider = search_provider(home)
+    if provider == "searxng":
+        return urllib.parse.urlparse(str(_web_config(home).get("search_url") or "")).hostname or ""
+    if provider == "brave":
+        return "api.search.brave.com"
+    return _SEARCH_HOST
+
+
+def brave_key_path(home: Path) -> Path:
+    return Path(home) / "secrets" / "brave_api_key"
+
+
+def _payload(provider: str, query: str, results: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"source": "capability.web", "provider": provider,
+                               "query": query, "results": results, **extra}
+    if not results and "error" not in payload:
+        payload["note"] = ("No results parsed — the search endpoint may have changed markup, "
+                           "be unavailable, or be bot-blocking this host. Try web.fetch on a "
+                           "known URL instead.")
+    return payload
+
+
+def _search_ddg(query: str, max_results: int) -> dict[str, Any]:
+    url = f"https://{_SEARCH_HOST}/html/?q={urllib.parse.quote_plus(query)}"
     try:
         _status, _ctype, body = _get(url)
     except urllib.error.HTTPError as exc:
-        return {"source": "capability.web", "query": query, "results": [],
-                "error": f"search endpoint returned HTTP {exc.code}"}
+        return _payload("ddg_html", query, [], error=f"search endpoint returned HTTP {exc.code}")
     links = _RESULT_LINK.findall(body)
     snippets = [_TAGS.sub("", s).strip() for s in _RESULT_SNIPPET.findall(body)]
     results = []
@@ -167,11 +197,65 @@ def search(home: Path, query: str, *, max_results: int = 8) -> dict[str, Any]:
             "url": _clean_result_url(href),
             "snippet": snippets[index] if index < len(snippets) else "",
         })
-    payload: dict[str, Any] = {"source": "capability.web", "query": query, "results": results}
-    if not results:
-        payload["note"] = ("No results parsed — the search endpoint may have changed markup "
-                           "or be unavailable. Try web.fetch on a known URL instead.")
-    return payload
+    return _payload("ddg_html", query, results)
+
+
+def _search_searxng(home: Path, query: str, max_results: int) -> dict[str, Any]:
+    base = str(_web_config(home).get("search_url") or "").rstrip("/")
+    if not base:
+        raise ValueError("searxng provider needs web.search_url — re-run: "
+                         "jigga capabilities install searxng")
+    url = f"{base}/search?q={urllib.parse.quote_plus(query)}&format=json"
+    try:
+        _status, _ctype, body = _get(url)
+        data = json.loads(body)
+    except urllib.error.HTTPError as exc:
+        return _payload("searxng", query, [], error=f"searxng instance returned HTTP {exc.code}")
+    except ValueError:
+        return _payload("searxng", query, [],
+                        error="searxng instance returned non-JSON (is format=json enabled "
+                              "in its settings.yml `search.formats`?)")
+    results = [{"title": str(r.get("title", "")), "url": str(r.get("url", "")),
+                "snippet": str(r.get("content", ""))}
+               for r in (data.get("results") or [])[:max_results]]
+    return _payload("searxng", query, results)
+
+
+def _search_brave(home: Path, query: str, max_results: int) -> dict[str, Any]:
+    key_path = brave_key_path(home)
+    if not key_path.exists():
+        raise ValueError("Brave provider needs an API key — run: "
+                         "jigga capabilities install brave-search")
+    key = key_path.read_text(encoding="utf-8").strip()
+    url = (f"https://api.search.brave.com/res/v1/web/search"
+           f"?q={urllib.parse.quote_plus(query)}&count={max_results}")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": _USER_AGENT, "Accept": "application/json", "X-Subscription-Token": key})
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:  # noqa: S310 — fixed https host
+            data = json.loads(response.read(_MAX_DOWNLOAD_BYTES).decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        hint = " (invalid API key?)" if exc.code in (401, 403) else ""
+        return _payload("brave", query, [], error=f"Brave API returned HTTP {exc.code}{hint}")
+    results = [{"title": str(r.get("title", "")), "url": str(r.get("url", "")),
+                "snippet": _TAGS.sub("", str(r.get("description", "")))}
+               for r in ((data.get("web") or {}).get("results") or [])[:max_results]]
+    return _payload("brave", query, results)
+
+
+def search(home: Path, query: str, *, max_results: int = 8) -> dict[str, Any]:
+    """Keyword web search via the configured provider (`web.search_provider`).
+    All providers return the same shape and degrade with an explicit
+    error/note — never fabricated results."""
+    if not query or not query.strip():
+        raise ValueError("web.search requires a query")
+    query = query.strip()
+    provider = search_provider(home)
+    if provider == "searxng":
+        return _search_searxng(home, query, max_results)
+    if provider == "brave":
+        return _search_brave(home, query, max_results)
+    return _search_ddg(query, max_results)
 
 
 def web_handler(step, capability, resolved_input, _memory_context, runtime) -> Any:
@@ -194,7 +278,7 @@ def web_handler(step, capability, resolved_input, _memory_context, runtime) -> A
         return fetch(runtime.home, url, max_chars=max_chars)
     if step.action == "web.search":
         if runtime.agent is not None:
-            decision = evaluate_network(runtime.agent, _SEARCH_HOST)
+            decision = evaluate_network(runtime.agent, search_host(runtime.home))
             if decision.status != "allow":
                 raise PermissionError(decision.reason or "Network egress denied by agent policy.")
         return search(runtime.home, str(data.get("query") or ""),
