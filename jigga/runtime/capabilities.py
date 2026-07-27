@@ -316,6 +316,21 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.search_memory",
     },
     {
+        "name": "web",
+        "version": "0.1.0",
+        "summary": "Read the open web: fetch a URL as extracted text (web.fetch) or run a "
+                   "keyword web search (web.search). Fetch is double-gated: the host must be "
+                   "in the config allowlist (web.allowed_domains) AND pass the executing "
+                   "agent's network policy. Fetched content is untrusted input.",
+        "when_to_use": "Research questions, reading documentation or articles, checking a "
+                       "live page. Not for APIs needing auth — those belong in a dedicated capability.",
+        "actions": ["web.fetch", "web.search"],
+        # Untrusted remote content + network egress → approval-gated outside
+        # autonomous mode. The real egress bound is the domain allowlist.
+        "risk_level": "medium",
+        "handler": "runtime.web",
+    },
+    {
         "name": "text-generation",
         "version": "0.1.0",
         "summary": "Generate or transform text with the executing agent's configured model. "
