@@ -110,6 +110,32 @@ class WorkflowStep:
         return asdict(self)
 
 
+WorkflowNodeType = Literal["tool", "llm", "human_approval", "writeback"]
+
+
+@dataclass
+class WorkflowNode:
+    """A v2 (DAG) workflow node. `tool` calls a capability action like a v1
+    step; `llm` is sugar for `draft_with_model`; `human_approval` parks the run
+    until `approve <code>`; `writeback` copies a named upstream output to a
+    workspace file. Edges (on the workflow) decide what runs after it."""
+
+    id: str
+    type: str = "tool"
+    action: str | None = None
+    agent: str | None = None
+    input: dict[str, Any] = field(default_factory=dict)
+    output: str | None = None
+    optional: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WorkflowNode":
+        return cls(**_filter(cls, data))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass
 class WorkflowConfig:
     id: str
@@ -119,6 +145,11 @@ class WorkflowConfig:
     trigger: dict[str, Any] = field(default_factory=dict)
     inputs: dict[str, Any] = field(default_factory=dict)
     steps: list[WorkflowStep] = field(default_factory=list)
+    # v2 DAG form: nodes + edges. `edges` stays raw dicts ({from, to, on}) —
+    # `from` is a Python keyword, and the engine normalizes/validates them.
+    # A workflow declares either `steps` (linear v1) or `nodes` (DAG v2).
+    nodes: list[WorkflowNode] = field(default_factory=list)
+    edges: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     memory: dict[str, Any] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
@@ -128,6 +159,7 @@ class WorkflowConfig:
     def from_dict(cls, data: dict[str, Any], source: str | None = None) -> "WorkflowConfig":
         prepared = dict(data)
         prepared["steps"] = [WorkflowStep.from_dict(step) for step in prepared.get("steps", [])]
+        prepared["nodes"] = [WorkflowNode.from_dict(node) for node in prepared.get("nodes", [])]
         obj = cls(**_filter(cls, prepared))
         obj.source = source
         return obj

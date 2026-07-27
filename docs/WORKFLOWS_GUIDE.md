@@ -140,11 +140,24 @@ supervisor now runs it for you.
 
 ---
 
-## 6. Command reference
+## 6. DAG workflows (engine v2)
+
+Declare `nodes` + `edges` instead of `steps` and the workflow becomes a graph:
+branch on `on: success|error|always` edges, park at a `human_approval` node
+until you reply `approve <code>` on your channel, and every run persists per-
+node state under `~/.jigga/runs/workflows/…` so it resumes across restarts —
+the supervisor advances parked runs on its heartbeat. Node types: `tool`,
+`llm`, `human_approval`, `writeback`. See
+[`WORKFLOW_ENGINE_V2_RUNTIME_NOTES.md`](WORKFLOW_ENGINE_V2_RUNTIME_NOTES.md)
+for authoring details and semantics.
+
+## 7. Command reference
 
 ```bash
 jigga workflow plan <id>                     # review steps + per-step policy
 jigga workflow run  <id> [--json]            # execute now
+jigga workflow runs [--active] [<id>]        # v2 runs + node-state counts
+jigga workflow resume <run-id>               # advance a parked v2 run now
 jigga workflow suggest [--min-count N]       # inferred workflow proposals
 jigga workflow apply <suggestion-id> [--approve]   # materialize a proposal
 ```

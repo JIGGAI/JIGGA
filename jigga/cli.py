@@ -446,6 +446,13 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_apply = workflow_sub.add_parser("apply")
     workflow_apply.add_argument("suggestion_id")
     workflow_apply.add_argument("--approve", action="store_true")
+    workflow_runs = workflow_sub.add_parser("runs", help="List v2 (DAG) workflow runs and their node states")
+    workflow_runs.add_argument("workflow_id", nargs="?")
+    workflow_runs.add_argument("--active", action="store_true", help="Only running / awaiting-approval runs")
+    workflow_runs.add_argument("--json", action="store_true", dest="json_output")
+    workflow_resume = workflow_sub.add_parser(
+        "resume", help="Advance a v2 run now (e.g. right after `jigga approvals approve <code>`)")
+    workflow_resume.add_argument("run_id")
 
     plan = sub.add_parser("plan", help="Plan runtime config changes")
     plan.add_argument("--json", action="store_true", dest="json_output")
@@ -1481,9 +1488,12 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
             print(f"Workflow: {workflow.id} — {workflow.name}")
             print(f"Status: {workflow.status}")
             print(f"Permissions: {', '.join(plan['permissions']) if plan['permissions'] else 'none declared'}")
-            for step in plan["steps"]:
-                reason = f": {step['policy']['reason']}" if step["policy"].get("reason") else ""
-                print(f"- {step['id']}: {step['action']} [{step['policy']['status']}{reason}]")
+            for item in plan.get("steps") or plan.get("nodes") or []:
+                reason = f": {item['policy']['reason']}" if item["policy"].get("reason") else ""
+                label = item.get("action") or item.get("type")
+                print(f"- {item['id']}: {label} [{item['policy']['status']}{reason}]")
+            for problem in plan.get("problems") or []:
+                print(f"! {problem}")
             print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
     elif args.workflow_command == "run":
         print_json(
@@ -1513,6 +1523,28 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
 
         print_json(apply_suggestion(paths.workflows, args.suggestion_id, paths.logs,
                                     approve=args.approve, orchestrator=resolve_default_agent(paths.agents)))
+    elif args.workflow_command == "runs":
+        from jigga.runtime.workflow_engine import list_runs
+
+        records = list_runs(paths, args.workflow_id, active_only=args.active)
+        if args.json_output:
+            print_json(records)
+        else:
+            from collections import Counter
+
+            for record in records:
+                counts = Counter(v["status"] for v in record.get("nodes", {}).values())
+                summary = ", ".join(f"{status}={n}" for status, n in sorted(counts.items()))
+                print(f"- {record['id']}  {record['workflow_id']}  [{record['status']}]  {summary}")
+            if not records:
+                print("No v2 workflow runs.")
+    elif args.workflow_command == "resume":
+        from jigga.runtime.workflow_engine import advance_run, load_run
+
+        record = load_run(paths, args.run_id)
+        if record is None:
+            raise ValueError(f"Run not found: {args.run_id}")
+        print_json(advance_run(paths, record))
     return 0
 
 
