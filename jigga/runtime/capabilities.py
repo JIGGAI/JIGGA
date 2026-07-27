@@ -331,6 +331,25 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.web",
     },
     {
+        "name": "shell",
+        "version": "0.1.0",
+        "summary": "Run a command as an argv list through the policy-gated safe-process "
+                   "runner (never a shell: no pipes/redirection/expansion). The agent's own "
+                   "shell policy (deny by default, restricted allowlist, dangerous-pattern "
+                   "block) and a cwd execute check are enforced on every call; full "
+                   "stdout/stderr are saved as run artifacts.",
+        "when_to_use": "Running a local program or script the user asked for — builds, "
+                       "git status, converters. Prefer a dedicated capability when one exists "
+                       "(filesystem.*, web.*).",
+        "actions": ["shell.run"],
+        # Arbitrary process execution is the highest blast radius we ship —
+        # approval-gated outside autonomous mode AND still subject to the
+        # per-agent shell policy inside the runner (approval never overrides
+        # a policy deny).
+        "risk_level": "high",
+        "handler": "runtime.shell",
+    },
+    {
         "name": "text-generation",
         "version": "0.1.0",
         "summary": "Generate or transform text with the executing agent's configured model. "
