@@ -132,6 +132,18 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     if rotation["rotated"] or rotation["pruned"]:
         append_event(paths.logs, "logs.rotated", archived=rotation["rotated"],
                      pruned=rotation["pruned"])
+    # Crash recovery: tasks stuck claimed/running and v2 nodes stuck running
+    # past the staleness threshold are marked failed (visible, never silently
+    # retried). Age-filtered → idempotent every tick; contained so a corrupt
+    # record can't break the tick.
+    try:
+        from jigga.runtime.recovery import sweep_stale
+
+        recovered = sweep_stale(paths)
+        if recovered["tasks"] or recovered["nodes"]:
+            append_event(paths.logs, "recovery.swept", **recovered)
+    except Exception as exc:  # noqa: BLE001 — recovery must not break the tick it exists to protect
+        append_event(paths.logs, "recovery.sweep_error", status="error", error=str(exc))
     # Compact memory at most once/day (D3) so it stays bounded — archive old raw
     # entries, stale team facts, and finished tasks. Contained so a fault can't
     # break the tick.
