@@ -47,7 +47,6 @@ so workflows handling Telegram / Slack / iMessage look the same:
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_runtime_config
-from jigga.core.io import ensure_dir, read_json, write_json
+from jigga.core.io import read_json, write_json
 from jigga.core.models import WorkflowStep
 from jigga.runtime.capabilities import CapabilityManifest
 
@@ -74,21 +73,17 @@ def bot_token_path(secrets_dir: Path) -> Path:
 
 
 def store_bot_token(secrets_dir: Path, token: str) -> Path:
-    ensure_dir(secrets_dir)
-    path = bot_token_path(secrets_dir)
-    path.write_text(token.strip(), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except (OSError, NotImplementedError):
-        pass
-    return path
+    # E1a: routed through the secrets broker (same on-disk file; one chokepoint).
+    from jigga.runtime.secrets_broker import set_secret
+
+    return Path(set_secret(Path(secrets_dir).parent, BOT_TOKEN_FILENAME, token.strip()))
 
 
 def load_bot_token(secrets_dir: Path) -> str | None:
-    path = bot_token_path(secrets_dir)
-    if not path.exists():
-        return None
-    return path.read_text(encoding="utf-8").strip() or None
+    from jigga.runtime.secrets_broker import get_secret
+
+    value = get_secret(Path(secrets_dir).parent, BOT_TOKEN_FILENAME)
+    return value.strip() if value else None
 
 
 def _channels_dir(home: Path) -> Path:

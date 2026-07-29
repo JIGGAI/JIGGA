@@ -45,20 +45,25 @@ def secrets_path(home: Path) -> Path:
 
 
 def store_credentials(home: Path, creds: dict[str, Any]) -> Path:
-    path = secrets_path(home)
-    ensure_dir(path.parent)
-    write_json(path, creds)
-    path.chmod(0o600)
-    return path
+    # E1a: routed through the secrets broker (same on-disk file; one chokepoint).
+    import json
+
+    from jigga.runtime.secrets_broker import set_secret
+
+    return Path(set_secret(home, _SECRETS_FILE, json.dumps(creds, indent=1)))
 
 
 def load_credentials(home: Path) -> dict[str, Any]:
-    path = secrets_path(home)
-    if not path.exists():
+    import json
+
+    from jigga.runtime.secrets_broker import get_secret
+
+    value = get_secret(home, _SECRETS_FILE)
+    if value is None:
         raise ValueError(
             "Email is not connected. Run: jigga capabilities install email-imap"
         )
-    return read_json(path)
+    return json.loads(value)
 
 
 def _imap_connect(creds: dict[str, Any]) -> imaplib.IMAP4:

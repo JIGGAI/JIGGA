@@ -222,11 +222,12 @@ def _search_searxng(home: Path, query: str, max_results: int) -> dict[str, Any]:
 
 
 def _search_brave(home: Path, query: str, max_results: int) -> dict[str, Any]:
-    key_path = brave_key_path(home)
-    if not key_path.exists():
+    from jigga.runtime.secrets_broker import get_secret
+
+    key = (get_secret(home, "brave_api_key") or "").strip()
+    if not key:
         raise ValueError("Brave provider needs an API key — run: "
                          "jigga capabilities install brave-search")
-    key = key_path.read_text(encoding="utf-8").strip()
     url = (f"https://api.search.brave.com/res/v1/web/search"
            f"?q={urllib.parse.quote_plus(query)}&count={max_results}")
     request = urllib.request.Request(url, headers={
