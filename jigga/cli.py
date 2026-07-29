@@ -402,6 +402,12 @@ def build_parser() -> argparse.ArgumentParser:
         "migrate", help="Encrypt all plaintext secrets at rest (needs JIGGA_SECRETS_PASSPHRASE)")
     secrets_migrate.add_argument("--to", choices=["encrypted-file"], required=True)
 
+    telemetry_p = sub.add_parser("telemetry", help="Opt-in anonymous telemetry (default off; `report` shows the exact payload)")
+    telemetry_sub = telemetry_p.add_subparsers(dest="telemetry_command", required=True)
+    for verb, h in (("on", "Enable"), ("off", "Disable"), ("status", "Enabled? last sent?"),
+                    ("report", "Print the EXACT payload a send would transmit")):
+        telemetry_sub.add_parser(verb, help=h)
+
     backup = sub.add_parser("backup", help="Back up / restore the runtime home (~/.jigga)")
     backup_sub = backup.add_subparsers(dest="backup_command", required=True)
     backup_create = backup_sub.add_parser(
@@ -2925,6 +2931,25 @@ def _cmd_secrets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_telemetry(args: argparse.Namespace) -> int:
+    from jigga.runtime import telemetry
+
+    paths = get_paths(args.home)
+    if args.telemetry_command == "on":
+        telemetry.set_enabled(paths.home, True)
+        print("Telemetry ON. See exactly what gets sent: jigga telemetry report")
+    elif args.telemetry_command == "off":
+        telemetry.set_enabled(paths.home, False)
+        print("Telemetry OFF.")
+    elif args.telemetry_command == "status":
+        print_json({"enabled": telemetry.enabled(paths.home),
+                    "last_sent_at": telemetry._state(paths.home).get("last_sent_at"),
+                    "endpoint": telemetry._config(paths.home).get("endpoint") or telemetry.DEFAULT_ENDPOINT})
+    elif args.telemetry_command == "report":
+        print_json(telemetry.build_payload(paths.home))
+    return 0
+
+
 def _cmd_backup(args: argparse.Namespace) -> int:
     from pathlib import Path as _Path
 
@@ -2946,6 +2971,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
     "skills": _cmd_skills,
     "secrets": _cmd_secrets,
+    "telemetry": _cmd_telemetry,
     "backup": _cmd_backup,
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,
