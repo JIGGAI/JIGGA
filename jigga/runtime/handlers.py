@@ -638,6 +638,16 @@ def _mcp_server_handler(
         if isinstance(resolved_input, dict)
         else {"input": resolved_input}
     )
+    # E3a: an MCP server's egress is bounded to its manifest's declared
+    # network allowlist via the per-invocation proxy. A manifest with no
+    # network block gets zero egress hosts (deny-all proxy); one declaring
+    # broad access must say so explicitly (allow: ["*"]), which the approval
+    # flow surfaces to the user.
+    net = (capability.permissions or {}).get("network")
+    if isinstance(net, dict):
+        egress = [str(t) for t in (net.get("allow") or ([net["target"]] if net.get("target") else []))]
+    else:
+        egress = []
     spec = SandboxSpec(
         command=capability.command,
         args=list(capability.args),
@@ -648,6 +658,9 @@ def _mcp_server_handler(
             if isinstance(capability.requires, dict)
             else 30
         ),
+        egress_allow=egress,
+        logs_dir=runtime.logs_dir,
+        label=f"mcp:{capability.name}",
     )
     result = call_mcp_tool(spec, tool_name=step.action, arguments=arguments)
     return {
