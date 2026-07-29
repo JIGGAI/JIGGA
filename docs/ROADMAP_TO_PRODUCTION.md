@@ -4,16 +4,20 @@ Snapshot of where we are, what's specced-but-unbuilt, what's missing for product
 
 Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 passing tests, ~4,300 LOC implementation).
 
-> **Status as of 2026-07-27** (905 tests on main; ~20k LOC): Milestones A (minus
-> provider-agnostic email), B, C, D, and the Teams & Workspaces workstream
-> (including W3 ticket lanes, PR #136) are **done**. Much of Milestone F shipped
-> too: PyPI packaging (#145), service autostart + stop/start + `--system`
-> (#73/#143/#144), `jigga update` (#103), `jigga doctor` + `--fix` (#75/#142),
-> and the jiggaview dashboard runs as a plugin. Workflow engine v2 (DAG +
-> resumable runs + approval nodes) is PR #149. **Open:** Milestone E (isolation,
-> secrets broker, egress) in full, provider-agnostic email, more channels
-> (Slack/Discord/webhook/iMessage), marketplace UX, encrypted backup, telemetry,
-> crash-recovery sweep, W7, media nodes (#150), event triggers (#151).
+> **Status as of 2026-07-29** (963 tests on main; ~21k LOC): Milestones A
+> (**complete** — provider-agnostic email shipped as `email-imap`, #155), B, C,
+> D, and Teams & Workspaces (including W3 ticket lanes, #136) are **done**.
+> Workflow engine v2 (DAG + resumable runs + approval nodes) **merged** (#149).
+> The 2026-07-27 capability wave also shipped: **skills as a top-level feature**
+> (trigger injection + `jigga skills`, #153), **web.fetch/web.search** with
+> pluggable providers (DDG/SearXNG/Brave packs, #154/#159), **shell.run** over
+> the safe-process runner (#156), and **one-shot reminders** (#157). Much of
+> Milestone F is in: PyPI (#145), service autostart/stop/start/`--system`
+> (#73/#143/#144), `jigga update` (#103), `doctor --fix` (#75/#142), jiggaview
+> as a plugin. **Open:** Milestone E (isolation, secrets broker, OS-level
+> egress) in full; from the production-needs list: backup/restore, telemetry,
+> crash-recovery sweep; more channels (Slack/Discord/webhook/iMessage);
+> marketplace UX; W7 (#63); media nodes (#150); event triggers (#151).
 > Line-items below are kept as written; trust this banner and the ✅ marks where
 > they disagree.
 
@@ -64,11 +68,12 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 
 | Domain | Has | Missing |
 |---|---|---|
-| Email/Calendar | dry-run stubs in `dispatcher.py` handlers | Real Google/iCloud/IMAP/SMTP adapters as capabilities; OAuth flow; drafts-before-send; meeting-prep watcher |
+| Email/Calendar | ✅ Google (OAuth + gog) and ✅ provider-agnostic IMAP/SMTP (`email-imap`, #155) with drafts-before-send | iCloud/iCal read; Outlook/Graph; meeting-prep watcher |
 | Notifications | dry-run stub | Real adapter: desktop (`notify-send`/`osascript`/`Windows toast`), urgency routing, quiet hours, digest |
 | Filesystem capabilities | `core/io` reads/writes; no capability handlers | `read_file`/`write_file`/`apply_patch`/`search_files` as native capabilities the dispatcher can route to |
 | Browser automation | not started | Headless + `isolated`/`user_readonly`/`user_interactive` profiles, domain allowlist, screenshot/extract |
-| Safe shell runner | `jigga/tools/safe_process.py` exists in MVP shape | Actually wired into capability dispatch; pty support; background execution sessions |
+| Safe shell runner | ✅ wired into dispatch as `shell.run` (#156): argv-only, high-risk gated, policy floor | pty support; background execution sessions |
+| Web read/search | ✅ `web.fetch` + `web.search` (#154), pluggable search providers incl. self-hosted SearXNG + Brave (#159) | browser automation stays behind Milestone E |
 
 ### Channels (how users actually talk to JIGGA)
 
@@ -155,7 +160,7 @@ Each milestone is sized "weeks not months" — assuming the same scope disciplin
 - ✅ **Project-local capability discovery** (PR #10) — `<project>/.jigga/capabilities/` with auto-detect from cwd.
 - ✅ **Google Calendar via OAuth** (PR #11) — first opt-in first-party capability; also introduced the **three-tier capability model** (bundled / opt-in first-party / user-or-project-local).
 - ✅ **Google Workspace via `gog`** (`runtime/gog.py`, `optional_capabilities/gog/`) — opt-in first-party capability wrapping the `gog` CLI: **Gmail** (`gmail_search`/`get`/`draft`/`send` — send gated), Calendar, Drive, Sheets, Docs. Keyring-backed; auth via `jigga gog login --services gmail,calendar,…`. **This covers email for Gmail/Google Workspace users** (the roadmap's "email connector" line predated it).
-- ⏭️ **Provider-agnostic email** (native IMAP read + SMTP draft/send) — for users not on Google. Opt-in first-party (`jigga capabilities install email`). The remaining email gap.
+- ✅ **Provider-agnostic email** (#155) — `email-imap` opt-in pack: IMAP search/read, file-first local drafts, SMTP send (approval-gated), setup wizard with app-password guidance. Milestone A is complete.
 - ⏭️ **iCal stopgap** — covers Apple/iCloud users and public calendar feeds. Opt-in first-party — no OAuth, just an iCal URL.
 - ⏭️ **Outlook Calendar / Microsoft 365** (later) — same opt-in pattern, Microsoft Graph instead of Google.
 
@@ -286,9 +291,9 @@ These choices will compound through the milestones; worth deciding before A.
 
 ---
 
-## Recommended next concrete work (updated 2026-07-27)
+## Recommended next concrete work (updated 2026-07-29)
 
-Milestones A–D, Teams & Workspaces (minus W7), and most of F are done; workflow engine v2 is PR #149. The biggest remaining lift to v1.0 is **Milestone E (real isolation)** — OS sandbox backend, secrets broker, per-capability egress. Smaller open threads, roughly by value: provider-agnostic email (the last Milestone A gap), workflow media nodes (#150) and event triggers (#151), W7 self-directed protocol boot (#63), the remaining Milestone F items (marketplace UX, encrypted backup, crash-recovery sweep, telemetry), and additional channels (Slack when an app exists; webhook).
+Milestones A–D, Teams & Workspaces (minus W7), workflow engine v2, and most of F are done. The biggest remaining lift to v1.0 is **Milestone E (real isolation)** — OS sandbox backend, secrets broker, per-capability egress. Working down the production-needs list above, the buildable-now items in value order: **crash-recovery sweep** (item 8 — small, closes a real half-state hole), **`jigga backup create/restore`** (item 4), then Milestone E proper (items 2+3). Smaller open threads: `jigga agents tools <id>` (effective-toolset inspection), media nodes (#150), event triggers (#151), W7 (#63), marketplace UX, telemetry (item 6), additional channels (Slack when an app exists; webhook).
 
 ---
 
