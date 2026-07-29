@@ -197,6 +197,16 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
             append_event(paths.logs, "reminders.swept", fired=[r["id"] for r in fired])
     except Exception as exc:  # noqa: BLE001 — reminder sweep must not break the tick
         append_event(paths.logs, "reminder.sweep_error", status="error", error=str(exc))
+    # Opt-in telemetry (default off): at most one anonymized-counts payload per
+    # day. Contained — an unreachable endpoint must not break the tick.
+    try:
+        from jigga.runtime.telemetry import maybe_send
+
+        sent = maybe_send(paths.home)
+        if sent:
+            append_event(paths.logs, "telemetry.sent", endpoint=sent["endpoint"])
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break the tick
+        append_event(paths.logs, "telemetry.send_error", status="error", error=str(exc)[:200])
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)
