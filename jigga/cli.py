@@ -398,6 +398,9 @@ def build_parser() -> argparse.ArgumentParser:
     secrets_sub.add_parser("list", help="List secret NAMES (never values)")
     secrets_delete = secrets_sub.add_parser("delete", help="Delete a secret")
     secrets_delete.add_argument("name")
+    secrets_migrate = secrets_sub.add_parser(
+        "migrate", help="Encrypt all plaintext secrets at rest (needs JIGGA_SECRETS_PASSPHRASE)")
+    secrets_migrate.add_argument("--to", choices=["encrypted-file"], required=True)
 
     backup = sub.add_parser("backup", help="Back up / restore the runtime home (~/.jigga)")
     backup_sub = backup.add_subparsers(dest="backup_command", required=True)
@@ -2913,6 +2916,12 @@ def _cmd_secrets(args: argparse.Namespace) -> int:
             print(f"- {name}")
     elif args.secrets_command == "delete":
         print("Deleted." if delete_secret(paths.home, args.name) else "Not found.")
+    elif args.secrets_command == "migrate":
+        from jigga.runtime.secrets_broker import migrate_to_encrypted
+
+        migrated = migrate_to_encrypted(paths.home)
+        print(f"Encrypted {len(migrated)} secret(s); backend set to encrypted-file. "
+              "Set JIGGA_SECRETS_PASSPHRASE in the service unit before restarting the supervisor.")
     return 0
 
 
