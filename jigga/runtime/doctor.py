@@ -187,6 +187,37 @@ def _check_secrets(paths: JiggaPaths) -> Check:
     return Check("secrets", OK, f"Secrets backend: {backend} ({count} stored)")
 
 
+def _check_egress(paths: JiggaPaths) -> Check:
+    """E3b: observed-vs-declared — blocked egress attempts mean a capability
+    tried to reach hosts outside its manifest's allowlist. That's either a
+    missing declaration (fix the manifest) or the exact behavior the proxy
+    exists to stop; both deserve eyes."""
+    import json as _json
+
+    log = paths.logs / "events.jsonl"
+    if not log.exists():
+        return Check("egress", OK, "No egress activity recorded")
+    blocked: dict[str, set[str]] = {}
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()[-5000:]
+    except OSError:
+        return Check("egress", OK, "No egress activity recorded")
+    for line in lines:
+        try:
+            event = _json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") == "egress.blocked":
+            details = event.get("details") or {}
+            blocked.setdefault(str(details.get("label")), set()).add(str(details.get("host")))
+    if not blocked:
+        return Check("egress", OK, "No blocked egress attempts in the recent audit log")
+    summary = "; ".join(f"{label} → {', '.join(sorted(hosts))}" for label, hosts in sorted(blocked.items()))
+    return Check("egress", WARN, f"Blocked egress attempts (observed vs declared): {summary}",
+                 hint="If legitimate, add the host to that capability's permissions.network.allow; "
+                      "otherwise the capability is trying to reach hosts it never declared.")
+
+
 def _check_backends() -> Check:
     from jigga.runtime.auth import auth_status
 
@@ -280,5 +311,6 @@ def run_checks(paths: JiggaPaths) -> Report:
         report.checks.append(_check_channels(paths))
         report.checks.append(_check_service(paths))
         report.checks.append(_check_secrets(paths))
+        report.checks.append(_check_egress(paths))
     report.checks.append(_check_backends())
     return report

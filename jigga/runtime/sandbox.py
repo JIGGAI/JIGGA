@@ -84,6 +84,13 @@ class SandboxSpec:
     network: bool = True
     # Escape hatch surfaced (and warned about) by the capability scanner.
     sandbox: bool = True
+    # E3a: when set (and network is True), a per-invocation localhost proxy is
+    # started and HTTP(S)_PROXY injected — the subprocess can only reach these
+    # hosts over HTTP(S). None = no proxy (unrestricted within the backend's
+    # network namespace). `logs_dir`/`label` feed the egress audit events.
+    egress_allow: list[str] | None = None
+    logs_dir: Path | None = None
+    label: str | None = None
     # Explicit env key=value pairs injected into the subprocess, merged OVER
     # the allowlisted env. Unlike `secrets_required` (which only passes through
     # values already in os.environ), `extra_env` lets a caller supply a value
@@ -178,16 +185,30 @@ def run_sandboxed(
     decide how to surface the failure.
     """
     env = build_restricted_env(spec.secrets_required, spec.extra_env)
+    proxy = None
+    if spec.network and spec.egress_allow is not None:
+        from jigga.runtime.egress_proxy import EgressProxy
+
+        proxy = EgressProxy(spec.egress_allow, logs_dir=spec.logs_dir, label=spec.label)
+        port = proxy.start()
+        proxy_url = f"http://127.0.0.1:{port}"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            env[key] = proxy_url
+        env["NO_PROXY"] = env["no_proxy"] = "127.0.0.1,localhost"
     argv = [spec.command, *spec.args]
     if spec.sandbox and sandbox_backend(home) == "bwrap":
         argv = bwrap_argv(spec, env) + ["--"] + argv
-    return subprocess.run(
-        argv,
-        input=input,
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=str(spec.cwd),
-        timeout=spec.timeout_seconds,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            argv,
+            input=input,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(spec.cwd),
+            timeout=spec.timeout_seconds,
+            check=False,
+        )
+    finally:
+        if proxy is not None:
+            proxy.stop()
