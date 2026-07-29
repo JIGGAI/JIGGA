@@ -75,6 +75,15 @@ class SandboxSpec:
     cwd: Path = field(default_factory=Path.cwd)
     secrets_required: list[str] = field(default_factory=list)
     timeout_seconds: float = 30.0
+    # E2a (Milestone E): OS-sandbox hints, honored when the bwrap backend is
+    # active. `fs_read`/`fs_write` are extra binds beyond the defaults (system
+    # dirs read-only, cwd read-write, tmpfs /tmp). `network=False` unshares the
+    # network namespace entirely — the strongest egress bound we have.
+    fs_read: list[Path] = field(default_factory=list)
+    fs_write: list[Path] = field(default_factory=list)
+    network: bool = True
+    # Escape hatch surfaced (and warned about) by the capability scanner.
+    sandbox: bool = True
     # Explicit env key=value pairs injected into the subprocess, merged OVER
     # the allowlisted env. Unlike `secrets_required` (which only passes through
     # values already in os.environ), `extra_env` lets a caller supply a value
@@ -103,23 +112,81 @@ def build_restricted_env(
     return env
 
 
+# System paths mounted read-only under bwrap so subprocesses can exec at all.
+_SYSTEM_RO = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt")
+
+
+def sandbox_backend(home: Path | None = None) -> str:
+    """Resolved OS-sandbox backend: `none` (default until E2c flips auto) or
+    `bwrap`. Explicit `bwrap` without the binary is a loud error — a user who
+    turned the sandbox on must never silently run unsandboxed."""
+    import shutil
+
+    from jigga.core.config import load_runtime_config
+    from jigga.core.paths import resolve_home
+
+    config = load_runtime_config(resolve_home(home)).get("sandbox") or {}
+    backend = str(config.get("backend") or "auto")
+    if backend == "auto":
+        return "none"  # E2c flips this to bwrap-when-available after prod soak
+    if backend == "bwrap" and shutil.which("bwrap") is None:
+        raise RuntimeError("sandbox.backend=bwrap but the `bwrap` binary is not installed "
+                           "(apt install bubblewrap), and silently degrading would betray "
+                           "an explicit setting.")
+    return backend
+
+
+def bwrap_argv(spec: SandboxSpec, env: dict[str, str]) -> list[str]:
+    """The bwrap prefix for a spec: deny-by-default filesystem (system dirs
+    ro, cwd rw, declared binds only), cleared env re-set from the restricted
+    dict (kernel-enforced, not dict-filtered), fresh /tmp, optional network
+    unshare, dies with the parent."""
+    argv = ["bwrap", "--die-with-parent", "--clearenv", "--proc", "/proc",
+            "--dev", "/dev", "--tmpfs", "/tmp", "--unshare-pid", "--unshare-ipc"]
+    if not spec.network:
+        argv.append("--unshare-net")
+    for path in _SYSTEM_RO:
+        if Path(path).exists():
+            argv += ["--ro-bind", path, path]
+    for path in spec.fs_read:
+        argv += ["--ro-bind", str(path), str(path)]
+    seen_rw = set()
+    for path in [spec.cwd, *spec.fs_write]:
+        raw = str(path)
+        if raw not in seen_rw:
+            argv += ["--bind", raw, raw]
+            seen_rw.add(raw)
+    for key, value in sorted(env.items()):
+        argv += ["--setenv", key, value]
+    argv += ["--chdir", str(spec.cwd)]
+    return argv
+
+
 def run_sandboxed(
     spec: SandboxSpec,
     *,
     input: str | None = None,
+    home: Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Spawn the subprocess described by `spec` and wait for completion.
 
-    The returned `CompletedProcess` carries `stdout`/`stderr` (text mode) and
-    `returncode`. Raises `subprocess.TimeoutExpired` if the spec's timeout
-    elapses; callers decide how to surface the failure.
+    With `sandbox.backend: bwrap` (and `spec.sandbox` true), the argv is
+    prefixed with a bubblewrap invocation so the env/filesystem/network bounds
+    are kernel-enforced instead of merely dict-filtered. The returned
+    `CompletedProcess` carries `stdout`/`stderr` (text mode) and `returncode`.
+    Raises `subprocess.TimeoutExpired` if the spec's timeout elapses; callers
+    decide how to surface the failure.
     """
+    env = build_restricted_env(spec.secrets_required, spec.extra_env)
+    argv = [spec.command, *spec.args]
+    if spec.sandbox and sandbox_backend(home) == "bwrap":
+        argv = bwrap_argv(spec, env) + ["--"] + argv
     return subprocess.run(
-        [spec.command, *spec.args],
+        argv,
         input=input,
         capture_output=True,
         text=True,
-        env=build_restricted_env(spec.secrets_required, spec.extra_env),
+        env=env,
         cwd=str(spec.cwd),
         timeout=spec.timeout_seconds,
         check=False,
