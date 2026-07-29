@@ -391,6 +391,23 @@ def build_parser() -> argparse.ArgumentParser:
     config_unset.add_argument("key")
     config_unset.add_argument("--json", action="store_true", dest="json_output")
 
+    backup = sub.add_parser("backup", help="Back up / restore the runtime home (~/.jigga)")
+    backup_sub = backup.add_subparsers(dest="backup_command", required=True)
+    backup_create = backup_sub.add_parser(
+        "create", help="Archive the home (secrets excluded by default) to a .tar.gz")
+    backup_create.add_argument("--output", help="Archive path (default: ./jigga-backup-<ts>.tar.gz)")
+    backup_create.add_argument("--include-secrets", action="store_true",
+                               help="Also archive secrets/ (credentials!) — off by default")
+    backup_create.add_argument("--encrypt", choices=["age", "gpg"],
+                               help="Pipe through age/gpg (must be installed; passphrase prompts on the tty)")
+    backup_create.add_argument("--recipient", help="age recipient (with --encrypt age; else passphrase mode)")
+    backup_inspect = backup_sub.add_parser("inspect", help="Show a backup archive's manifest")
+    backup_inspect.add_argument("archive")
+    backup_restore = backup_sub.add_parser("restore", help="Restore an archive into a runtime home")
+    backup_restore.add_argument("archive")
+    backup_restore.add_argument("--force", action="store_true",
+                                help="Non-empty target: move it aside (<home>.pre-restore-<ts>) first")
+
     update_p = sub.add_parser(
         "update", help="Reconcile this runtime with the current code: recipes, config keys, service")
     update_p.add_argument("--apply", action="store_true",
@@ -2871,9 +2888,27 @@ def _cmd_skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_backup(args: argparse.Namespace) -> int:
+    from pathlib import Path as _Path
+
+    from jigga.runtime.backup import create_backup, inspect_backup, restore_backup
+
+    paths = get_paths(args.home)
+    if args.backup_command == "create":
+        print_json(create_backup(paths.home, _Path(args.output) if args.output else None,
+                                 include_secrets=args.include_secrets,
+                                 encrypt=args.encrypt, recipient=args.recipient))
+    elif args.backup_command == "inspect":
+        print_json(inspect_backup(_Path(args.archive)))
+    elif args.backup_command == "restore":
+        print_json(restore_backup(_Path(args.archive), paths.home, force=args.force))
+    return 0
+
+
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
     "skills": _cmd_skills,
+    "backup": _cmd_backup,
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,
     "doctor": _cmd_doctor,
