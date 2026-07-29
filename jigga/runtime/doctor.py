@@ -179,6 +179,14 @@ def _check_channels(paths: JiggaPaths) -> Check:
     return Check("channels", OK, f"Enabled channels: {names} (agent can reply)")
 
 
+def _check_secrets(paths: JiggaPaths) -> Check:
+    from jigga.runtime.secrets_broker import list_secrets, resolved_backend
+
+    backend = resolved_backend(paths.home)
+    count = len(list_secrets(paths.home))
+    return Check("secrets", OK, f"Secrets backend: {backend} ({count} stored)")
+
+
 def _check_backends() -> Check:
     from jigga.runtime.auth import auth_status
 
@@ -271,5 +279,6 @@ def run_checks(paths: JiggaPaths) -> Report:
         report.checks.append(_check_model(paths))
         report.checks.append(_check_channels(paths))
         report.checks.append(_check_service(paths))
+        report.checks.append(_check_secrets(paths))
     report.checks.append(_check_backends())
     return report
