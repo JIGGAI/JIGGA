@@ -156,11 +156,12 @@ def bwrap_argv(spec: SandboxSpec, env: dict[str, str]) -> list[str]:
         if Path(path).exists():
             argv += ["--ro-bind", path, path]
     for path in spec.fs_read:
-        argv += ["--ro-bind", str(path), str(path)]
+        if Path(path).exists():  # bwrap errors on missing bind sources
+            argv += ["--ro-bind", str(path), str(path)]
     seen_rw = set()
     for path in [spec.cwd, *spec.fs_write]:
         raw = str(path)
-        if raw not in seen_rw:
+        if raw not in seen_rw and Path(path).exists():
             argv += ["--bind", raw, raw]
             seen_rw.add(raw)
     for key, value in sorted(env.items()):

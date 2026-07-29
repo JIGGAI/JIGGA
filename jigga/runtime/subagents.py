@@ -310,12 +310,17 @@ def _run_external_cli_adapter(
     pass/fail, stderr is captured in the session log alongside stdout.
     """
     prompt = _build_subagent_prompt(request)
+    # E2c prep: the external CLIs authenticate from their own dotfiles — under
+    # the bwrap backend those must be explicit binds or subagent auth breaks
+    # (deny-by-default filesystem). No-ops (existence-filtered) off-backend.
+    cli_homes = [Path.home() / ".codex", Path.home() / ".claude", Path.home() / ".claude.json"]
     spec = SandboxSpec(
         command=command,
         args=[*args_prefix, prompt],
         cwd=Path(_expanded_cwd(request)),
         secrets_required=_secrets_required(request),
         timeout_seconds=float(max(1, int(request.limits.get("max_runtime_minutes", 20))) * 60),
+        fs_write=cli_homes,
     )
     completed = run_sandboxed(spec)
     log_text = (completed.stdout or "") + ("\nSTDERR:\n" + completed.stderr if completed.stderr else "")

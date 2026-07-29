@@ -151,6 +151,74 @@ def _keychain_delete(name: str) -> bool:
     return subprocess.run(cmd, capture_output=True, check=False).returncode == 0
 
 
+# --- encrypted-file backend (E1d) ------------------------------------------
+# At-rest encryption via the system `openssl` binary (aes-256-cbc + pbkdf2,
+# passphrase from $JIGGA_SECRETS_PASSPHRASE — set it in the service unit).
+# The design doc named `age`, but age refuses non-interactive passphrases (tty
+# only), which a supervisor can't provide; openssl accepts pass via env and is
+# ubiquitous. Same principle holds: no homegrown crypto, shell-out only.
+
+_PASSPHRASE_ENV = "JIGGA_SECRETS_PASSPHRASE"
+_ENC_SUFFIX = ".enc"
+
+
+def _passphrase() -> str:
+    value = os.environ.get(_PASSPHRASE_ENV, "")
+    if not value:
+        raise ValueError(
+            f"secrets.backend=encrypted-file needs {_PASSPHRASE_ENV} in the environment "
+            "(set it in the supervisor service unit, or export it for CLI use).")
+    return value
+
+
+def _openssl(args: list[str], data: bytes) -> bytes:
+    _passphrase()
+    if shutil.which("openssl") is None:
+        raise ValueError("secrets.backend=encrypted-file requires the `openssl` binary.")
+    result = subprocess.run(["openssl", "enc", *args, "-pbkdf2", "-pass", f"env:{_PASSPHRASE_ENV}"],
+                            input=data, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError("openssl failed (wrong passphrase?): "
+                           + result.stderr.decode(errors="replace")[:200])
+    return result.stdout
+
+
+def _enc_get(home: Path, name: str) -> str | None:
+    path = _file_path(home, name + _ENC_SUFFIX)
+    if not path.exists():
+        plain = _file_path(home, name)  # migration fallthrough: pre-E1d secret
+        return plain.read_text(encoding="utf-8") if plain.exists() else None
+    return _openssl(["-d", "-aes-256-cbc"], path.read_bytes()).decode("utf-8")
+
+
+def _enc_set(home: Path, name: str, value: str) -> str:
+    path = _file_path(home, name + _ENC_SUFFIX)
+    ensure_dir(path.parent)
+    path.write_bytes(_openssl(["-aes-256-cbc"], value.encode("utf-8")))
+    path.chmod(0o600)
+    _file_path(home, name).unlink(missing_ok=True)  # never leave a stale plaintext twin
+    return str(path)
+
+
+def migrate_to_encrypted(home: Path) -> list[str]:
+    """Encrypt every plaintext secret in place (plaintext removed after each
+    successful write) and select the backend in config. Idempotent."""
+    from jigga.core.io import read_yaml, write_yaml
+
+    _passphrase()  # fail before touching anything if the passphrase is unset
+    migrated = []
+    secrets_dir = Path(home) / "secrets"
+    for path in sorted(secrets_dir.iterdir()) if secrets_dir.exists() else []:
+        if path.is_file() and not path.name.startswith(".") and not path.name.endswith(_ENC_SUFFIX):
+            _enc_set(home, path.name, path.read_text(encoding="utf-8"))
+            migrated.append(path.name)
+    config_path = Path(home) / "config.yaml"
+    config = read_yaml(config_path) if config_path.exists() else {}
+    config["secrets"] = {**(config.get("secrets") or {}), "backend": "encrypted-file"}
+    write_yaml(config_path, config)
+    return migrated
+
+
 def _validate(name: str) -> str:
     if not name or not _NAME.match(name) or name.startswith("."):
         raise ValueError(f"Invalid secret name: {name!r} (letters, digits, . _ - only)")
@@ -177,6 +245,8 @@ def get_secret(home: Path, name: str) -> str | None:
     backend = _backend(home)
     if backend == "env":
         return os.environ.get(_env_var(name))
+    if backend == "encrypted-file":
+        return _enc_get(Path(home), name)
     if backend == "keychain":
         value = _keychain_get(name)
         if value is not None:
@@ -193,6 +263,8 @@ def set_secret(home: Path, name: str, value: str) -> str:
     backend = _backend(home)
     if backend == "env":
         raise ValueError(f"secrets.backend=env is read-only — export {_env_var(name)} instead.")
+    if backend == "encrypted-file":
+        return _enc_set(Path(home), name, value)
     if backend == "keychain":
         return _keychain_set(name, value)
     path = _file_path(home, name)
@@ -208,6 +280,10 @@ def delete_secret(home: Path, name: str) -> bool:
     if backend == "env":
         raise ValueError("secrets.backend=env is read-only — unset the variable instead.")
     deleted = _keychain_delete(name) if backend == "keychain" else False
+    enc = _file_path(home, name + _ENC_SUFFIX)
+    if enc.exists():
+        enc.unlink()
+        deleted = True
     path = _file_path(home, name)
     if path.exists():
         path.unlink()
@@ -220,5 +296,8 @@ def list_secrets(home: Path) -> list[str]:
     if _backend(home) == "env":
         return sorted(k[len("JIGGA_SECRET_"):].lower() for k in os.environ if k.startswith("JIGGA_SECRET_"))
     secrets_dir = Path(home) / "secrets"
-    return sorted(p.name for p in secrets_dir.iterdir()
-                  if p.is_file() and not p.name.startswith(".")) if secrets_dir.exists() else []
+    if not secrets_dir.exists():
+        return []
+    names = {p.name[:-len(_ENC_SUFFIX)] if p.name.endswith(_ENC_SUFFIX) else p.name
+             for p in secrets_dir.iterdir() if p.is_file() and not p.name.startswith(".")}
+    return sorted(names)

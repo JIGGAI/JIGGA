@@ -34,14 +34,16 @@ def test_explicit_bwrap_without_binary_is_loud(tmp_path: Path, monkeypatch) -> N
 
 
 def test_bwrap_argv_shape(tmp_path: Path) -> None:
-    spec = _spec(tmp_path, network=False, fs_read=[Path("/data/in")], fs_write=[Path("/data/out")])
+    fs_in, fs_out = tmp_path / "in", tmp_path / "out"
+    fs_in.mkdir(), fs_out.mkdir()
+    spec = _spec(tmp_path, network=False, fs_read=[fs_in], fs_write=[fs_out])
     env = {"PATH": "/usr/bin", "HOME": "/h"}
     argv = bwrap_argv(spec, env)
     assert argv[0] == "bwrap" and "--die-with-parent" in argv and "--clearenv" in argv
     assert "--unshare-net" in argv
     joined = " ".join(argv)
-    assert "--ro-bind /data/in /data/in" in joined
-    assert "--bind /data/out /data/out" in joined
+    assert f"--ro-bind {fs_in} {fs_in}" in joined
+    assert f"--bind {fs_out} {fs_out}" in joined
     assert f"--bind {tmp_path} {tmp_path}" in joined          # cwd rw
     assert "--setenv PATH /usr/bin" in joined and "--setenv HOME /h" in joined
     assert argv[-2:] == ["--chdir", str(tmp_path)]
