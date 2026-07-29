@@ -2989,6 +2989,11 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # IPv4-first resolution (config network.prefer_ipv4, default on) — a
+    # blackholed IPv6 RA must degrade nothing (2026-07-29 incident).
+    from jigga.runtime.netpref import install_ipv4_preference
+
+    install_ipv4_preference(getattr(args, "home", None))
     handler = _COMMANDS.get(args.command)
     if handler is None:
         parser.print_help()
