@@ -19,17 +19,68 @@ Names never contain path separators — the broker refuses traversal outright.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import re
 import shutil
 import subprocess
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from jigga.core.config import load_runtime_config
 from jigga.core.io import ensure_dir
 
 _NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# E1c: when a capability invocation is in flight, the dispatcher binds
+# (executing agent, logs_dir) here; get_secret enforces the agent's grant
+# before releasing anything. Reads outside any capability context (login
+# wizards, the supervisor's own channel polling, CLI) are runtime-trusted
+# and unaffected.
+_capability_ctx: ContextVar[tuple[Any, Path] | None] = ContextVar("jigga_secret_ctx", default=None)
+
+
+@contextlib.contextmanager
+def capability_secret_context(agent: Any, logs_dir: Path):
+    token = _capability_ctx.set((agent, Path(logs_dir)))
+    try:
+        yield
+    finally:
+        _capability_ctx.reset(token)
+
+
+def _enforce_grant(home: Path, name: str, agent: Any, logs_dir: Path) -> None:
+    """Release policy for a secret read inside a capability invocation.
+
+    - Agent declares a `permissions.secrets` block → it is evaluated; a name
+      outside the grant is DENIED (audited).
+    - No block declared → legacy-allow with an audited `granted: false`, so
+      existing installs keep working while the audit log shows exactly which
+      grants to add. `secrets.enforce_grants: true` flips missing-block to
+      deny once an install has granted its agents.
+    """
+    from jigga.runtime.audit import append_event
+    from jigga.runtime.policy import evaluate_resource_permission
+
+    permissions = getattr(agent, "permissions", None) or {}
+    has_block = isinstance(permissions, dict) and permissions.get("secrets") is not None
+    strict = bool((load_runtime_config(home).get("secrets") or {}).get("enforce_grants"))
+    if not has_block and not strict:
+        append_event(logs_dir, "secret.released", agent=getattr(agent, "id", None),
+                     name=name, granted=False)
+        return
+    decision = evaluate_resource_permission(agent, "secrets", name) if has_block else None
+    if decision is None or decision.status != "allow":
+        append_event(logs_dir, "secret.denied", status="denied",
+                     agent=getattr(agent, "id", None), name=name,
+                     reason=(decision.reason if decision else "no secrets grant (enforce_grants on)"))
+        raise PermissionError(
+            f"Secret {name!r} is not granted to agent "
+            f"{getattr(agent, 'id', '?')!r} (permissions.secrets).")
+    append_event(logs_dir, "secret.released", agent=getattr(agent, "id", None),
+                 name=name, granted=True)
 _KEYCHAIN_SERVICE = "jigga"
 # Cached per process: probing the keychain (DBus roundtrip) once is plenty.
 _keychain_probe: bool | None = None
@@ -116,8 +167,13 @@ def _env_var(name: str) -> str:
 
 def get_secret(home: Path, name: str) -> str | None:
     """The secret's value, or None when unset. All runtime secret reads route
-    here — never open files under secrets/ directly."""
+    here — never open files under secrets/ directly. Inside a capability
+    invocation, the executing agent's `permissions.secrets` grant is enforced
+    before anything is released (E1c)."""
     _validate(name)
+    ctx = _capability_ctx.get()
+    if ctx is not None and ctx[0] is not None:
+        _enforce_grant(Path(home), name, ctx[0], ctx[1])
     backend = _backend(home)
     if backend == "env":
         return os.environ.get(_env_var(name))

@@ -269,7 +269,13 @@ def dispatch_action(
         raise ValueError(
             f"No handler registered for capability {capability.name}: {capability.handler} ({exc})"
         ) from exc
-    output = handler(step, capability, resolved_input, memory_context, runtime)
+    # E1c: any secret the handler reads through the broker inside this scope is
+    # released only if the EXECUTING AGENT holds the grant — a manifest's
+    # `secrets_required` alone no longer suffices (the risk-register hole).
+    from jigga.runtime.secrets_broker import capability_secret_context
+
+    with capability_secret_context(runtime.agent, logs_dir):
+        output = handler(step, capability, resolved_input, memory_context, runtime)
 
     append_event(
         logs_dir,
