@@ -391,6 +391,14 @@ def build_parser() -> argparse.ArgumentParser:
     config_unset.add_argument("key")
     config_unset.add_argument("--json", action="store_true", dest="json_output")
 
+    secrets_p = sub.add_parser("secrets", help="Manage named secrets via the broker (values never shown)")
+    secrets_sub = secrets_p.add_subparsers(dest="secrets_command", required=True)
+    secrets_set = secrets_sub.add_parser("set", help="Store a secret (value prompted, never passed as an argument)")
+    secrets_set.add_argument("name")
+    secrets_sub.add_parser("list", help="List secret NAMES (never values)")
+    secrets_delete = secrets_sub.add_parser("delete", help="Delete a secret")
+    secrets_delete.add_argument("name")
+
     backup = sub.add_parser("backup", help="Back up / restore the runtime home (~/.jigga)")
     backup_sub = backup.add_subparsers(dest="backup_command", required=True)
     backup_create = backup_sub.add_parser(
@@ -2888,6 +2896,26 @@ def _cmd_skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_secrets(args: argparse.Namespace) -> int:
+    import getpass
+
+    from jigga.runtime.secrets_broker import delete_secret, list_secrets, set_secret
+
+    paths = get_paths(args.home)
+    if args.secrets_command == "set":
+        value = getpass.getpass(f"Value for {args.name}: ")
+        if not value:
+            print("Empty value — nothing stored.")
+            return 1
+        print(f"Stored at {set_secret(paths.home, args.name, value)}")
+    elif args.secrets_command == "list":
+        for name in list_secrets(paths.home):
+            print(f"- {name}")
+    elif args.secrets_command == "delete":
+        print("Deleted." if delete_secret(paths.home, args.name) else "Not found.")
+    return 0
+
+
 def _cmd_backup(args: argparse.Namespace) -> int:
     from pathlib import Path as _Path
 
@@ -2908,6 +2936,7 @@ def _cmd_backup(args: argparse.Namespace) -> int:
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "init": _cmd_init,
     "skills": _cmd_skills,
+    "secrets": _cmd_secrets,
     "backup": _cmd_backup,
     "setup": _cmd_setup,
     "onboard": _cmd_onboard,

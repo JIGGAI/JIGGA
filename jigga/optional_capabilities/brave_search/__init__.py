@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from jigga.core.io import ensure_dir, read_yaml, write_yaml
+from jigga.core.io import read_yaml, write_yaml
 
 _HELP = """
 Brave Search API gives clean JSON results (free tier ~2,000 queries/month).
@@ -24,12 +24,9 @@ def setup(paths, *, input_fn: Callable[[str], str] = input,
     if not key:
         print_fn("An API key is required — aborting.")
         return 1
-    from jigga.runtime.web import brave_key_path
+    from jigga.runtime.secrets_broker import set_secret
 
-    path = brave_key_path(paths.home)
-    ensure_dir(path.parent)
-    path.write_text(key + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    path = set_secret(paths.home, "brave_api_key", key + "\n")
     config = read_yaml(paths.config) if paths.config.exists() else {}
     web = dict(config.get("web") or {})
     web["search_provider"] = "brave"
