@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,14 +53,14 @@ def run_safe_process(
         write_json(run_dir / "process.json", record)
         return record
 
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    # E2b: execute through the shared sandbox seam — restricted env always;
+    # kernel-enforced fs/env bounds when `sandbox.backend: bwrap` is active.
+    from jigga.runtime.sandbox import SandboxSpec, run_sandboxed
+
+    completed = run_sandboxed(SandboxSpec(
+        command=command[0], args=list(command[1:]), cwd=Path(cwd),
+        timeout_seconds=timeout_seconds,
+    ))
     (run_dir / "stdout.txt").write_text(completed.stdout, encoding="utf-8")
     (run_dir / "stderr.txt").write_text(completed.stderr, encoding="utf-8")
     record.update(
