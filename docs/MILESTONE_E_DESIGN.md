@@ -138,22 +138,34 @@ unblocks only after E2+E3 are default-on.
 | E1a | broker module + file/env backends + `jigga secrets` CLI + migrate existing readers | M |
 | E1b | keychain backend (secret-tool/security CLIs) + `auto` + doctor check | S |
 | E1c | broker-enforced agent secret grants (close the risk-register hole) | S |
+| E1d | encrypted-file backend (at-rest encryption via system `age`, passphrase at service start, `migrate --to encrypted-file`) | S |
 | E2a | bwrap argv builder behind `run_sandboxed` + config + doctor + unit tests | M |
 | E2b | converge `safe_process` onto the seam; `--unshare-net` for no-network specs; scanner warning for `sandbox: false` | S |
 | E2c | flip `sandbox.backend: auto` default after prod soak | XS |
 | E3a | egress proxy + wiring + audit events | M |
 | E3b | scanner/doctor integration (declared vs observed egress) | S |
 
-## Decisions to confirm before E1a
+## Decisions — CONFIRMED (RJ, 2026-07-29)
 
-1. **Keychain on the prod server:** headless Linux almost certainly lacks
-   Secret Service → prod stays on the `file` backend. Acceptable? (The broker
-   still centralizes reads + enforces agent grants; at-rest encryption on a
-   server needs disk encryption, not a keychain.)
-2. **Passphrase-encrypted file backend** (age-style, like backup's approach —
-   shell out, no Python crypto) as a middle option: worth a slice, or defer?
-3. **bwrap availability in prod** (`apt install bubblewrap`) — install now so
-   E2a can soak-test against reality?
+1. **Prod continues on the `file` backend.** Context, spelled out: a
+   "keychain" (macOS Keychain, GNOME's Secret Service) is a desktop OS
+   service that stores secrets encrypted and releases them only to an
+   unlocked login session. Your prod server is headless — no desktop
+   session, no DBus, so no keychain to talk to; that's normal for servers,
+   not a gap in ours. What the broker still buys on prod even with files:
+   every read goes through ONE audited chokepoint, and secrets are released
+   only to invocations whose executing agent holds the grant (E1c). The
+   keychain backend (E1b) still ships — it serves laptop installs.
+2. **Encrypted-file backend: IN — slice E1d** (not deferred). Today's secret
+   files are plaintext protected only by `0600` permissions. E1d encrypts
+   each secret at rest with a passphrase via the system `age` binary (same
+   shell-out pattern as `jigga backup --encrypt`; no homegrown crypto, no
+   Python deps), so a stolen disk or a `--include-secrets` backup leaks
+   ciphertext, not credentials. Passphrase supplied at supervisor start (or
+   via an env var for the service unit); `jigga secrets migrate --to
+   encrypted-file` upgrades in place.
+3. **bwrap installed in prod** (bubblewrap 0.9.0 verified on the box) —
+   E2a develops and soak-tests against reality from day one.
 
 ## Risks
 
