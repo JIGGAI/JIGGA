@@ -227,6 +227,49 @@ Documented here for design coherence. Implementation lives in `jigga-cloud`.
 - Backend routes are thin — they call the OSS REST API on the tenant's
   Fly Machine plus the cloud control-plane services.
 
+### Product surface v1: catalog + clone-and-tweak (both paths)
+
+Decision: MVP supports **both** curated pre-built teams and user-customized
+teams, without shipping a full drag-and-drop builder. Two paths through
+the same underlying primitive (JIGGA declarative recipes):
+
+**Fast path — catalog deploy:**
+1. Browse catalog of 5-8 curated agent teams (SDR, support triage, ops
+   assistant, research analyst, content ops, sales enablement, ...).
+2. Click *Deploy* → team seeded into tenant → onboarding wizard collects
+   any required integrations/keys → running.
+
+**Power path — clone-and-tweak:**
+1. From any catalog entry, click *Clone*.
+2. Get an editable copy in the tenant's workspace (recipes, agent MDs,
+   team config YAML).
+3. Edit recipe files in-dashboard via Monaco / CodeMirror.
+4. Save → validate (JIGGA recipe validator) → apply (hot-reload the
+   team on the tenant's Fly Machine).
+
+**Explicitly deferred to v2:**
+- Full drag-and-drop workflow / capability builder canvas.
+- In-UI role permission editor UX (users edit YAML directly for v1).
+- Template marketplace (community-shared clones).
+- Live agent debugging surface (tail traces, replay tasks).
+
+**Rationale:** JIGGA recipes are already declarative files. A file editor
+over a validated schema is a legitimate power-user surface and ships in
+~1.5 weeks, versus ~4 weeks for a first-class visual builder. It preserves
+the "declarative agents-as-code" ethos of the OSS runtime and lets pilots
+customize anything without waiting for v2 UI work. What people actually
+customize in the first month becomes the requirements doc for the visual
+builder.
+
+**OSS vs cloud split for v1 product surface:**
+- Catalog schema, recipe validator, recipe hot-reload semantics: **OSS**
+  (upstream to JIGGA — useful for anyone running their own install).
+- Catalog *entries themselves* (curated agent teams): **OSS**
+  (`recipes/catalog/` in this repo), so self-hosters get the same starter
+  packs.
+- Catalog browser UI, clone-a-template flow, file editor UX, tenant-scoped
+  recipe application: **cloud-only**.
+
 ### Admin plane
 - MVP: SQL queries against Postgres + Grafana Cloud dashboard on top of the
   event stream. No operator UI in the 8-week plan.
@@ -240,7 +283,12 @@ Documented here for design coherence. Implementation lives in `jigga-cloud`.
 - Cloud-side: dashboards, alerting on SLOs (p95 first-response, task-success,
   error budgets per tenant).
 
-## Compressed 8-week plan (2 months to first paying customer)
+## Compressed 9.5-week plan (2 months + ~1.5 weeks for both product paths)
+
+Original target was 8 weeks. Supporting **both** catalog deploy and clone-and-tweak
+(see Product surface v1 above) adds ~1.5 weeks for the catalog schema, file
+editor UI, and hot-reload path. Kept in scope because the clone-and-tweak
+surface is the primary differentiator vs turnkey-only competitors.
 
 | Week | OSS deliverable (this repo) | Cloud deliverable (jigga-cloud) |
 |---|---|---|
@@ -248,10 +296,12 @@ Documented here for design coherence. Implementation lives in `jigga-cloud`.
 | 2 | REST API scaffold (`/tenants`, `/agents`, `/invoke`, `/memory`) | Tenant service scaffold; talks to OSS REST API |
 | 3 | `deploy/fly/` recipe (Dockerfile, fly.toml, provision.sh) | Fly Machines orchestrator; automated tenant provisioning end-to-end |
 | 4 | Minimal model gateway (routing + budget + usage events) | Cloud-side model gateway extensions (BYO key path, hosted-credit ledger) |
-| 5 | Audit event enrichment (`tenant_id` everywhere) | Next.js UI: signup → onboarding → dashboard |
-| 6 | (buffer for OSS follow-ups discovered in weeks 1-5) | Stripe metered billing wired; free tier + paid tier |
-| 7 | Traces export gains `tenant_id`; hooks doc | Observability wiring (Axiom); alerting on error budgets |
-| 8 | | Private beta (3-5 pilots); hotfix + launch prep |
+| 5 | Catalog schema; `recipes/catalog/` seeded with 5-8 curated teams; recipe validator + hot-reload | Next.js UI: signup → onboarding → dashboard → catalog browser |
+| 6 | Audit event enrichment (`tenant_id` everywhere) | Clone-a-template flow: catalog entry → tenant workspace copy |
+| 7 | Traces export gains `tenant_id`; hooks doc | File editor UI (Monaco/CodeMirror over recipe files) with save → validate → apply |
+| 8 | (buffer for OSS follow-ups discovered in weeks 1-7) | Stripe metered billing wired; free tier + paid tier |
+| 9 | | Observability wiring (Axiom); alerting on error budgets |
+| 9.5 | | Private beta (3-5 pilots); hotfix + launch prep |
 
 **Explicit non-goals for MVP** (deferred, not forgotten):
 - HIPAA controls (kept design-clean so it's a later add-on, not a rewrite).
@@ -260,6 +310,8 @@ Documented here for design coherence. Implementation lives in `jigga-cloud`.
 - Full admin UI.
 - Formal DR (weekly volume snapshot to R2 is MVP-sufficient).
 - On-prem / private-cloud SKU.
+- Full drag-and-drop visual builder for agents/teams (v2; v1 is file
+  editor over declarative recipes).
 
 ## PR intake rules
 
