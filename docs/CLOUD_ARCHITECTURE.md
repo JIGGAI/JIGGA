@@ -187,6 +187,89 @@ holding it back. OSS users get real BYO-key routing; the commercial
 differentiator is the hosted-credits layer plus metering pipeline, not the
 routing itself.
 
+## Agent execution model — where tools actually run
+
+One of the first questions any operator or pilot will ask: *when an agent
+calls a tool, does it run inside the tenant's container, or does it spin
+up a separate one per call?*
+
+**Answer: almost everything runs in the tenant's own Fly Machine.** We do
+not spin up a fresh container per tool call — that would add cold-start
+latency to every action, complicate memory access (state lives on a volume
+mounted to the tenant's Machine), and produce zero isolation benefit
+inside a tenant that is already inside its own microVM.
+
+### Default flow (per-tenant Fly Machine, tools run in-process)
+
+```
+   ┌────────────────────────────────────────────────────────────┐
+   │           Tenant A's Fly Machine (Firecracker microVM)   │
+   │                                                          │
+   │   ┌───────────────────────────────────────────────────────┐   │
+   │   │  JIGGA supervisor (single Python process)        │   │
+   │   │                                                  │   │
+   │   │   Agent tick:                                    │   │
+   │   │   1. Load context (memory, mailbox, task)        │   │
+   │   │   2. model.call() ──► Model Gateway (network)    │   │
+   │   │   3. Model returns tool_call(name, args)         │   │
+   │   │   4. Capability registry resolves the tool       │   │
+   │   │   5. Check capability.risk_level:                 │   │
+   │   │        low     → run in-process                  │   │
+   │   │        medium  → run in bwrap/firejail subproc   │   │
+   │   │        high    → offload to ephemeral sandbox    │   │
+   │   │   6. Tool result → hand back to model            │   │
+   │   │   7. Emit audit + usage events                   │   │
+   │   └───────────────────────────────────────────────────────┘   │
+   │                                                          │
+   │   Mounted Fly Volume: /data → ~/.jigga/ (tenant state)   │
+   └────────────┬──────────────────────────────────────────────────┘
+                │
+                ├──► Model Gateway (control plane)  ← metering
+                ├──► External APIs (Slack, Gmail, GitHub, ...)
+                └──► (rare) Ephemeral E2B / Fly-ephemeral sandbox
+                        for high-risk tools
+```
+
+### Three-tier execution model (risk maps to substrate)
+
+JIGGA capabilities already carry a `risk_level` field. Cloud enforces it as
+a routing decision, not just a label:
+
+| Tool risk | Where it runs | Examples | Isolation from tenant runtime |
+|---|---|---|---|
+| `low` | In-process in the supervisor | `memory.search`, `model.call`, HTTP GET, calendar read, calculator | None — shares the Python process |
+| `medium` | Subprocess in the same Fly Machine, wrapped by bwrap/firejail (JIGGA Milestone E) | Shell run, file write outside workspace, git operations, deterministic CLI tools | Kernel-level within the tenant's VM |
+| `high` | **Ephemeral sandbox** (E2B, Modal, or ephemeral Fly Machine) | Arbitrary code execution, browser automation, untrusted plugin code | Full network + FS + process isolation, thrown away after the call |
+
+**Blast radius per tier (inside a single tenant):**
+- `low` tool bug → the calling agent's tick fails and retries. Nothing else affected.
+- `medium` tool bug → subprocess dies. Supervisor keeps running. Other agents on that tenant unaffected.
+- `high` tool bug or malicious code → ephemeral sandbox dies. Tenant runtime never touched.
+
+**Cross-tenant isolation** is provided at all three tiers by the Fly Machine
+boundary (Firecracker microVM). Nothing at any tier can reach a different
+tenant, regardless of tool behavior.
+
+### What ships in MVP
+
+- `low` and `medium` tiers only. All tools run inside the tenant's Fly Machine.
+- Milestone E's sandbox work covers `medium` tier and is default-on for cloud tenants (not required for OSS self-hosters).
+- `high` tier is **deferred**. When a real customer needs arbitrary code execution or browser automation, we integrate E2B (or an ephemeral-Fly-Machine driver) behind the existing capability tier. Adding it later is a driver change, not a core refactor.
+
+### What leaves the tenant machine (only two things)
+
+1. **Model calls** — always to the Model Gateway (control plane). Metering, budget enforcement, BYO-key routing, and hosted-credit debiting happen there. Round-trip stays inside Fly's private network.
+2. **Usage / audit events** — fire-and-forget to the observability stack (Axiom or equivalent). Fail-open: if the stream is down, agents keep working; events buffer locally.
+
+Everything else — memory reads/writes, tool execution, task state — stays on the tenant's Fly Machine.
+
+### Known trade-offs (honest)
+
+- **One heavy tenant on a small Machine hurts *their own* responsiveness** (never other tenants). Mitigation: Fly vertical auto-scale, or tiered plans with larger Machines.
+- **Two agents on the same tenant contending for CPU serialize** (JIGGA is single-supervisor per tenant). Post-MVP: multi-process supervisor per tenant.
+- **Long-running tools block the supervisor tick.** Mitigation: enforce JIGGA's task/queue pattern for anything > ~10s; use the async task lifecycle instead of a blocking tool call.
+- **`high`-tier tool support is missing at MVP.** The moment a customer wants "run this Python script," we ship the E2B (or ephemeral-Fly) driver. Interface is ready; the work is one driver plus a capability policy update.
+
 ## Cloud plane responsibilities (proprietary)
 
 Documented here for design coherence. Implementation lives in `jigga-cloud`.
