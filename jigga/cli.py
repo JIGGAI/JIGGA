@@ -437,6 +437,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--json", action="store_true", dest="json_output", help="Machine-readable output")
     doctor.add_argument("--fix", action="store_true",
                         help="Apply safe auto-fixes (repair runtime layout, install/start the service), then re-check")
+    doctor.add_argument("--no-probe", action="store_false", dest="probe",
+                        help="Skip the live model request; report the provider as configured-but-unverified")
+    doctor.add_argument("--probe", action="store_true", dest="probe", default=True,
+                        help="Send one real request through the configured model provider (default)")
 
     memory = sub.add_parser("memory", help="Inspect memory scopes and layers")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -1440,11 +1444,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     from jigga.runtime.doctor import run_checks, run_fixes
 
     paths = get_paths(args.home)
-    report = run_checks(paths)
+    probe = getattr(args, "probe", True)
+    report = run_checks(paths, probe=probe)
     fixes: list[dict] = []
     if getattr(args, "fix", False):
         fixes = run_fixes(paths, report)
-        report = run_checks(paths)  # re-check so the report reflects what was fixed
+        report = run_checks(paths, probe=probe)  # re-check so the report reflects what was fixed
     if args.json_output:
         out = report.to_dict()
         if getattr(args, "fix", False):

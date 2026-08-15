@@ -178,6 +178,169 @@ def test_fix_restarts_stopped_service(tmp_path: Path, monkeypatch):
     assert "restart" in actions[0]["message"].lower()
 
 
+# --- model probe ------------------------------------------------------------
+# The precursor stack's model outage looked green to every credential check:
+# a valid OPENAI_API_KEY sat next to a dead Codex OAuth refresh token, because
+# the provider authenticated through a different path entirely.
+
+
+def _configure_provider(tmp_path: Path, provider: str = "openai") -> None:
+    from jigga.core.io import write_yaml
+
+    write_yaml(tmp_path / "config.yaml", {"models": {"defaults": {"provider": provider}}})
+
+
+def test_unprobed_model_check_does_not_claim_the_provider_works(tmp_path: Path):
+    init_runtime(tmp_path)
+    _configure_provider(tmp_path)
+    check = doctor._check_model(get_paths(tmp_path))
+    assert check.status == doctor.OK
+    assert "not probed" in check.detail
+    assert "doesn't prove" in (check.hint or "")
+
+
+def test_run_checks_never_probes_unless_asked(tmp_path: Path, monkeypatch):
+    """Default-off matters: `run_checks` is imported by onboarding and tests,
+    and neither should spend a token or touch the network."""
+    init_runtime(tmp_path)
+    _configure_provider(tmp_path)
+    _unsupported_service(monkeypatch)
+
+    def _boom(*a, **k):
+        raise AssertionError("call_model must not run without probe=True")
+
+    monkeypatch.setattr("jigga.runtime.model_router.call_model", _boom)
+    report = doctor.run_checks(get_paths(tmp_path))
+    assert next(c for c in report.checks if c.name == "model").status == doctor.OK
+
+
+def test_probe_reports_a_live_provider_ok(tmp_path: Path, monkeypatch):
+    init_runtime(tmp_path)
+    _configure_provider(tmp_path)
+    seen: dict = {}
+
+    def _ok(home, logs_dir, request):
+        seen["agent_id"] = request.agent_id
+        seen["dry_run"] = request.dry_run
+        return type("R", (), {"status": "ok", "content": "ok", "error": None})()
+
+    monkeypatch.setattr("jigga.runtime.model_router.call_model", _ok)
+    check = doctor._check_model(get_paths(tmp_path), probe=True)
+    assert check.status == doctor.OK
+    assert "live response" in check.detail
+    # It must go through the real path, not a dry-run shortcut — that's the point.
+    assert seen == {"agent_id": "doctor", "dry_run": False}
+
+
+def test_probe_surfaces_the_real_error_when_the_model_path_is_dead(tmp_path: Path, monkeypatch):
+    """The woods failure: the only actionable text lived in a log nobody read.
+    The probe must put it in the report verbatim."""
+    init_runtime(tmp_path)
+    _configure_provider(tmp_path)
+
+    def _dead(home, logs_dir, request):
+        raise RuntimeError('OAuth token refresh failed for openai (401) "code":"invalid_refresh_token"')
+
+    monkeypatch.setattr("jigga.runtime.model_router.call_model", _dead)
+    check = doctor._check_model(get_paths(tmp_path), probe=True)
+    assert check.status == doctor.FAIL
+    assert "invalid_refresh_token" in check.detail
+    assert "RuntimeError" in check.detail
+    assert "independently of any API key" in (check.hint or "")
+
+
+def test_probe_fails_on_a_non_ok_result(tmp_path: Path, monkeypatch):
+    init_runtime(tmp_path)
+    _configure_provider(tmp_path)
+    monkeypatch.setattr(
+        "jigga.runtime.model_router.call_model",
+        lambda home, logs_dir, request: type("R", (), {"status": "error", "content": "", "error": "budget denied"})(),
+    )
+    check = doctor._check_model(get_paths(tmp_path), probe=True)
+    assert check.status == doctor.FAIL
+    assert "budget denied" in check.detail
+
+
+def test_dry_run_provider_is_never_probed_and_never_reported_ok(tmp_path: Path, monkeypatch):
+    """`jigga init` writes provider: dry_run, and the dry-run provider answers
+    every request successfully — probing it would report a live model path on a
+    runtime that cannot think at all."""
+    init_runtime(tmp_path)  # leaves the default dry_run provider in place
+    monkeypatch.setattr("jigga.runtime.model_router.call_model",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not probe dry_run")))
+    check = doctor._check_model(get_paths(tmp_path), probe=True)
+    assert check.status == doctor.WARN
+    assert "dry_run" in check.detail
+    assert "jigga model setup" in (check.hint or "")
+
+
+def test_probe_is_skipped_when_no_provider_is_configured(tmp_path: Path, monkeypatch):
+    from jigga.core.io import write_yaml
+
+    init_runtime(tmp_path)
+    write_yaml(tmp_path / "config.yaml", {"models": {}})
+    monkeypatch.setattr("jigga.runtime.model_router.call_model",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not probe")))
+    check = doctor._check_model(get_paths(tmp_path), probe=True)
+    assert check.status == doctor.WARN
+    assert "No model provider configured" in check.detail
+
+
+# --- duplicate service definitions -------------------------------------------
+# Same label in the user and system domain: only one wins, `launchctl list`
+# shows the user domain only, and the two can carry different env — so the
+# loser is invisible while deciding whether anything works.
+
+
+def _service_status(user_installed: bool, system_installed: bool, running: bool = True):
+    def _status(paths, *, system: bool = False, **k):
+        installed = system_installed if system else user_installed
+        scope = "system" if system else "user"
+        return {"backend": "systemd", "system": system, "installed": installed,
+                "unit_path": f"/{scope}/jigga.service", "running": running}
+
+    return _status
+
+
+def test_service_check_warns_when_installed_in_both_scopes(tmp_path: Path, monkeypatch):
+    init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.runtime.service.status_service", _service_status(True, True))
+    check = doctor._check_service(get_paths(tmp_path))
+    assert check.status == doctor.WARN
+    assert "BOTH user and system scope" in check.detail
+    assert "/user/jigga.service" in (check.hint or "")
+    assert "/system/jigga.service" in (check.hint or "")
+
+
+def test_service_check_accepts_a_system_only_install(tmp_path: Path, monkeypatch):
+    init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.runtime.service.status_service", _service_status(False, True))
+    check = doctor._check_service(get_paths(tmp_path))
+    assert check.status == doctor.OK
+    assert "system scope" in check.detail
+
+
+def test_service_check_unchanged_for_a_normal_user_install(tmp_path: Path, monkeypatch):
+    init_runtime(tmp_path)
+    monkeypatch.setattr("jigga.runtime.service.status_service", _service_status(True, False))
+    check = doctor._check_service(get_paths(tmp_path))
+    assert check.status == doctor.OK
+    assert "installed and running" in check.detail
+
+
+def test_service_check_survives_an_unreadable_system_scope(tmp_path: Path, monkeypatch):
+    """Probing the system scope shells out; that must never break the check."""
+    init_runtime(tmp_path)
+
+    def _status(paths, *, system: bool = False, **k):
+        if system:
+            raise OSError("systemctl: permission denied")
+        return {"backend": "systemd", "installed": True, "running": True, "unit_path": "/user/jigga.service"}
+
+    monkeypatch.setattr("jigga.runtime.service.status_service", _status)
+    assert doctor._check_service(get_paths(tmp_path)).status == doctor.OK
+
+
 def test_fix_skips_unfixable_checks(tmp_path: Path, monkeypatch):
     # config/model/etc have no auto-fix — run_fixes leaves them to the hint.
     report = doctor.Report(checks=[doctor.Check("model", doctor.WARN, "No model provider configured")])
