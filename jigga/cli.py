@@ -123,12 +123,18 @@ _CHANNEL_CATALOG: dict[str, tuple[str | None, str]] = {
 }
 
 
-def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print) -> None:
+def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print,
+                    preselected: str | None = None) -> None:
     """Interactive channel onboarding: pick a channel → run its guided install
     (auth + config + approval, reused from `capabilities install`) → set the
-    activation mode → enable. Pluggable via `_CHANNEL_CATALOG`."""
+    activation mode → enable. Pluggable via `_CHANNEL_CATALOG`.
+
+    `preselected` skips the picker — onboarding already asked which driver, and
+    asking the same question twice in one flow reads as a bug."""
     names = sorted(_CHANNEL_CATALOG)
-    if supports_picker():
+    if preselected in _CHANNEL_CATALOG:
+        name = preselected
+    elif supports_picker():
         picked = select_one("Set up a channel",
                             [Option(label=n, detail=_CHANNEL_CATALOG[n][1]) for n in names])
         name = names[picked] if picked is not None else None
@@ -1102,11 +1108,22 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
     elif not interactive and not args.skip_model:
         print("• Skipped model setup (non-interactive). Run `jigga model setup` later.")
 
-    # 3. Channel — optional way to talk to it (e.g. Telegram).
-    if interactive and not args.skip_channels and _confirm(
-        "\nConnect a chat channel now (e.g. Telegram)?", default=False
-    ):
-        _channels_setup(paths)
+    # 3. Channel — how the person actually talks to their assistant. Asked as a
+    #    choice of driver rather than a yes/no, because "connect a channel?"
+    #    doesn't tell anyone what their options are or what each one costs.
+    if interactive and not args.skip_channels:
+        print("\nHow do you want to talk to me?")
+        for i, (name, (_, blurb)) in enumerate(sorted(_CHANNEL_CATALOG.items()), 1):
+            print(f"  {i}. {name} — {blurb}")
+        print(f"  {len(_CHANNEL_CATALOG) + 1}. Just this terminal for now")
+        picked = input("Choose [Enter for terminal]: ").strip()
+        names = sorted(_CHANNEL_CATALOG)
+        if picked.isdigit() and 1 <= int(picked) <= len(names):
+            _channels_setup(paths, preselected=names[int(picked) - 1])
+        elif picked in _CHANNEL_CATALOG:
+            _channels_setup(paths, preselected=picked)
+        else:
+            print("• Terminal only. Run `jigga channels setup` whenever you want another way in.")
     elif not interactive and not args.skip_channels:
         print("• Skipped channel setup (non-interactive). Run `jigga channels setup` later.")
 
