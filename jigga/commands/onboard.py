@@ -277,6 +277,7 @@ def run_onboarding(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[..., None] = print,
     overwrite: bool = False,
+    greet: bool = True,
 ) -> dict[str, Any]:
     echo = print_fn
 
@@ -358,13 +359,19 @@ def run_onboarding(
 
     echo(f"\n✓ Setup complete. Default agent: {agent_name} (`{agent_id}`).")
     echo(f"  USER.md: {user_path}")
-    for line in _introduction(spec, call_you, timezone, purpose, style, pronouns,
-                              tool_groups, extra_dirs, paths.home):
-        echo(line)
+    intro = _introduction(spec, call_you, timezone, purpose, style, pronouns,
+                          tool_groups, extra_dirs, paths.home)
+    # `jigga setup` greets here because it may be all the person runs. The
+    # `onboard` chain suppresses it and greets at the very end instead, once a
+    # model exists to speak for itself and the accounts are connected.
+    if greet:
+        for line in intro:
+            echo(line)
     return {"agent_id": agent_id, "name": agent_name, "role_kind": role_kind,
-            "style": style, "created": created, "user_md": str(user_path),
-            "extra_dirs": extra_dirs, "pronouns": pronouns, "tools": tools,
-            "tool_groups": tool_groups}
+            "introduction": intro, "call_you": call_you, "timezone": timezone,
+            "purpose": purpose, "pronouns": pronouns, "style": style,
+            "created": created, "user_md": str(user_path),
+            "extra_dirs": extra_dirs, "tools": tools, "tool_groups": tool_groups}
 
 
 def _introduction(spec: dict, call_you: str, timezone: str, purpose: str, style: str,
@@ -402,6 +409,75 @@ def _introduction(spec: dict, call_you: str, timezone: str, purpose: str, style:
     lines.append("  or edit my SOUL.md to change who I am.")
     lines.append("")
     return lines
+
+
+def model_greeting(paths: JiggaPaths, setup: dict[str, Any]) -> str | None:
+    """Have the assistant introduce itself in its own configured voice.
+
+    The templated introduction says the right things but says them the same way
+    for everyone. This hands the model the persona the installer just authored
+    — its SOUL, who it works for, what it was granted — and lets it speak.
+
+    Returns None whenever that isn't possible: no provider, dry-run provider, a
+    failed call, or an empty reply. The caller falls back to the template, which
+    is why nothing here raises and why the model is never the only path to a
+    greeting.
+    """
+    from jigga.core.config import load_agents
+    from jigga.runtime.model_router import (
+        ModelCallItem,
+        ModelCallRequest,
+        call_model,
+        load_model_config,
+        resolve_agent_model,
+        resolve_agent_model_profile,
+    )
+
+    try:
+        provider = (load_model_config(paths.home).get("defaults") or {}).get("provider")
+    except Exception:  # noqa: BLE001
+        return None
+    # dry_run answers everything successfully with canned text — a greeting from
+    # it would be a fake introduction from an assistant that can't think.
+    if not provider or provider == "dry_run":
+        return None
+    agent = load_agents(paths.agents).get(setup.get("agent_id") or "")
+    if agent is None:
+        return None
+
+    facts = [f"Your principal calls themselves: {setup.get('call_you') or 'unstated'}",
+             f"Timezone: {setup.get('timezone') or 'unstated'}",
+             f"What this install is for: {setup.get('purpose') or 'unstated'}",
+             f"What you were granted: {', '.join(setup.get('tool_groups') or []) or 'nothing yet'}"]
+    if setup.get("extra_dirs"):
+        facts.append(f"Folders you may read and write: {', '.join(setup['extra_dirs'])}")
+    system = (
+        "You have just been set up. Introduce yourself to the person you work for, in your "
+        "own voice as described by your SOUL. Six sentences at most.\n\n"
+        "Say what you're for, what you can currently do, and invite them to start. Do not "
+        "list your tools mechanically and do not thank them for installing you.\n\n"
+        "Only state what the facts below support. If you were granted nothing, say so plainly "
+        "rather than implying capability you don't have — the first thing you tell them has to "
+        "be true, or nothing after it is worth much.\n\n" + "\n".join(facts)
+    )
+    request = ModelCallRequest(
+        agent_id=agent.id, role=agent.role,
+        task={"id": "onboard_greeting", "title": "introduce yourself",
+              "description": "First contact with your principal."},
+        items=[ModelCallItem(id="greet_system", role="system", content=system),
+               ModelCallItem(id="greet_user", role="user",
+                             content="Introduce yourself.")],
+        model=resolve_agent_model(agent),
+        model_profile=resolve_agent_model_profile(agent),
+        dry_run=False,
+    )
+    try:
+        result = call_model(paths.home, paths.logs, request)
+    except Exception:  # noqa: BLE001 — a greeting must never be able to fail onboarding
+        return None
+    if result.status != "ok" or not (result.content or "").strip():
+        return None
+    return result.content.strip()
 
 
 def _looks_filled(user_path: Path) -> bool:
