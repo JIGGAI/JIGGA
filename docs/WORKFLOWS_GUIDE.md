@@ -86,8 +86,48 @@ is a literal, so there is no partially-substituted state to reason about.
 
 To find what still needs migrating: `jigga audit --type workflow.reference.implicit`.
 
-A step can be **model-backed** (`action: draft_with_model`) so it actually
-*thinks* — see [`MODEL_BACKED_WORKFLOWS.md`](MODEL_BACKED_WORKFLOWS.md).
+### Model steps that feed other steps must declare their shape
+
+A step can be **model-backed** (`action: draft_with_model`, or a v2 `type: llm`
+node) so it actually *thinks* — see
+[`MODEL_BACKED_WORKFLOWS.md`](MODEL_BACKED_WORKFLOWS.md).
+
+An untyped model step returns whatever the model produced. That's fine for the
+**last** step in a chain, whose output a human reads. It is not fine when another
+step consumes it, so **`jigga plan` blocks that**:
+
+```
+✗ draft   model step 'draft' declares no output_fields but its output is
+          consumed by save. Add output_fields, or stop referencing it — an
+          untyped model reply is whatever shape the model felt like
+          returning that day.
+```
+
+Declare the shape and it runs:
+
+```yaml
+- id: calendar_draft
+  action: draft_with_model
+  input: {prompt: "Draft next month's calendar"}
+  output_fields:
+    - {name: markdown, type: text, description: the calendar body}
+  output: calendar.md
+```
+
+The declared fields are stated to the model as an explicit JSON contract and the
+reply is **validated**. One field returns that field's value, so chaining reads
+exactly as it did untyped. More than one returns the dict, and each field is also
+addressable as `${calendar.md.markdown}`.
+
+Why this is a hard block rather than a warning: on the precursor stack an untyped
+node ran correctly for months on one machine and corrupted a file on another. It
+returned `{"markdown_lines": [...]}` instead of prose, the save step wrote that
+JSON object into the calendar file, and the file lost every `### Week N` header
+the *next* week's workflow parses — surfacing a week later, in a different
+workflow, as a content mismatch. The only difference between the two machines was
+which model happened to reply with raw text. That class of bug passes every test
+you write and fails on a model upgrade
+([`FIELD_LESSONS_HMX_PRODUCTION.md`](FIELD_LESSONS_HMX_PRODUCTION.md) §3.1).
 
 > Today workflows are **linear pipelines** (ordered steps + named outputs +
 > approval gates), not a branching DAG. For branching *across agents*, use team

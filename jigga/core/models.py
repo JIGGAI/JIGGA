@@ -101,6 +101,10 @@ class WorkflowStep:
     approval: str | None = None
     optional: bool = False
     on_fail: dict[str, Any] | None = None
+    # Declared shape of a model-backed step's reply: [{name, type, description?}].
+    # Empty means the step returns whatever prose the model produced, which is
+    # only safe while nothing downstream consumes it — see `plan`.
+    output_fields: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkflowStep":
@@ -127,6 +131,7 @@ class WorkflowNode:
     input: dict[str, Any] = field(default_factory=dict)
     output: str | None = None
     optional: bool = False
+    output_fields: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkflowNode":

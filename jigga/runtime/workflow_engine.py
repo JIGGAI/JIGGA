@@ -36,7 +36,7 @@ from jigga.runtime.approvals import consume_if_approved, consume_if_denied, pend
 from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.channels import ADAPTERS, owner_conversation
-from jigga.runtime.dispatcher import RuntimeContext, execute_step
+from jigga.runtime.dispatcher import RuntimeContext, execute_step, register_outputs
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.notifications import NotificationRequest, delivery_mode, send_notification
 
@@ -431,9 +431,7 @@ def _execute_node(
         return
     state["status"] = "done"
     state["completed_at"] = now_iso()
-    record["outputs"][node.id] = output
-    if node.output:
-        record["outputs"][node.output] = output
+    register_outputs(record["outputs"], node, output)
     append_event(paths.logs, "workflow.node.completed", workflow=record["workflow_id"], run_id=record["id"],
                  node=node.id)
 
