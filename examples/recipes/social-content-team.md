@@ -103,21 +103,21 @@ workflows:
         agent: linkedin_writer
         action: draft_linkedin_post
         input:
-          core_message: core_message.md
+          core_message: ${core_message.md}
         output: linkedin_post.md
         approval: not_required
       - id: draft_x_thread
         agent: x_writer
         action: draft_thread
         input:
-          core_message: core_message.md
+          core_message: ${core_message.md}
         output: x_thread.md
         approval: not_required
       - id: draft_newsletter
         agent: newsletter_writer
         action: draft_blurb
         input:
-          core_message: core_message.md
+          core_message: ${core_message.md}
         output: newsletter_blurb.md
         optional: true
         approval: not_required

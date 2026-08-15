@@ -112,15 +112,15 @@ workflows:
         agent: daily_briefing_agent
         action: summarize_day
         input:
-          calendar: calendar_events
-          email: important_email
+          calendar: ${calendar_events}
+          email: ${important_email}
         output: day_summary.md
         approval: not_required
       - id: notify
         agent: daily_briefing_agent
         action: notifications.send
         input:
-          content: day_summary.md
+          content: ${day_summary.md}
         approval: not_required
     outputs:
       - day_summary.md
@@ -151,7 +151,7 @@ workflows:
         agent: meeting_prep_agent
         action: summarize_relevant_context
         input:
-          event: event_details
+          event: ${event_details}
         output: prep_notes
         optional: true
         approval: not_required

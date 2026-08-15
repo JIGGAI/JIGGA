@@ -44,11 +44,11 @@ steps:
   - id: summarize
     agent: daily_briefing_agent
     action: summarize_day
-    input: {calendar: calendar_events}   # consumes the earlier step's output by name
+    input: {calendar: "${calendar_events}"}   # consumes the earlier step's output
     output: summary
   - id: notify
     action: notifications.send
-    input: {body: summary}
+    input: {body: "${summary}"}
     approval: not_required
 memory:
   write_summary: true             # persist the run's result to memory
@@ -57,13 +57,35 @@ permissions:
 ```
 
 **Step fields:** `id`, `action` (the capability), `agent` (optional — its model,
-permissions, and memory scope govern the step), `input` (dict; string values that
-match a prior step's `output` are **substituted** with that output), `output` (a
-name later steps can reference), `approval` (`not_required` / `required`),
-`optional` (skip instead of fail if the agent is missing), `on_fail`.
+permissions, and memory scope govern the step), `input` (dict), `output` (a name
+later steps can reference), `approval` (`not_required` / `required`), `optional`
+(skip instead of fail if the agent is missing), `on_fail`.
 
-**Chaining:** steps run in order; outputs flow by **named reference**
-(`output: calendar_events` → another step's `input: {calendar: calendar_events}`).
+### Referencing another step's output
+
+Write `${name}` to consume a named output. **If nothing produced that name, the
+step fails** and the run records `workflow.reference.unresolved` naming the
+reference and what was available:
+
+```yaml
+input: {calendar: "${calendar_events}"}     # explicit — fails loudly if unresolved
+```
+
+A **bare** name that happens to match an output still resolves, so workflows
+written before this syntax keep running — but each one is recorded as
+`workflow.reference.implicit`, and the form is deprecated. The reason is the
+asymmetry: a bare name matching *nothing* stays a literal string, which is
+indistinguishable from a value you meant to write. On the precursor stack that
+ambiguity let an unsubstituted guard render as its own template text, fail a
+truthiness check, and publish 20 unapproved items
+([`FIELD_LESSONS_HMX_PRODUCTION.md`](FIELD_LESSONS_HMX_PRODUCTION.md) §3.2c).
+With `${}` the same mistake stops the run.
+
+Matching is anchored — a value is a reference or it isn't. `"see ${draft} above"`
+is a literal, so there is no partially-substituted state to reason about.
+
+To find what still needs migrating: `jigga audit --type workflow.reference.implicit`.
+
 A step can be **model-backed** (`action: draft_with_model`) so it actually
 *thinks* — see [`MODEL_BACKED_WORKFLOWS.md`](MODEL_BACKED_WORKFLOWS.md).
 
