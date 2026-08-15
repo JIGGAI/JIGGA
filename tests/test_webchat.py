@@ -451,8 +451,9 @@ def test_channels_setup_webchat_skips_install(tmp_path: Path) -> None:
         it = iter(answers)
         return lambda _p: next(it)
 
-    # pick webchat (sorted: telegram=1, webchat=2) → activation: always(1)
-    _channels_setup(paths, prompt=_scripted(["2", "1"]), echo=lambda *_a, **_k: None)
+    # pick by name — the catalog grows, and a positional pick silently selects
+    # a different channel when it does. → activation: always(1)
+    _channels_setup(paths, prompt=_scripted(["webchat", "1"]), echo=lambda *_a, **_k: None)
     cfg = read_yaml(paths.config)["channels"]
     assert cfg["webchat"]["enabled"] is True
     assert cfg["webchat"]["activation"] == "always"

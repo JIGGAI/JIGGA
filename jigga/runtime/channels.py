@@ -146,7 +146,15 @@ def _webchat_adapter() -> "ChannelAdapter":
 
 
 # Channel name -> adapter. Slack / iMessage / webhook register here once built.
-ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter()}
+def _sms_adapter() -> "ChannelAdapter":
+    from jigga.runtime.sms import SmsAdapter
+
+    return SmsAdapter()
+
+
+# Channel name -> adapter. Slack / iMessage / webhook register here once built.
+ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter(),
+                                       "sms": _sms_adapter()}
 
 
 def get_adapter(name: str) -> ChannelAdapter | None:

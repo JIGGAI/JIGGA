@@ -112,3 +112,46 @@ Telegram is the reference for channel capabilities. To add one:
 - Per-message reply convenience: a `telegram.reply` action that takes a polled message and answers its `chat_id` in one step.
 - Slack and iMessage channels using the template above.
 - Richer message types (attachments, buttons) beyond plain text.
+
+---
+
+# SMS channel (provider-agnostic)
+
+`runtime/sms.py` implements the `ChannelAdapter` contract with a **driver seam**:
+`SMS_DRIVERS` maps a name to an implementation, and adding a provider is one
+entry plus one class. A `dry_run` driver ships (file-backed `sms/outbox.json` /
+`sms/inbox.json`) so routing, consent, and delivery state are exercisable before
+any account exists.
+
+```yaml
+channels:
+  sms:
+    enabled: true
+    provider: dry_run
+    numbers:
+      "+15550000001": {purpose: client marketing, default_agent: marketing_lead}
+      "+15550000002": {purpose: field operations, default_agent: ops_lead}
+```
+
+Three things the seam enforces, each from a dated incident in
+[`FIELD_LESSONS_HMX_PRODUCTION.md`](FIELD_LESSONS_HMX_PRODUCTION.md) §3.7:
+
+**Accepted is not delivered.** `send_sms` returns `status: accepted` with
+`delivered: None` — tri-state, because `False` would assert non-delivery we also
+don't know. `delivered` comes only from `record_receipt`. A driver declares
+`reports_delivery`, and one that can't observe receipts says so rather than
+implying knowledge it lacks. The old path logged `sent` on an API 200 and had no
+receipt tracking, so the log read `sent` for messages the carrier was blocking.
+
+**Provider suppression outranks local state.** Opt-out is keyed to the
+*(source number, destination)* pair, so stopping marketing doesn't stop
+operations. A suppression recorded with `origin: provider` **cannot be cleared
+locally** — `clear_suppression` refuses and names the number the recipient has to
+text START to. Deleting the local row used to look like it worked and change
+nothing.
+
+**Inbound routes by destination.** Each number declares its own `default_agent`,
+and the adapter pre-targets events accordingly. The conversation id is
+`<destination>:<sender>`, so one handset texting two of our numbers is two
+conversations. STOP/START are consent, not conversation: they act on the pair
+they arrived on and never become a task.

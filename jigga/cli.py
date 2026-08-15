@@ -120,6 +120,7 @@ def _set_model_provider(paths: Any, provider: str, model: str | None) -> None:
 _CHANNEL_CATALOG: dict[str, tuple[str | None, str]] = {
     "telegram": ("telegram", "Telegram bot — poll inbound + reply"),
     "webchat": (None, "Browser chat (jiggaview Chat page) — local file-backed, no auth"),
+    "sms": (None, "SMS — routes by the number it arrived at (needs a provider driver)"),
 }
 
 
