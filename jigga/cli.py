@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jigga.commands.init import init_runtime
-from jigga.commands.onboard import run_onboarding
+from jigga.commands.onboard import model_greeting, run_onboarding
 from jigga.commands.install import (
     install_capability,
     list_available_capabilities,
@@ -1169,10 +1169,15 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
         _examples_setup(paths, interactive=interactive)
 
     # 1. Who the assistant works for + the default agent (USER.md + agent yaml).
+    # `greet=False`: the introduction is held back to the very end of the
+    # chain, once a model exists to speak it and the accounts behind the
+    # granted powers are connected. Greeting here would introduce an assistant
+    # that can't yet think and describe reach it doesn't yet have.
     setup = run_onboarding(
         paths,
         input_fn=input if interactive else (lambda _prompt: ""),
         overwrite=args.overwrite,
+        greet=False,
     )
     # A re-run with --overwrite regenerates the agent yaml — restore the tool
     # grants any already-enabled channel had given it (idempotent).
@@ -1241,7 +1246,20 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
             print(f"\n! Wrote the {backend} unit at {result.get('unit_path')}, "
                   "but starting it reported a problem — see `jigga service status`.")
 
-    # 5. Next steps.
+    # 5. The introduction — last, so it's spoken by a configured assistant that
+    #    knows what it can actually reach. Model-generated when a real provider
+    #    is up, the deterministic template otherwise; the template is also what
+    #    non-interactive runs get.
+    greeting = model_greeting(paths, setup) if interactive else None
+    if greeting:
+        print(f"\n— Meet {setup['name']} —\n")
+        print(greeting)
+        print()
+    else:
+        for line in setup.get("introduction") or []:
+            print(line)
+
+    # 6. Next steps.
     print("\n✓ Onboarding complete.")
     if started_service:
         print("  It's running in the background now — `jigga service status` to check it.")
