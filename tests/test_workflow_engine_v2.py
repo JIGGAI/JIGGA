@@ -4,6 +4,8 @@ supervisor heartbeat advancing non-terminal runs."""
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,17 +15,24 @@ from jigga.cli import main
 from jigga.commands.init import init_runtime
 from jigga.core.config import load_agents, load_workflows
 from jigga.core.io import read_json
+from jigga.runtime import workflow_engine as engine
 from jigga.runtime.approvals import pending_approvals, resolve, resolve_and_requeue
 from jigga.runtime.supervisor import supervisor_tick
 from jigga.runtime.workflow import plan_workflow, run_workflow
 from jigga.runtime.workflow_engine import (
     advance_all_runs,
     advance_run,
+    alarm_stale_approvals,
     list_runs,
     load_run,
     start_run,
     validate_graph,
 )
+
+
+def _events(paths) -> list[dict[str, Any]]:
+    path = paths.logs / "events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
 def _write_workflow(paths, doc: dict[str, Any]) -> None:
@@ -282,6 +291,122 @@ def test_advance_all_runs_reports_and_bounds(tmp_path: Path) -> None:
     resolve(paths.approvals, parked["nodes"]["gate"]["approval_code"], approved=True)
     summary = advance_all_runs(paths)
     assert [entry["status"] for entry in summary["advanced"]] == ["completed"]
+
+
+# --- approval deliverability + staleness ------------------------------------
+# The precursor stack parked a run for 36 days because an approval targeting an
+# unconfigured channel was undeliverable, and "never asked" looked exactly like
+# "not answered yet". These pin the two halves that break that tie.
+
+
+class _Adapter:
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.sent: list[str] = []
+
+    def send(self, home, *, conversation_id, text) -> dict[str, Any]:
+        if self.fail:
+            raise RuntimeError("bot token rejected")
+        self.sent.append(text)
+        return {"delivered": True}
+
+
+def _wire_channel(monkeypatch, adapter: _Adapter) -> None:
+    monkeypatch.setattr(engine, "owner_conversation", lambda home, channel=None: ("telegram", "123"))
+    monkeypatch.setattr(engine, "ADAPTERS", {"telegram": adapter})
+
+
+def test_undeliverable_approval_parks_visibly(tmp_path: Path) -> None:
+    """No channel configured: the run still parks (the CLI can approve it), but
+    it parks marked, and the audit event is an error rather than silence."""
+    paths = init_runtime(tmp_path, examples=True)
+    _write_workflow(paths, _approval_dag("gated_undeliverable"))
+    result = run_workflow(paths, "gated_undeliverable")
+    gate = result["nodes"]["gate"]
+    assert result["status"] == "awaiting_approval"
+    assert gate["delivery"] == "undelivered"
+    assert "no owner conversation" in gate["delivery_error"]
+    assert gate["parked_at"]
+    undeliverable = [e for e in _events(paths) if e["type"] == "workflow.approval_undeliverable"]
+    assert len(undeliverable) == 1
+    assert undeliverable[0]["status"] == "error"
+    assert undeliverable[0]["details"]["code"] == gate["approval_code"]
+
+
+def test_delivered_approval_records_delivery(tmp_path: Path, monkeypatch) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    adapter = _Adapter()
+    _wire_channel(monkeypatch, adapter)
+    _write_workflow(paths, _approval_dag("gated_delivered"))
+    result = run_workflow(paths, "gated_delivered")
+    assert result["nodes"]["gate"]["delivery"] == "delivered"
+    assert "delivery_error" not in result["nodes"]["gate"]
+    assert len(adapter.sent) == 1
+    assert not [e for e in _events(paths) if e["type"] == "workflow.approval_undeliverable"]
+
+
+def test_send_failure_marks_the_node_undelivered(tmp_path: Path, monkeypatch) -> None:
+    """A channel that exists but rejects the send is just as undeliverable as
+    one that was never configured — same state, so triage sees both."""
+    paths = init_runtime(tmp_path, examples=True)
+    _wire_channel(monkeypatch, _Adapter(fail=True))
+    _write_workflow(paths, _approval_dag("gated_sendfail"))
+    result = run_workflow(paths, "gated_sendfail")
+    gate = result["nodes"]["gate"]
+    assert gate["delivery"] == "undelivered"
+    assert "send failed" in gate["delivery_error"]
+    assert "bot token rejected" in gate["delivery_error"]
+    assert [e for e in _events(paths) if e["type"] == "workflow.approval_undeliverable"]
+
+
+def test_fresh_parked_approval_is_not_alarmed(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _write_workflow(paths, _approval_dag("gated_fresh"))
+    run_workflow(paths, "gated_fresh")
+    assert alarm_stale_approvals(paths) == []
+    assert not [e for e in _events(paths) if e["type"] == "workflow.approval_stale"]
+
+
+def test_stale_approval_alarms_exactly_once(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _write_workflow(paths, _approval_dag("gated_stale"))
+    result = run_workflow(paths, "gated_stale")
+    parked = datetime.fromisoformat(result["nodes"]["gate"]["parked_at"])
+    later = parked + timedelta(hours=25)
+
+    alarmed = alarm_stale_approvals(paths, now=later)
+    assert [entry["node"] for entry in alarmed] == ["gate"]
+    stale = [e for e in _events(paths) if e["type"] == "workflow.approval_stale"]
+    assert len(stale) == 1
+    assert stale[0]["status"] == "error"
+    assert stale[0]["details"]["delivery"] == "undelivered"
+
+    # Idempotent: the heartbeat runs this every tick, so it must not re-alarm.
+    assert alarm_stale_approvals(paths, now=later + timedelta(hours=24)) == []
+    assert len([e for e in _events(paths) if e["type"] == "workflow.approval_stale"]) == 1
+    assert load_run(paths, result["id"])["nodes"]["gate"]["stale_alarm_at"]
+
+
+def test_resolved_approval_is_never_alarmed(tmp_path: Path) -> None:
+    """Advancement runs before the alarm sweep on the tick, so an approval that
+    arrived is resolved before it can be reported as unanswered."""
+    paths = init_runtime(tmp_path, examples=True)
+    _write_workflow(paths, _approval_dag("gated_resolved"))
+    result = run_workflow(paths, "gated_resolved")
+    resolve(paths.approvals, result["nodes"]["gate"]["approval_code"], approved=True)
+    advance_run(paths, load_run(paths, result["id"]))
+    assert alarm_stale_approvals(paths, now=datetime.now(timezone.utc) + timedelta(days=40)) == []
+
+
+def test_runs_listing_flags_undelivered_approvals(tmp_path: Path, capsys) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _write_workflow(paths, _approval_dag("gated_listing"))
+    run_workflow(paths, "gated_listing")
+    capsys.readouterr()
+    assert main(["--home", str(tmp_path), "workflow", "runs"]) == 0
+    out = capsys.readouterr().out
+    assert "approval NOT DELIVERED" in out
+    assert "jigga approve" in out
 
 
 # --- plan + CLI -------------------------------------------------------------

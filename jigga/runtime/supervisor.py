@@ -186,6 +186,17 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
             append_event(paths.logs, "workflow.runs_advanced", runs=advanced["advanced"])
     except Exception as exc:  # noqa: BLE001 — run advancement must not break the tick
         append_event(paths.logs, "workflow.advance_error", status="error", error=str(exc))
+    # Approvals parked past the age threshold get one off-channel alarm, so a
+    # run waiting on an ask nobody received can't sit silently forever. Runs
+    # after advancement, so an approval resolved this tick is never alarmed on.
+    try:
+        from jigga.runtime.workflow_engine import alarm_stale_approvals
+
+        stale = alarm_stale_approvals(paths)
+        if stale:
+            append_event(paths.logs, "workflow.approvals_stale", parked=stale)
+    except Exception as exc:  # noqa: BLE001 — the alarm sweep must not break the tick
+        append_event(paths.logs, "workflow.approval_alarm_error", status="error", error=str(exc))
     # One-shot reminders due by now become tasks for their target agent (fired
     # exactly once, bounded per sweep). Contained so a bad reminder file can't
     # break the tick.
