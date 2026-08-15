@@ -21,7 +21,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
-from jigga.core.io import ensure_dir, read_json, write_json
+from jigga.core.io import ensure_dir, read_json, read_yaml, write_json
 from jigga.core.paths import JiggaPaths
 from jigga.runtime.term_select import Option, select_one, supports_picker
 from jigga.optional_capabilities import (
@@ -34,6 +34,28 @@ from jigga.runtime.capabilities import (
     load_capability_manifest,
     record_approval,
 )
+
+
+def _copy_instructions(manifest_path: Path, target_dir: Path, *,
+                       print_fn: Callable[..., None] = print) -> None:
+    """Copy a skill_pack's `instructions:` file alongside its installed manifest.
+
+    The filename is taken from the manifest but reduced to its basename before
+    use — a pack must not be able to name `../../something` and have the
+    installer copy a file from outside its own directory.
+    """
+    try:
+        declared = (read_yaml(manifest_path) or {}).get("instructions")
+    except (OSError, ValueError):
+        return
+    if not declared:
+        return
+    name = Path(str(declared)).name
+    source = manifest_path.parent / name
+    if not source.is_file():
+        print_fn(f"! {manifest_path.parent.name}: declares instructions {name!r} but the file is missing.")
+        return
+    shutil.copyfile(source, target_dir / name)
 
 
 def install_capability(
@@ -63,6 +85,12 @@ def install_capability(
     already_installed = target_manifest.exists()
     ensure_dir(target_dir)
     shutil.copyfile(optional.manifest_path, target_manifest)
+    # A skill_pack's instructions live in a sibling file the manifest names, and
+    # `skills.read_instructions` resolves it relative to the installed manifest
+    # — so copying only the manifest installs a skill that silently has nothing
+    # to say. Confined to a bare filename: the manifest must not be able to
+    # reach out of its own pack directory.
+    _copy_instructions(optional.manifest_path, target_dir, print_fn=print_fn)
     if already_installed:
         print_fn(
             f"{optional.name!r} is already installed; re-running setup. "

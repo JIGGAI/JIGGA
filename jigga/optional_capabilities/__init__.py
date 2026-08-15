@@ -55,6 +55,12 @@ def _here() -> Path:
 
 
 REGISTRY: dict[str, OptionalCapability] = {
+    "daily-brief": OptionalCapability(
+        name="daily-brief",
+        summary="Skill — write the morning brief: what's ahead, what's open, what needs a decision",
+        manifest_path=_here() / "daily_brief" / "manifest.yaml",
+        setup_fn=None,   # a skill is instructions, not a connector: nothing to authenticate
+    ),
     "brave-search": OptionalCapability(
         name="brave-search",
         summary="Web search via the Brave Search API (API key, free tier)",

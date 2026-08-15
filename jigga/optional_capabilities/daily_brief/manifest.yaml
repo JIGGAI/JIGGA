@@ -1,0 +1,19 @@
+name: daily-brief
+version: 0.1.0
+summary: Write the morning brief — what's ahead today, what's still open, what needs a decision.
+type: skill_pack
+actions:
+  - skill.daily_brief
+instructions: instructions.md
+risk_level: low
+when_to_use: >
+  When asked for a morning brief, a daily summary, "what's on today", or a
+  start-of-day rundown. Not for a status report on one project — this is the
+  whole-day view.
+triggers:
+  - brief
+  - briefing
+  - today
+  - my day
+  - morning
+  - rundown

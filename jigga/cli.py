@@ -123,6 +123,83 @@ _CHANNEL_CATALOG: dict[str, tuple[str | None, str]] = {
 }
 
 
+# Which optional capability packs are worth offering once a given power is
+# granted. Keyed by the tool-group label `run_onboarding` reports back, so the
+# walk follows what the person actually said yes to rather than reciting the
+# whole registry at someone who wanted an assistant that writes.
+#
+# `telegram` is deliberately absent: it's a channel, and the channel question
+# already installed it. Asking twice in one flow reads as a bug.
+_ACCOUNTS_FOR_GROUP: dict[str, list[str]] = {
+    "Schedule": ["google-calendar", "gog", "email-imap"],
+    "Web": ["searxng", "brave-search"],
+}
+
+
+def _connect_accounts(paths: Any, tool_groups: list[str], *,
+                      prompt: Any = input, echo: Any = print) -> list[str]:
+    """Walk the accounts behind the powers that were granted, one at a time.
+
+    A grant with no account behind it is a capability that fails the first time
+    it's used — `web.search` granted with no provider, `calendar.list_events`
+    granted with no OAuth. This closes that gap while the person is still here
+    to answer, and offers nothing for a power they declined.
+    """
+    from jigga.optional_capabilities import REGISTRY
+
+    wanted: list[str] = []
+    for label in tool_groups:
+        for name in _ACCOUNTS_FOR_GROUP.get(label, []):
+            if name in REGISTRY and name not in wanted:
+                wanted.append(name)
+    if not wanted:
+        return []
+    echo("\nA couple of accounts to connect, so the things you just enabled "
+         "actually reach something.")
+    installed: list[str] = []
+    for name in wanted:
+        cap = REGISTRY[name]
+        echo("")
+        if not _confirm(f"  {cap.summary}\n  Set up {name} now?", default=False):
+            continue
+        if install_capability(paths, name=name, input_fn=prompt, print_fn=echo) == 0:
+            installed.append(name)
+    if not installed:
+        echo("• Nothing connected. `jigga capabilities install <name>` whenever you want to.")
+    return installed
+
+
+def _offer_skills(paths: Any, *, prompt: Any = input, echo: Any = print) -> list[str]:
+    """Offer the bundled skills — instructions the assistant loads when a task
+    matches their triggers, rather than carrying them in context all the time."""
+    from jigga.optional_capabilities import REGISTRY
+    from jigga.runtime.capabilities import load_capability_manifest
+
+    bundled: list[tuple[str, str]] = []
+    for name, cap in REGISTRY.items():
+        try:
+            manifest = load_capability_manifest(cap.manifest_path)
+        except (OSError, ValueError):
+            continue
+        if manifest.type == "skill_pack" and not (paths.capabilities / name / "manifest.yaml").exists():
+            bundled.append((name, cap.summary))
+    if not bundled:
+        return []
+    echo("\nSkills are instructions I load when a task matches — they cost nothing "
+         "until they're used.")
+    installed: list[str] = []
+    for name, summary in bundled:
+        echo("")
+        if not _confirm(f"  {summary}\n  Add the {name} skill?", default=True):
+            continue
+        if install_capability(paths, name=name, input_fn=prompt, print_fn=echo) == 0:
+            installed.append(name)
+    if installed:
+        echo(f"\n• Skills added: {', '.join(installed)}. `jigga skills list` to see them, "
+             "`jigga skills create` to write your own.")
+    return installed
+
+
 def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print,
                     preselected: str | None = None) -> None:
     """Interactive channel onboarding: pick a channel → run its guided install
@@ -1089,7 +1166,7 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
         _examples_setup(paths, interactive=interactive)
 
     # 1. Who the assistant works for + the default agent (USER.md + agent yaml).
-    run_onboarding(
+    setup = run_onboarding(
         paths,
         input_fn=input if interactive else (lambda _prompt: ""),
         overwrite=args.overwrite,
@@ -1127,15 +1204,17 @@ def _cmd_onboard(args: argparse.Namespace) -> int:
     elif not interactive and not args.skip_channels:
         print("• Skipped channel setup (non-interactive). Run `jigga channels setup` later.")
 
-    # 3.5 Web search — optional provider so `web.search` works from any host
-    # (the zero-config DDG-lite endpoint bot-blocks datacenter IPs; #158).
-    if interactive and _confirm(
-        "\nSet up a web-search provider for agents (SearXNG or Brave API)?", default=False
-    ):
-        pick = input("  1. searxng — metasearch instance, no API key\n"
-                     "  2. brave-search — Brave Search API key (free tier)\n"
-                     "Choose [1]: ").strip()
-        install_capability(paths, name="brave-search" if pick == "2" else "searxng")
+    # 3.5 Connect the accounts behind the powers that were just granted. Only
+    #     what was enabled is offered: someone who declined Schedule shouldn't
+    #     be walked through Google OAuth, and a grant with no account behind it
+    #     is a capability that fails the first time it's used.
+    if interactive:
+        _connect_accounts(paths, setup.get("tool_groups") or [])
+
+    # 3.6 Skills — instructions the assistant loads when a task matches. Offered
+    #     after the accounts, since a skill is only as useful as what it can reach.
+    if interactive:
+        _offer_skills(paths)
 
     # 4. Start it now + keep it running. Registering the user service is the
     #    right "start now": it runs in the background, independent of this shell
