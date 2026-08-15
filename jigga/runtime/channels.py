@@ -146,13 +146,19 @@ def _webchat_adapter() -> "ChannelAdapter":
 
 
 # Channel name -> adapter. Slack / iMessage / webhook register here once built.
-# Channel name -> adapter. Slack / iMessage / webhook register here once built.
+def _imessage_adapter() -> "ChannelAdapter":
+    from jigga.runtime.imessage import ImessageAdapter
+
+    return ImessageAdapter()
+
+
+# Channel name -> adapter. Slack / webhook register here once built.
 #
-# `runtime.sms.SmsAdapter` deliberately is NOT here. The SMS seam is built and
-# tested, but iMessage is the messaging channel that's coming; registering SMS
-# now would put a channel in the setup wizard that nobody is meant to pick yet.
-# Registering it later is this one line.
-ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter()}
+# `runtime.sms.SmsAdapter` deliberately is NOT here: the SMS seam is built and
+# tested, but iMessage is the messaging channel in use. Registering SMS later is
+# one more line.
+ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter(),
+                                       "imessage": _imessage_adapter()}
 
 
 def get_adapter(name: str) -> ChannelAdapter | None:
