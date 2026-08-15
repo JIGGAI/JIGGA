@@ -38,11 +38,13 @@ def test_onboarding_creates_default_agent_and_user_md(tmp_path: Path) -> None:
     user = (paths.home / "USER.md").read_text()
     assert "RJ" in user and "US/Central" in user and "Run the marketing team" in user
 
-    # default agent created, marked default, autonomous, with all caps incl. the new team caps
+    # default agent created, marked default, autonomous — but granted only the
+    # minimal safe core until the installer asks for more (see the tool-group
+    # tests below); team/filesystem powers are no longer handed over unasked.
     agent = load_agents(paths.agents)["chief"]
     assert agent.default is True and agent.permission_mode == "autonomous"
-    assert {"team.run", "task.assign", "team.list", "team.status"}.issubset(set(agent.tools))
-    assert "spawn_subagent" in agent.tools and "memory.search" in agent.tools
+    assert {"memory.remember", "memory.search", "notifications.send"}.issubset(set(agent.tools))
+    assert not {"team.run", "task.assign", "spawn_subagent"} & set(agent.tools)
     assert resolve_default_agent(paths.agents) == "chief"
 
     # persona (SOUL/AGENTS) authored into its workspace → context pack will inject it.
@@ -148,43 +150,62 @@ def test_soul_omits_sections_the_installer_skipped(tmp_path: Path) -> None:
 # --- tool groups ------------------------------------------------------------
 
 
-def test_default_tool_selection_excludes_shell_and_web(tmp_path: Path) -> None:
-    """Blanket-granting every bundled action handed a fresh install `shell.run`
-    without ever saying so. Accepting the defaults must not reach off the
-    machine or run arbitrary commands."""
+def test_default_tool_selection_is_a_minimal_safe_core(tmp_path: Path) -> None:
+    """Accepting the defaults grants an assistant that can remember things and
+    tell you about them — and nothing that touches the disk, the network, your
+    teams, or a shell. Blanket-granting used to hand over all ~31 actions."""
     paths = init_runtime(tmp_path)
     out = run_onboarding(paths, input_fn=_answers(call_you="RJ"), print_fn=lambda *a, **k: None)
     tools = set(out["tools"])
-    assert "shell.run" not in tools
-    assert "web.fetch" not in tools and "web.search" not in tools
-    # ...while everything a useful assistant needs is still on by default.
-    assert {"filesystem.read_file", "filesystem.write_file", "memory.remember", "memory.search",
-            "notifications.send", "team.list", "task.assign", "spawn_subagent",
-            "draft_with_model", "remind.at"} <= tools
+    assert tools == {"memory.remember", "memory.search", "summarize_day",
+                     "summarize_relevant_context", "notifications.send",
+                     "webchat.send_message", "mailbox.send"}
+    for withheld in ("shell.run", "web.fetch", "web.search", "filesystem.read_file",
+                     "filesystem.write_file", "task.assign", "team.run", "spawn_subagent",
+                     "draft_with_model", "remind.at"):
+        assert withheld not in tools, f"{withheld} must not be granted by default"
     assert set(load_agents(paths.agents)["chief"].tools) == tools
+
+
+def test_shell_is_never_offered_by_the_wizard(tmp_path: Path) -> None:
+    """Command-line access must be unreachable from a prompt: no group offers
+    it, and it can't ride in via the catch-all either. Turning it on takes a
+    deliberate hand-edit of the agent yaml."""
+    from jigga.commands.onboard import _all_capability_actions, _tool_groups
+
+    assert "shell" not in {g["key"] for g in _tool_groups()}
+    assert "shell.run" not in _all_capability_actions()
+    # ...not even by selecting every group on offer.
+    paths = init_runtime(tmp_path)
+    every = ",".join(str(i) for i in range(1, len(_tool_groups()) + 1))
+    out = run_onboarding(paths, input_fn=_answers(call_you="RJ", tools=every),
+                         print_fn=lambda *a, **k: None)
+    assert "shell.run" not in out["tools"]
 
 
 def test_tool_groups_can_be_selected_explicitly(tmp_path: Path) -> None:
     from jigga.commands.onboard import _tool_groups
 
     groups = [g["key"] for g in _tool_groups()]
-    shell_index = groups.index("shell") + 1
+    files_index = groups.index("files") + 1
     paths = init_runtime(tmp_path)
-    out = run_onboarding(paths, input_fn=_answers(call_you="RJ", tools=str(shell_index)),
+    out = run_onboarding(paths, input_fn=_answers(call_you="RJ", tools=str(files_index)),
                          print_fn=lambda *a, **k: None)
-    assert out["tools"] == ["shell.run"]
-    assert out["tool_groups"] == ["Shell"]
+    assert out["tool_groups"] == ["Files"]
+    assert set(out["tools"]) == {"filesystem.read_file", "filesystem.write_file",
+                                 "filesystem.list_directory", "filesystem.search_files"}
 
 
-def test_every_bundled_action_belongs_to_some_group(tmp_path: Path) -> None:
+def test_every_offerable_action_belongs_to_some_group() -> None:
     """A capability that no group claims must land in the catch-all, not vanish
-    — otherwise adding one silently withholds it from every new install."""
-    from jigga.commands.onboard import _all_capability_actions, _tool_groups
+    — otherwise adding one silently withholds it from every new install. The
+    never-offered set (shell) is excluded from both sides."""
+    from jigga.commands.onboard import _NEVER_OFFERED, _all_capability_actions, _tool_groups
     from jigga.runtime.capabilities import bundled_capabilities
 
     grouped = {a for g in _tool_groups() for a in g["actions"]}
-    expected = {a for cap in bundled_capabilities() for a in cap.actions
-                if not cap.is_runtime_only(a)}
+    expected = {a for cap in bundled_capabilities() if cap.name not in _NEVER_OFFERED
+                for a in cap.actions if not cap.is_runtime_only(a)}
     assert grouped == expected
     assert set(_all_capability_actions()) == expected
 
@@ -207,7 +228,7 @@ def test_setup_ends_by_introducing_the_agent(tmp_path: Path) -> None:
     assert "Hi RJ — I'm Ada." in out
     assert "Run the shop's marketing" in out
     assert "US/Central" in out
-    assert "I can: files" in out.lower() or "i can: files" in out.lower()
+    assert "i can: memory, notify" in out.lower()   # the minimal safe core, named honestly
     assert "~/Projects/**" in out
     assert "jigga trace" in out                      # the audit promise
     assert "jigga setup --overwrite" in out          # how to change it

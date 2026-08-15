@@ -54,36 +54,42 @@ _STYLES = {
     "warm": "Communicate in a warm, conversational, personable tone.",
 }
 
+# Capabilities no wizard may ever grant. Command-line access is deliberately
+# unreachable from a prompt: turning it on takes a deliberate hand-edit of the
+# agent's yaml for BOTH the tool grant and `permissions.shell`, so no one can
+# arrive at unattended shell execution by pressing Enter through a setup flow.
+# Excluded from every group *and* from the catch-all.
+_NEVER_OFFERED = {"shell"}
+
 # What the assistant can do, grouped for a human rather than listed as ~30 raw
 # actions. Groups are keyed by *capability name* (not action) so adding an
 # action to an existing capability needs no change here; a capability that
-# matches no group lands in the catch-all and stays enabled, so a new bundled
-# capability is never silently withheld.
+# matches no group lands in the catch-all, so a new bundled capability is never
+# silently withheld — but it arrives off, like everything else.
 #
-# `default_on` is False for anything that reaches off the machine or runs
-# arbitrary commands. Granting those unasked is how an install ends up with
-# more authority than its owner realizes they agreed to.
+# Only memory and notifications are on by default: enough for an assistant that
+# can remember things and tell you about them, and nothing that touches your
+# disk, your network, or your teams. Everything else is an explicit choice.
+# A grant handed over unasked is authority its owner never agreed to.
 _TOOL_GROUPS: list[dict[str, Any]] = [
-    {"key": "files", "label": "Files", "detail": "Read and write in the folders you allow",
-     "capabilities": ["filesystem"], "default_on": True},
     {"key": "memory", "label": "Memory", "detail": "Remember, recall, and summarize",
      "capabilities": ["memory-write", "memory-search", "summarization"], "default_on": True},
     {"key": "notify", "label": "Notify", "detail": "Desktop notifications and channel messages",
      "capabilities": ["notifications", "webchat", "mailbox"], "default_on": True},
+    {"key": "files", "label": "Files", "detail": "Read and write in the folders you allow",
+     "capabilities": ["filesystem"], "default_on": False},
     {"key": "writing", "label": "Writing", "detail": "Draft and review prose with the model",
-     "capabilities": ["text-generation", "content-drafting"], "default_on": True},
+     "capabilities": ["text-generation", "content-drafting"], "default_on": False},
     {"key": "schedule", "label": "Schedule", "detail": "Reminders, calendar, and mail lookups",
-     "capabilities": ["reminders", "calendar", "email"], "default_on": True},
+     "capabilities": ["reminders", "calendar", "email"], "default_on": False},
     {"key": "teams", "label": "Teams", "detail": "Delegate work and oversee every team",
      "capabilities": ["team-insight", "team-orchestration", "subagent-delegation", "tickets"],
-     "default_on": True},
+     "default_on": False},
     {"key": "web", "label": "Web", "detail": "Fetch pages and search the web (leaves this machine)",
      "capabilities": ["web"], "default_on": False},
-    {"key": "shell", "label": "Shell", "detail": "Run shell commands on this machine (HIGH RISK)",
-     "capabilities": ["shell"], "default_on": False},
 ]
 _CATCH_ALL = {"key": "other", "label": "Other", "detail": "Everything else bundled with JIGGA",
-              "capabilities": [], "default_on": True}
+              "capabilities": [], "default_on": False}
 
 
 def _actions_of(cap: Any) -> list[str]:
@@ -99,7 +105,7 @@ def _tool_groups() -> list[dict[str, Any]]:
     bundled that no group claims joins the catch-all."""
     from jigga.runtime.capabilities import bundled_capabilities
 
-    by_name = {cap.name: cap for cap in bundled_capabilities()}
+    by_name = {cap.name: cap for cap in bundled_capabilities() if cap.name not in _NEVER_OFFERED}
     claimed: set[str] = set()
     groups: list[dict[str, Any]] = []
     for spec in _TOOL_GROUPS:
@@ -134,7 +140,9 @@ def _choose_tools(input_fn: Callable[[str], str], print_fn: Callable[..., None],
 
     Previously every bundled action was granted unconditionally, `shell.run`
     included — a fresh install handed its assistant the ability to run
-    arbitrary commands without ever saying so out loud.
+    arbitrary commands without ever saying so out loud. Now an agent starts
+    with a minimal safe core (memory + notifications) and everything else is
+    an explicit choice; `shell` isn't offered here at any setting.
     """
     groups = _tool_groups()
     title = f"What should {agent_name} be able to do?"
