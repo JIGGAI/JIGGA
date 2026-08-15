@@ -115,7 +115,12 @@ Telegram is the reference for channel capabilities. To add one:
 
 ---
 
-# SMS channel (provider-agnostic)
+# SMS (built, not registered)
+
+`SmsAdapter` is **deliberately absent from `channels.ADAPTERS`**. The seam is
+built and tested, but iMessage is the messaging channel that's coming; offering
+SMS in the setup wizard now would list something nobody is meant to pick yet.
+Registering it later is one line.
 
 `runtime/sms.py` implements the `ChannelAdapter` contract with a **driver seam**:
 `SMS_DRIVERS` maps a name to an implementation, and adding a provider is one

@@ -211,9 +211,8 @@ def test_channels_setup_uses_picker_for_channel_and_activation(tmp_path, monkeyp
     paths = init_runtime(tmp_path)
     monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
     titles: list[str] = []
-    # sorted catalog is [sms, telegram, webchat] → telegram is index 1;
-    # activation pick → index 1 (mention)
-    answers = iter([1, 1])
+    # channel pick → index 0 (telegram); activation pick → index 1 (mention)
+    answers = iter([0, 1])
     monkeypatch.setattr("jigga.cli.select_one",
                         lambda title, options, **k: titles.append(title) or next(answers))
     monkeypatch.setattr("jigga.cli.install_capability", lambda *a, **k: 0)
@@ -312,7 +311,7 @@ def test_channels_setup_activation_cancel_defaults_to_always(tmp_path, monkeypat
 
     paths = init_runtime(tmp_path)
     monkeypatch.setattr("jigga.cli.supports_picker", lambda *a, **k: True)
-    answers = iter([1, None])                      # pick telegram; cancel the activation pick
+    answers = iter([0, None])                      # pick telegram; cancel the activation pick
     monkeypatch.setattr("jigga.cli.select_one", lambda *a, **k: next(answers))
     monkeypatch.setattr("jigga.cli.install_capability", lambda *a, **k: 0)
     _channels_setup(paths, prompt=lambda _p: "", echo=lambda *a, **k: None)

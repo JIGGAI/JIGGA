@@ -62,12 +62,17 @@ def _events(paths) -> list[dict]:
 # --- registration -----------------------------------------------------------
 
 
-def test_sms_is_a_registered_channel() -> None:
-    assert "sms" in ADAPTERS
-    adapter = ADAPTERS["sms"]
+def test_sms_is_built_but_not_registered_as_a_channel() -> None:
+    """The seam is ready; the channel is not offered. iMessage is the messaging
+    channel that's coming, and putting SMS in the setup wizard now would offer
+    something nobody is meant to pick yet. Registering it is one line in
+    `channels.ADAPTERS`."""
+    assert "sms" not in ADAPTERS
+    adapter = SmsAdapter()
     assert adapter.name == "sms"
     # Drivers fetch and return; claiming to long-poll would hot-spin the loop.
     assert adapter.long_polls is False
+    assert callable(adapter.poll) and callable(adapter.send)
 
 
 # --- accepted is not delivered (assertion 20) -------------------------------
