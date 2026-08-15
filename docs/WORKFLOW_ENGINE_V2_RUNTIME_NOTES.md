@@ -85,6 +85,30 @@ new `consume_if_denied`). Approve → the node runs (or completes, for
 Unlike v1 plans, `needs_approval` does **not** make a v2 plan unrunnable —
 the run parks at that node instead of refusing to start.
 
+### Deliverability is resolved before the run parks
+
+An approval nobody can receive is indistinguishable from one nobody has
+answered yet, and that ambiguity is how the precursor stack parked a run for 36
+days — silently taking out every downstream run for a month (see
+`docs/FIELD_LESSONS_HMX_PRODUCTION.md` §3.2a). So the delivery target is
+resolved *before* `request_approval`, and the node records the outcome:
+
+- `delivery: "delivered"` — the ask reached the owner conversation.
+- `delivery: "undelivered"` + `delivery_error: <reason>` — no owner
+  conversation on any enabled channel, no registered adapter for it, or the
+  send itself raised. The run **still parks** (`jigga approve <code>` always
+  works locally), but it parks visibly: `workflow.approval_undeliverable` is
+  logged at `status: error`, and `jigga workflow runs` flags the node.
+
+`parked_at` is stamped on every parked node, and `alarm_stale_approvals` — run
+from the supervisor heartbeat after advancement, so an approval that arrived
+this tick is never reported as unanswered — alarms once on any node parked past
+`approvals.max_parked_hours` (default 24). The alarm goes out as a **desktop
+notification, not through the channel**: an alarm must not depend on the
+subsystem it monitors, and an undelivered ask is the likeliest reason for the
+silence in the first place. `stale_alarm_at` makes the sweep idempotent, and
+run status is never changed — a parked run is still legitimately parked.
+
 ## Follow-up work
 
 - **Media nodes** (image/video/audio drivers) — the deliberate remainder of

@@ -1588,9 +1588,16 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
             from collections import Counter
 
             for record in records:
-                counts = Counter(v["status"] for v in record.get("nodes", {}).values())
+                nodes = record.get("nodes", {})
+                counts = Counter(v["status"] for v in nodes.values())
                 summary = ", ".join(f"{status}={n}" for status, n in sorted(counts.items()))
                 print(f"- {record['id']}  {record['workflow_id']}  [{record['status']}]  {summary}")
+                # An ask that was never delivered reads exactly like one nobody
+                # has answered yet unless it's called out here.
+                for node_id, state in sorted(nodes.items()):
+                    if state.get("status") == "awaiting_approval" and state.get("delivery") == "undelivered":
+                        print(f"    ! {node_id}: approval NOT DELIVERED ({state.get('delivery_error')}) "
+                              f"— approve locally with `jigga approve {state.get('approval_code')}`")
             if not records:
                 print("No v2 workflow runs.")
     elif args.workflow_command == "resume":

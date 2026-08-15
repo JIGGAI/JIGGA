@@ -24,10 +24,11 @@ the media drivers parity work.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from jigga.core.config import default_permission_mode, load_agents, load_workflows
+from jigga.core.config import default_permission_mode, load_agents, load_runtime_config, load_workflows
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowNode, WorkflowStep, now_iso
 from jigga.core.paths import JiggaPaths
@@ -37,6 +38,7 @@ from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.channels import ADAPTERS, owner_conversation
 from jigga.runtime.dispatcher import RuntimeContext, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
+from jigga.runtime.notifications import NotificationRequest, delivery_mode, send_notification
 
 NODE_TYPES = {"tool", "llm", "human_approval", "writeback"}
 EDGE_ON = {"success", "error", "always"}
@@ -45,6 +47,10 @@ _TERMINAL = {"done", "failed", "skipped"}
 # monopolize the supervisor heartbeat.
 DEFAULT_MAX_NODES_PER_ADVANCE = 10
 DEFAULT_MAX_RUNS_PER_TICK = 8
+# How long an approval may sit parked before the run is alarmed on. A human
+# legitimately takes hours, so this is not a failure threshold — it's the point
+# past which silence stops being evidence that anyone was ever asked.
+DEFAULT_MAX_PARKED_HOURS = 24
 
 
 # --- graph -----------------------------------------------------------------
@@ -213,10 +219,27 @@ def _approval_key(record: dict[str, Any], node_id: str) -> tuple[str, str]:
     return (f"wfrun:{record['id']}", f"workflow_node:{record['workflow_id']}:{node_id}")
 
 
+def _delivery_target(paths: JiggaPaths) -> tuple[str | None, Any, str | None]:
+    """(channel, conversation_id, problem) for an approval ask to the owner.
+
+    `problem` is None only when the ask can actually be delivered; otherwise it
+    names why not. Resolved *before* the node parks so that "nobody has answered
+    yet" and "nobody was ever asked" are different states rather than the same
+    silence — the ambiguity that parked a run for 36 days on the precursor stack
+    and took every downstream run with it.
+    """
+    owner = owner_conversation(paths.home)
+    if owner is None:
+        return None, None, "no owner conversation on any enabled channel"
+    channel, conversation_id = owner
+    if ADAPTERS.get(channel) is None:
+        return channel, conversation_id, f"channel {channel!r} has no registered adapter"
+    return channel, conversation_id, None
+
+
 def _park_for_approval(paths: JiggaPaths, record: dict[str, Any], node: WorkflowNode, reason: str) -> None:
     task_id, action = _approval_key(record, node.id)
-    owner = owner_conversation(paths.home)
-    channel, conversation_id = owner if owner else (None, None)
+    channel, conversation_id, problem = _delivery_target(paths)
     approval = request_approval(
         paths.approvals, agent_id=node.agent or "workflow", task_id=task_id, action=action,
         reason=reason, channel=channel, conversation_id=conversation_id,
@@ -224,17 +247,95 @@ def _park_for_approval(paths: JiggaPaths, record: dict[str, Any], node: Workflow
     state = record["nodes"][node.id]
     state["status"] = "awaiting_approval"
     state["approval_code"] = approval["code"]
+    state["parked_at"] = now_iso()
     append_event(paths.logs, "workflow.approval_requested", status="ask", workflow=record["workflow_id"],
                  run_id=record["id"], node=node.id, code=approval["code"], channel=channel)
-    adapter = ADAPTERS.get(channel) if channel else None
-    if adapter is not None and conversation_id is not None:
+    if problem is None:
         prompt = (node.input or {}).get("prompt") or reason
         text = (f"Workflow {record['workflow_id']} is waiting on node {node.id}.\n{prompt}\n\n"
                 f"Reply: approve {approval['code']}   or   deny {approval['code']}")
         try:
-            adapter.send(paths.home, conversation_id=conversation_id, text=text)
-        except Exception as exc:  # noqa: BLE001 — a notify failure must not fail the run; the code still works via CLI
-            append_event(paths.logs, "approval.notify_failed", status="error", code=approval["code"], error=str(exc))
+            ADAPTERS[channel].send(paths.home, conversation_id=conversation_id, text=text)
+            state["delivery"] = "delivered"
+            return
+        except Exception as exc:  # noqa: BLE001 — a send fault must not fail the run; the code still works via CLI
+            problem = f"send failed: {exc}"
+    # Undeliverable. The run still parks — `jigga approve <code>` always works —
+    # but it parks *visibly*: the node carries the reason, the event is an
+    # error, and `alarm_stale_approvals` escalates off-channel if it sits.
+    state["delivery"] = "undelivered"
+    state["delivery_error"] = problem
+    append_event(paths.logs, "workflow.approval_undeliverable", status="error", workflow=record["workflow_id"],
+                 run_id=record["id"], node=node.id, code=approval["code"], channel=channel, error=problem,
+                 hint=f"run is parked; approve locally with `jigga approve {approval['code']}`")
+
+
+def _max_parked_hours(home: Path) -> int:
+    approvals = load_runtime_config(home).get("approvals") or {}
+    return int(approvals.get("max_parked_hours", DEFAULT_MAX_PARKED_HOURS))
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def alarm_stale_approvals(paths: JiggaPaths, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Alarm once on each approval node parked past `approvals.max_parked_hours`.
+
+    Deliberately routed to a desktop notification rather than back through the
+    channel: an alarm must not depend on the subsystem it monitors, and the most
+    likely reason an approval went unanswered is that the channel could not
+    deliver the ask in the first place.
+
+    Marks `stale_alarm_at` on the node so the alarm fires once per parked node
+    rather than every heartbeat. Never changes run status — a parked run is
+    still legitimately parked; this only makes the silence audible.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=_max_parked_hours(paths.home))
+    dry_run = delivery_mode(paths.home) == "dry_run"
+    alarmed: list[dict[str, Any]] = []
+    for record in list_runs(paths, active_only=True):
+        changed = False
+        for node_id, state in (record.get("nodes") or {}).items():
+            if state.get("status") != "awaiting_approval" or state.get("stale_alarm_at"):
+                continue
+            parked = _parse_iso(state.get("parked_at"))
+            if parked is None or parked >= cutoff:
+                continue
+            state["stale_alarm_at"] = now_iso()
+            changed = True
+            undelivered = state.get("delivery") == "undelivered"
+            code = state.get("approval_code")
+            append_event(paths.logs, "workflow.approval_stale", status="error",
+                         workflow=record.get("workflow_id"), run_id=record.get("id"), node=node_id,
+                         code=code, parked_at=state.get("parked_at"), delivery=state.get("delivery"),
+                         delivery_error=state.get("delivery_error"))
+            body = (f"{record.get('workflow_id')} / {node_id} has been waiting since "
+                    f"{state.get('parked_at')}."
+                    + (" The request was never delivered." if undelivered else "")
+                    + f" Approve with: jigga approve {code}")
+            try:
+                send_notification(
+                    NotificationRequest(title="JIGGA: approval still waiting", body=body,
+                                        urgency="critical" if undelivered else "normal"),
+                    dry_run=dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001 — the audit event is the durable alarm; delivery is best-effort
+                append_event(paths.logs, "workflow.approval_alarm_error", status="error",
+                             run_id=record.get("id"), node=node_id, error=str(exc))
+            alarmed.append({"run_id": record.get("id"), "workflow": record.get("workflow_id"),
+                            "node": node_id, "delivery": state.get("delivery")})
+        if changed:
+            record["updated_at"] = now_iso()
+            write_json(Path(record["run_dir"]) / "run.json", record)
+    return alarmed
 
 
 def _approval_resolution(paths: JiggaPaths, record: dict[str, Any], node_id: str) -> str:
