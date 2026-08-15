@@ -115,7 +115,7 @@ workflows:
         action: draft_with_model
         input:
           prompt: "Write (a) one launch tweet under 200 characters and (b) a 3-sentence LinkedIn post."
-          core_message: core_message.md
+          core_message: ${core_message.md}
         output: copy.md
         approval: not_required
       - id: review
@@ -123,7 +123,7 @@ workflows:
         action: draft_with_model
         input:
           prompt: "Give 3 short bullet notes on clarity, accuracy of claims, and keyword coverage."
-          copy: copy.md
+          copy: ${copy.md}
         output: review.md
         approval: not_required
     outputs:

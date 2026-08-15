@@ -392,7 +392,16 @@ def _execute_node(
             # resolve_value substitutes output names with their values (v1
             # chaining semantics), so `source: <name>` usually arrives already
             # resolved; a still-string source falls back to an outputs lookup.
-            resolved = resolve_value(dict(node.input or {}), record["outputs"])
+            # An unresolved `${name}` raises here and fails the node — which is
+            # the point: a writeback that silently wrote its own reference text
+            # to disk is the corruption this exists to prevent.
+            implicit: list[str] = []
+            resolved = resolve_value(dict(node.input or {}), record["outputs"], implicit=implicit)
+            for ref in implicit:
+                append_event(paths.logs, "workflow.reference.implicit", status="ask",
+                             workflow=record["workflow_id"], run_id=record["id"],
+                             node=node.id, reference=ref,
+                             hint=f"write it as ${{{ref}}}")
             content = resolved.get("value", resolved.get("source"))
             if isinstance(content, str):
                 content = record["outputs"].get(content, content)

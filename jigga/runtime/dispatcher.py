@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import importlib
 from functools import lru_cache
 from pathlib import Path
@@ -64,13 +65,55 @@ __all__ = [
 SCALAR_CAPABILITY_RESOURCES = ("calendar", "email", "notifications", "mailbox", "tickets")
 
 
-def resolve_value(value: Any, outputs: dict[str, Any]) -> Any:
+# `${name}` — an explicit reference to a named step output. Anchored: a value is
+# a reference or it isn't, never a string with one embedded, so there is no
+# partial-substitution state to reason about.
+_REFERENCE = re.compile(r"^\$\{([^{}]+)\}$")
+
+
+class UnresolvedReferenceError(ValueError):
+    """A `${name}` reference named an output that doesn't exist."""
+
+
+def resolve_value(value: Any, outputs: dict[str, Any], *,
+                  implicit: list[str] | None = None) -> Any:
+    """Substitute step outputs into an input value.
+
+    Two forms, deliberately unequal:
+
+    **`${name}` — explicit, fail-closed.** If `name` isn't among the outputs
+    this raises. An unresolved reference is never what the caller meant: it's a
+    typo, or a step that didn't run. Refusing is the only safe reading.
+
+    **A bare string — implicit, fail-open.** Still resolves when it happens to
+    name an output, so existing workflows keep running, but every such
+    resolution is appended to `implicit` for the caller to surface. This is the
+    dangerous form and it's on its way out: a bare name matching nothing stays
+    a literal, indistinguishable from a deliberate string. That ambiguity is how
+    an unsubstituted guard rendered as its own template text, failed a
+    truthiness check, and published 20 unapproved items on the precursor stack
+    (FIELD_LESSONS §3.2c). With `${}` the same mistake raises instead.
+    """
     if isinstance(value, str):
-        return outputs.get(value, value)
+        match = _REFERENCE.match(value.strip())
+        if match:
+            name = match.group(1).strip()
+            if name not in outputs:
+                available = ", ".join(sorted(outputs)) or "none"
+                raise UnresolvedReferenceError(
+                    f"unresolved reference ${{{name}}} — no step produced an output named "
+                    f"{name!r} (available: {available})"
+                )
+            return outputs[name]
+        if value in outputs:
+            if implicit is not None and value not in implicit:
+                implicit.append(value)
+            return outputs[value]
+        return value
     if isinstance(value, list):
-        return [resolve_value(item, outputs) for item in value]
+        return [resolve_value(item, outputs, implicit=implicit) for item in value]
     if isinstance(value, dict):
-        return {key: resolve_value(item, outputs) for key, item in value.items()}
+        return {key: resolve_value(item, outputs, implicit=implicit) for key, item in value.items()}
     return value
 
 
@@ -315,7 +358,22 @@ def execute_step(
     run_id: str,
 ) -> tuple[Any, Path | None]:
     ensure_dir(run_dir)
-    resolved_input = resolve_value(step.input, outputs)
+    # Substitution is recorded, never silent. An unresolved `${name}` fails the
+    # step with the reference named; a bare name that resolved is logged so the
+    # run record shows where the fail-open form is still in use.
+    implicit: list[str] = []
+    try:
+        resolved_input = resolve_value(step.input, outputs, implicit=implicit)
+    except UnresolvedReferenceError as exc:
+        append_event(logs_dir, "workflow.reference.unresolved", status="error",
+                     workflow=workflow_id, run_id=run_id, step=step.id,
+                     action=step.action, error=str(exc))
+        raise
+    for name in implicit:
+        append_event(logs_dir, "workflow.reference.implicit", status="ask",
+                     workflow=workflow_id, run_id=run_id, step=step.id, reference=name,
+                     hint=f"write it as ${{{name}}} — a bare name that matches nothing "
+                          "stays a literal instead of failing")
     output = dispatch_action(
         step,
         resolved_input,
