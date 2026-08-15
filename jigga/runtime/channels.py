@@ -146,6 +146,12 @@ def _webchat_adapter() -> "ChannelAdapter":
 
 
 # Channel name -> adapter. Slack / iMessage / webhook register here once built.
+# Channel name -> adapter. Slack / iMessage / webhook register here once built.
+#
+# `runtime.sms.SmsAdapter` deliberately is NOT here. The SMS seam is built and
+# tested, but iMessage is the messaging channel that's coming; registering SMS
+# now would put a channel in the setup wizard that nobody is meant to pick yet.
+# Registering it later is this one line.
 ADAPTERS: dict[str, ChannelAdapter] = {"telegram": TelegramAdapter(), "webchat": _webchat_adapter()}
 
 

@@ -16,7 +16,7 @@ def _scripted(answers: list[str]):
 def test_channels_setup_telegram_end_to_end(tmp_path: Path) -> None:
     paths = init_runtime(tmp_path)
     # pick telegram(1) → token → decline discovery → chat ids → default agent → activation: mention(2)
-    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "daily_briefing_agent", "2"]
+    answers = ["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "daily_briefing_agent", "2"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda _m: None)
 
     # capability installed + approved → its action resolves
@@ -50,7 +50,7 @@ def test_channels_setup_grants_channel_tools_to_routed_agent(tmp_path: Path) -> 
                {"id": "assistant", "name": "Assistant", "role": "pa", "default": True,
                 "permission_mode": "autonomous", "tools": ["filesystem.read"]})
     # channel "1", token, discover "n", chat ids, route to "assistant", activation "2"
-    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "2"]
+    answers = ["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "2"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
 
     agent = load_agents(paths.agents)["assistant"]
@@ -68,7 +68,7 @@ def test_grant_excludes_runtime_only_poll(tmp_path: Path) -> None:
     allows one getUpdates consumer; an agent polling collides with the
     supervisor's long-poll or steals the update offset (dropped messages)."""
     paths = init_runtime(tmp_path, examples=True)
-    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111",
+    answers = ["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111",
                "daily_briefing_agent", "1"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda _m: None)
 
@@ -121,7 +121,7 @@ def test_setup_overwrite_preserves_channel_grants(tmp_path: Path, monkeypatch) -
 
     paths = init_runtime(tmp_path)
     # Channel install + enable, routed to the (about-to-exist) default agent.
-    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
+    answers = ["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
     # Create the default agent via setup, then rename it with --overwrite
     # (the exact sequence that lost the grant).
@@ -143,7 +143,7 @@ def test_setup_overwrite_does_not_grant_disabled_channels(tmp_path: Path, monkey
     from jigga.core.io import write_yaml
 
     paths = init_runtime(tmp_path)
-    answers = ["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
+    answers = ["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "chief", "1"]
     _channels_setup(paths, prompt=_scripted(answers), echo=lambda *_a, **_k: None)
     config = read_yaml(paths.config)
     config["channels"]["telegram"]["enabled"] = False        # user turned it off

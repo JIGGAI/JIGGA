@@ -104,7 +104,7 @@ def test_channels_check_warns_when_agent_cant_reach_network(tmp_path: Path, monk
     write_yaml(paths.agents / "assistant.yaml",
                {"id": "assistant", "name": "A", "role": "pa", "default": True,
                 "permission_mode": "autonomous", "tools": []})
-    answers = iter(["1", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "1"])
+    answers = iter(["telegram", "123456789:AAEdummytokendummytokendummytoken00", "n", "111", "assistant", "1"])
     _channels_setup(paths, prompt=lambda _p: next(answers), echo=lambda *_a, **_k: None)
 
     # full setup grants tool + network -> OK
