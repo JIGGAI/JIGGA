@@ -1,0 +1,12 @@
+name: image-generation
+version: 0.1.0
+summary: Generate images from prompts (Gemini / nano-banana by default; any OpenAI-compatible endpoint too).
+type: native
+actions:
+  - media.generate_image
+permissions:
+  network:
+    mode: allow
+    target: https://generativelanguage.googleapis.com
+risk_level: medium
+handler: runtime.media

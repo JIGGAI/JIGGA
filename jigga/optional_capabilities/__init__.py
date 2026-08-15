@@ -35,6 +35,7 @@ from typing import Callable
 from jigga.optional_capabilities.brave_search import setup as brave_search_setup
 from jigga.optional_capabilities.email import setup as email_setup
 from jigga.optional_capabilities.gog import setup as gog_setup
+from jigga.optional_capabilities.image_generation import setup as image_generation_setup
 from jigga.optional_capabilities.searxng import setup as searxng_setup
 from jigga.optional_capabilities.google_calendar import (
     setup as google_calendar_setup,
@@ -60,6 +61,12 @@ REGISTRY: dict[str, OptionalCapability] = {
         summary="Skill — write the morning brief: what's ahead, what's open, what needs a decision",
         manifest_path=_here() / "daily_brief" / "manifest.yaml",
         setup_fn=None,   # a skill is instructions, not a connector: nothing to authenticate
+    ),
+    "image-generation": OptionalCapability(
+        name="image-generation",
+        summary="Generate images from prompts — Gemini (nano-banana) or an OpenAI-compatible endpoint",
+        manifest_path=_here() / "image_generation" / "manifest.yaml",
+        setup_fn=image_generation_setup,
     ),
     "brave-search": OptionalCapability(
         name="brave-search",

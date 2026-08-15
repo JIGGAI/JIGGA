@@ -110,6 +110,12 @@ _TOOL_QUESTIONS: list[dict[str, Any]] = [
      "question": "Should I be able to look things up on the web?",
      "detail": "This is the first thing that leaves your machine.",
      "default_yes": False},
+    {"key": "images", "label": "Images",
+     "capabilities": ["media"],
+     "question": "Should I be able to generate images?",
+     "detail": "Each one is a paid call to an image provider, so this costs money "
+               "per picture. Needs `jigga capabilities install image-generation`.",
+     "default_yes": False},
 ]
 # Anything bundled that neither the floor nor a question claims. Asked last and
 # off by default, so a newly added capability is never silently withheld — but

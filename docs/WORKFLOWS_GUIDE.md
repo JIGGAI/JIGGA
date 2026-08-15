@@ -162,6 +162,29 @@ supervisor now runs it for you.
 
 ---
 
+### Media nodes
+
+A `media` node produces a picture instead of prose. It desugars to the
+`media.generate_image` capability, so it inherits the whole ordinary chain —
+tool grant, risk gating, approval outside autonomous mode, egress policy, audit:
+
+```yaml
+- id: post_art
+  type: media                      # v1 steps use `action: media.generate_image`
+  agent: designer
+  input: {prompt: "A barber pole against a brick wall, warm evening light"}
+  output: post.png                 # written as real bytes, not JSON
+```
+
+Set the provider up with `jigga capabilities install image-generation`. The
+default driver is **Gemini (nano-banana)**; an OpenAI-compatible
+`/images/generations` endpoint is the alternative. Drivers live in
+`IMAGE_DRIVERS` — adding one is a single entry plus a function.
+
+> JIGGA's *text* provider cannot serve this. `chatgpt_oauth` posts to the Codex
+> responses endpoint on a subscription token; image generation is a separately
+> keyed provider configured under `media.image`, and each call costs money.
+
 ## 6. DAG workflows (engine v2)
 
 Declare `nodes` + `edges` instead of `steps` and the workflow becomes a graph:

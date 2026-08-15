@@ -98,7 +98,8 @@ def _plan_workflow_v2(
                                       "permission": None, "permission_mode": None,
                                       "capability": None, "risk_level": None}
         else:
-            action = node.action or ("draft_with_model" if node.type == "llm" else "")
+            from jigga.runtime.workflow_engine import _NODE_TYPE_ACTIONS
+            action = node.action or _NODE_TYPE_ACTIONS.get(node.type, "")
             step = _Step(id=node.id, action=action, agent=node.agent,
                          input=dict(node.input or {}), output=node.output, optional=node.optional)
             if node.type == "writeback":

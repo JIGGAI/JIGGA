@@ -22,7 +22,7 @@ def _scripted(answers: list[str]):
 # sequence entirely rather than letting it shift every later answer by one.
 _QUESTIONS = ["call_you", "timezone", "purpose", "role", "name", "pronouns",
               "style", "working_style", "boundaries",
-              "writing", "files", "dirs", "schedule", "teams", "helpers", "web"]
+              "writing", "files", "dirs", "schedule", "teams", "helpers", "web", "images"]
 
 
 def _answers(**given: str):
@@ -252,7 +252,8 @@ def test_shell_is_never_offered_by_the_wizard(tmp_path: Path) -> None:
     # ...not even by saying yes to every single question.
     paths = init_runtime(tmp_path)
     out = run_onboarding(paths, input_fn=_answers(
-        call_you="RJ", writing="y", files="y", schedule="y", teams="y", helpers="y", web="y"),
+        call_you="RJ", writing="y", files="y", schedule="y", teams="y", helpers="y",
+        web="y", images="y"),
         print_fn=lambda *a, **k: None)
     assert "shell.run" not in out["tools"]
 
@@ -309,7 +310,8 @@ def test_every_offerable_action_is_reachable(tmp_path: Path) -> None:
     # And saying yes to everything actually grants all of it.
     paths = init_runtime(tmp_path)
     out = run_onboarding(paths, input_fn=_answers(
-        call_you="RJ", writing="y", files="y", schedule="y", teams="y", helpers="y", web="y"),
+        call_you="RJ", writing="y", files="y", schedule="y", teams="y", helpers="y",
+        web="y", images="y"),
         print_fn=lambda *a, **k: None)
     assert set(out["tools"]) == expected
 
