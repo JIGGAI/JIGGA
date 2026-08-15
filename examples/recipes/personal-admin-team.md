@@ -33,7 +33,6 @@ agents:
         - email.search
         - notifications.send
         - summarize_day
-        - memory.write_summary
         - memory.search
       # Where notifications.send reaches the user: "default" = the user's default
       # connected channel (config channels.default, set when they connect one), or
@@ -74,11 +73,31 @@ agents:
       workflows:
         - morning_day_summary
         - meeting_reminders
-  # Membership-only roles: on the roster so routing/workflows can reference
-  # them; staff them later (scaffold or hand-write the agent yaml).
+  # `meeting_prep_agent` is STAFFED: the meeting_reminders workflow calls it, and
+  # a role a workflow references but nobody staffs is a pipeline that can't run.
   - role: meeting prep
     id: meeting_prep_agent
-    required: false
+    required: true
+    agent:
+      name: Meeting Prep Agent
+      role: Pulls together the context needed before a meeting starts.
+      model: profile:default
+      memory_scope: manager_view
+      tools:
+        - summarize_relevant_context
+        - calendar.get_event
+        - memory.search
+      permissions:
+        memory: {scope: manager_view}
+        calendar: read
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.meeting_prep_agent
+        accepts_agent_requests: true
+  # Genuinely optional: no workflow references it, so it stays membership-only
+  # until someone wants email triage and staffs it.
   - role: email triage
     id: inbox_triage_agent
     required: false

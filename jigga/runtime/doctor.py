@@ -186,6 +186,39 @@ def _check_model(paths: JiggaPaths, *, probe: bool = False) -> Check:
                       "`jigga doctor --probe` sends one real request through it.")
 
 
+def _check_agent_tools(paths: JiggaPaths) -> Check:
+    """Grants that can't work: an action naming no capability, or one whose
+    capability needs a permission the agent doesn't have.
+
+    Both fail quietly. An unregistered action is filtered out before the model
+    is ever offered it, so the agent simply never does that thing and nobody
+    learns why; a blocked one is offered and fails at the moment of use.
+    """
+    from jigga.core.config import load_agents
+    from jigga.runtime.capabilities import CapabilityRegistry
+    from jigga.runtime.dispatcher import unusable_grants
+
+    try:
+        agents = load_agents(paths.agents)
+        registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                           approvals_dir=paths.policies)
+    except Exception:  # noqa: BLE001
+        return Check("agent_tools", WARN, "Could not load agents to check their grants")
+    if not agents:
+        return Check("agent_tools", OK, "No agents configured")
+
+    problems: list[str] = []
+    for agent_id, agent in sorted(agents.items()):
+        for row in unusable_grants(agent, registry):
+            label = "unknown action" if row["status"] == "unregistered" else "no permission"
+            problems.append(f"{agent_id}:{row['action']} ({label})")
+    if not problems:
+        return Check("agent_tools", OK, f"All granted tools usable across {len(agents)} agent(s)")
+    shown = "; ".join(problems[:4]) + (f"; +{len(problems) - 4} more" if len(problems) > 4 else "")
+    return Check("agent_tools", WARN, f"{len(problems)} grant(s) can't work: {shown}",
+                 hint="`jigga agents tools <id>` shows the full picture per agent.")
+
+
 def _check_channels(paths: JiggaPaths) -> Check:
     from jigga.runtime.channel_listener import enabled_channels
 
@@ -384,6 +417,7 @@ def run_checks(paths: JiggaPaths, *, probe: bool = False) -> Report:
         report.checks.append(_check_config(paths))
         report.checks.append(_check_default_agent(paths))
         report.checks.append(_check_model(paths, probe=probe))
+        report.checks.append(_check_agent_tools(paths))
         report.checks.append(_check_channels(paths))
         report.checks.append(_check_service(paths))
         report.checks.append(_check_secrets(paths))

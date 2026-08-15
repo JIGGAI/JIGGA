@@ -792,6 +792,10 @@ def build_parser() -> argparse.ArgumentParser:
     agents_delete = agents_sub.add_parser("delete", help="Delete an agent (backed up; recipe member de-staffed)")
     agents_delete.add_argument("agent_id")
     agents_delete.add_argument("--json", action="store_true", dest="json_output")
+    agents_tools = agents_sub.add_parser(
+        "tools", help="Show an agent's effective toolset — granted, registered, and permitted")
+    agents_tools.add_argument("agent_id")
+    agents_tools.add_argument("--json", action="store_true", dest="json_output")
     agents_files = agents_sub.add_parser("files", help="List an agent's identity files (required/optional/missing)")
     agents_files.add_argument("agent_id")
     agents_files.add_argument("--json", action="store_true", dest="json_output")
@@ -2657,6 +2661,36 @@ def _cmd_agents(args: argparse.Namespace) -> int:
             if result.get("destaffed_recipe"):
                 print(f"  recipe member de-staffed (membership-only again): {result['destaffed_recipe']}")
         return 0
+    if args.agents_command == "tools":
+        from jigga.runtime.capabilities import CapabilityRegistry
+        from jigga.runtime.dispatcher import effective_tools
+
+        agent = load_agents(paths.agents).get(args.agent_id)
+        if agent is None:
+            print(f"! No such agent: {args.agent_id!r}")
+            return 1
+        registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                           approvals_dir=paths.policies)
+        rows = effective_tools(agent, registry)
+        if args.json_output:
+            print_json(rows)
+            return 0
+        if not rows:
+            print(f"{args.agent_id}: no tools granted — it can talk, and nothing else.")
+            return 0
+        glyphs = {"ready": "✓", "needs_approval": "⚠", "blocked": "✗", "unregistered": "✗"}
+        print(f"{args.agent_id} — {len(rows)} granted action(s)\n")
+        for row in rows:
+            capability = row.get("capability") or "—"
+            print(f"  {glyphs.get(row['status'], '?')} {row['action']:30} {capability}")
+            if row.get("reason"):
+                print(f"      {row['status']}: {row['reason']}")
+        broken = [r for r in rows if r["status"] in {"unregistered", "blocked"}]
+        if broken:
+            print(f"\n{len(broken)} grant(s) will not work as written. An unregistered action "
+                  "is dropped before the model ever sees it;\na blocked one is offered and then "
+                  "fails when used.")
+        return 1 if broken else 0
     if args.agents_command in ("files", "file"):
         from jigga.runtime.entity_files import agent_files_root, list_agent_files
         from jigga.runtime.workspaces import ensure_agent_workspace
