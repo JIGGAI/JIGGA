@@ -18,7 +18,7 @@ from typing import Any
 
 from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import now_iso
-from jigga.runtime.audit import new_id
+from jigga.runtime.audit import current_actor, is_human, new_id
 from jigga.runtime.tasks import set_task_state
 
 _QUEUE = "queue"
@@ -86,6 +86,12 @@ def resolve(approvals_dir: Path, code: str, *, approved: bool, note: str | None 
         return None
     record["status"] = "approved" if approved else "denied"
     record["resolved_at"] = now_iso()
+    # Who approved, and whether they were a person at all. Approval state on the
+    # precursor stack was derived from status with no actor column, which made
+    # "who approved this and when" unanswerable — for the one decision in the
+    # system whose entire purpose is that a human made it.
+    record["resolved_by"] = current_actor()
+    record["resolved_by_human"] = is_human(record["resolved_by"])
     if note:
         record["note"] = note
     write_json(_path(approvals_dir, record["id"]), record)

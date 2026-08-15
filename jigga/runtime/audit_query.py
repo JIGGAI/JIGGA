@@ -91,6 +91,18 @@ def _matches_type(event: dict[str, Any], type_filter: str) -> bool:
     return etype == type_filter or etype.startswith(type_filter + ".") or etype.startswith(type_filter)
 
 
+def _matches_actor(event: dict[str, Any], actor: str) -> bool:
+    """Exact actor, or a prefix family: `agent` matches every `agent:<id>`,
+    `user` matches `user` and every `user:<channel>`. `human` is the one people
+    actually want — everything a person did, however they reached JIGGA."""
+    value = str(event.get("actor") or "system")
+    if actor == "human":
+        return value == "user" or value.startswith("user:")
+    if actor == "machine":
+        return not (value == "user" or value.startswith("user:"))
+    return value == actor or value.startswith(f"{actor}:")
+
+
 def query_events(
     logs_dir: Path,
     *,
@@ -98,6 +110,7 @@ def query_events(
     type_filter: str | None = None,
     since: str | None = None,
     status: str | None = None,
+    actor: str | None = None,
     limit: int | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -117,6 +130,8 @@ def query_events(
         if agent and not _matches_agent(event, agent):
             continue
         if status and str(event.get("status")) != status:
+            continue
+        if actor and not _matches_actor(event, actor):
             continue
         selected.append(event)
 
@@ -166,10 +181,11 @@ def format_event(event: dict[str, Any]) -> str:
     time = str(event.get("time", ""))[:19]
     etype = event.get("type", "?")
     status = event.get("status", "ok")
+    actor = event.get("actor") or "system"
     details = event.get("details") or {}
     # Show a compact, useful subset of details inline.
     keys = ("agent", "agent_id", "task_id", "action", "capability", "channel",
             "workflow", "run_id", "reason", "error", "backend")
     shown = " ".join(f"{k}={details[k]}" for k in keys if details.get(k) not in (None, ""))
     flag = "" if status == "ok" else f"[{status}] "
-    return f"{time}  {flag}{etype}  {shown}".rstrip()
+    return f"{time}  {flag}{actor}  {etype}  {shown}".rstrip()
