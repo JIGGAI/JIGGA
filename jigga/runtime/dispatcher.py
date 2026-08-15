@@ -35,6 +35,7 @@ from jigga.runtime.handlers import (
     _tickets_handler,
 )
 from jigga.runtime.policy import (
+    granted_actions,
     PolicyDecision,
     evaluate_filesystem,
     evaluate_network,
@@ -116,6 +117,49 @@ def resolve_value(value: Any, outputs: dict[str, Any], *,
     if isinstance(value, dict):
         return {key: resolve_value(item, outputs, implicit=implicit) for key, item in value.items()}
     return value
+
+
+def effective_tools(agent: AgentConfig, registry: CapabilityRegistry) -> list[dict[str, Any]]:
+    """What an agent can *actually* do, per granted action.
+
+    A grant is only half the story. The action has to resolve to a registered
+    capability, and that capability's own declared resource needs — filesystem
+    paths, network, memory scope, secrets — have to be satisfiable by the
+    agent's permissions. Miss either and the grant is decoration: the model is
+    offered a tool that fails the moment it's used, or a name that was never a
+    capability at all and is silently dropped before the model ever sees it.
+
+    Returns one row per granted action with `status`:
+
+    - `ready`          — resolves and its requirements are met
+    - `unregistered`   — names no capability (a typo, or a renamed action)
+    - `needs_approval` — resolves, but a requirement parks for approval
+    - `blocked`        — resolves, but a requirement is denied outright
+    """
+    rows: list[dict[str, Any]] = []
+    for action in granted_actions(agent):
+        capability = registry.resolve_action(action)
+        if capability is None:
+            rows.append({"action": action, "capability": None, "status": "unregistered",
+                         "reason": "no registered capability provides this action"})
+            continue
+        decision = evaluate_capability_permissions(capability, agent)
+        status = {"allow": "ready", "ask": "needs_approval", "deny": "blocked"}[decision.status]
+        rows.append({"action": action, "capability": capability.name,
+                     "risk_level": capability.risk_level, "status": status,
+                     "reason": None if status == "ready" else decision.reason,
+                     "permission": None if status == "ready" else decision.permission})
+    return rows
+
+
+def unusable_grants(agent: AgentConfig, registry: CapabilityRegistry) -> list[dict[str, Any]]:
+    """The subset of `effective_tools` that will not work as granted.
+
+    `needs_approval` is excluded — parking for a human is a working state, not a
+    broken one.
+    """
+    return [row for row in effective_tools(agent, registry)
+            if row["status"] in {"unregistered", "blocked"}]
 
 
 def register_outputs(outputs: dict[str, Any], step: Any, value: Any) -> None:

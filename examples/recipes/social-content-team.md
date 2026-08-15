@@ -35,10 +35,10 @@ agents:
       memory_scope: content_team_view
       tools:
         - extract_core_message
-        - filesystem.read
-        - filesystem.write
+        - filesystem.read_file      # not `filesystem.read` — that names no capability
+        - filesystem.write_file
         - memory.search
-        - task.create
+        - task.assign
       wake:
         events:
           - task.assigned.content_strategist
@@ -65,23 +65,123 @@ agents:
           - dry_run
         max_parallel_subagents: 2
         max_depth: 1
-  # Membership-only roles: referenced by the syndication workflow's steps,
-  # staffed when you connect the relevant platforms.
+  # Staffed content roles: each carries the tool its workflow step calls and
+  # the permissions that tool's capability declares.
   - role: linkedin drafting
     id: linkedin_writer
     required: true
+    agent:
+      name: LinkedIn Writer
+      role: Writes the LinkedIn variant of an approved core message.
+      model: profile:default
+      memory_scope: content_team_view
+      tools:
+        - draft_linkedin_post
+        - memory.search
+      permissions:
+        # content-drafting declares these paths; an agent granted one of its
+        # actions without them is offered a tool that fails on first use.
+        filesystem:
+          allow: ["~/Projects/content"]
+          deny: ["~/.ssh"]
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.linkedin_writer
+        accepts_agent_requests: true
   - role: thread drafting
     id: x_writer
     required: true
+    agent:
+      name: Thread Writer
+      role: Writes the X/Twitter thread variant of an approved core message.
+      model: profile:default
+      memory_scope: content_team_view
+      tools:
+        - draft_thread
+        - memory.search
+      permissions:
+        # content-drafting declares these paths; an agent granted one of its
+        # actions without them is offered a tool that fails on first use.
+        filesystem:
+          allow: ["~/Projects/content"]
+          deny: ["~/.ssh"]
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.x_writer
+        accepts_agent_requests: true
   - role: newsletter drafting
     id: newsletter_writer
     required: false
+    agent:
+      name: Newsletter Writer
+      role: Writes the newsletter blurb variant of an approved core message.
+      model: profile:default
+      memory_scope: content_team_view
+      tools:
+        - draft_blurb
+        - memory.search
+      permissions:
+        # content-drafting declares these paths; an agent granted one of its
+        # actions without them is offered a tool that fails on first use.
+        filesystem:
+          allow: ["~/Projects/content"]
+          deny: ["~/.ssh"]
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.newsletter_writer
+        accepts_agent_requests: true
   - role: editorial review
     id: editor
     required: true
+    agent:
+      name: Editor
+      role: Reviews drafts for clarity, tone, and accuracy of claims before distribution.
+      model: profile:default
+      memory_scope: content_team_view
+      tools:
+        - review_tone_and_claims
+        - memory.search
+      permissions:
+        # content-drafting declares these paths; an agent granted one of its
+        # actions without them is offered a tool that fails on first use.
+        filesystem:
+          allow: ["~/Projects/content"]
+          deny: ["~/.ssh"]
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.editor
+        accepts_agent_requests: true
   - role: distribution preparation
     id: publisher
     required: false
+    agent:
+      name: Publisher
+      role: Assembles the reviewed drafts into a distribution package.
+      model: profile:default
+      memory_scope: content_team_view
+      tools:
+        - prepare_distribution_package
+        - memory.search
+      permissions:
+        # content-drafting declares these paths; an agent granted one of its
+        # actions without them is offered a tool that fails on first use.
+        filesystem:
+          allow: ["~/Projects/content"]
+          deny: ["~/.ssh"]
+        network: {mode: ask}
+        shell: {mode: deny}
+      wake:
+        events:
+          - task.assigned.publisher
+        accepts_agent_requests: true
 workflows:
   - id: social_content_syndication
     name: Social Content Syndication

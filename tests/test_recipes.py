@@ -340,8 +340,12 @@ def test_cli_recipes_list_and_show(tmp_path: Path, capsys) -> None:
     assert shown["id"] == "personal_admin_team" and shown["kind"] == "team"
     briefing = next(a for a in shown["agents"] if a["id"] == "daily_briefing_agent")
     assert briefing["scaffolded"] is True
+    # meeting_prep_agent is staffed: the meeting_reminders workflow calls it.
     prep = next(a for a in shown["agents"] if a["id"] == "meeting_prep_agent")
-    assert prep["scaffolded"] is False and prep["required"] is False
+    assert prep["scaffolded"] is True and prep["required"] is True
+    # inbox_triage_agent is the genuinely optional one — no workflow references it.
+    triage = next(a for a in shown["agents"] if a["id"] == "inbox_triage_agent")
+    assert triage["scaffolded"] is False and triage["required"] is False
     assert "morning_day_summary" in shown["workflows"]
 
 
@@ -513,7 +517,10 @@ def test_recipe_summary_shapes() -> None:
     bundled = Path(__file__).resolve().parents[1] / "examples" / "recipes"
     team = recipe_summary(load_recipe(bundled / "social-content-team.md"))
     assert team["kind"] == "team"
-    assert any(a["id"] == "linkedin_writer" and not a["scaffolded"] for a in team["agents"])
+    # Every role a workflow step calls ships staffed.
+    assert all(a["scaffolded"] for a in team["agents"])
+    admin = recipe_summary(load_recipe(bundled / "personal-admin-team.md"))
+    assert any(a["id"] == "inbox_triage_agent" and not a["scaffolded"] for a in admin["agents"])
     solo = recipe_summary(load_recipe(bundled / "researcher.md"))
     assert solo["kind"] == "agent" and solo["agents"][0]["scaffolded"] is True
 
@@ -696,7 +703,7 @@ def test_cli_recipes_installed_and_list_marker(tmp_path: Path, capsys) -> None:
 
     assert main(["--home", str(tmp_path), "recipes", "installed"]) == 0
     out = capsys.readouterr().out
-    assert "personal_admin_team" in out and "1 agents, 2 workflows" in out
+    assert "personal_admin_team" in out and "2 agents, 2 workflows" in out
 
 
 def test_every_bundled_recipe_agent_can_search_memory() -> None:
@@ -742,44 +749,46 @@ def test_cli_agents_list_json(tmp_path: Path, capsys) -> None:
 
 def test_staff_member_updates_recipe_and_scaffolds_agent(tmp_path: Path, capsys) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    assert main(["--home", str(tmp_path), "team", "staff", "social_content_team",
-                 "linkedin_writer", "--role", "Drafts LinkedIn posts.", "--json"]) == 0
+    assert main(["--home", str(tmp_path), "team", "staff", "personal_admin_team",
+                 "inbox_triage_agent", "--role", "Triages the inbox.", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["agent_written"] is True
 
     # the agent exists, batteries included
-    agent = load_agents(paths.agents)["linkedin_writer"]
+    agent = load_agents(paths.agents)["inbox_triage_agent"]
     assert "memory.search" in agent.tools
-    assert agent.role == "Drafts LinkedIn posts."
+    assert agent.role == "Triages the inbox."
 
     # the USER-dir recipe copy is now the source of truth and carries the definition
-    user_copy = tmp_path / "recipes" / "social-content-team.md"
+    user_copy = tmp_path / "recipes" / "personal-admin-team.md"
     assert user_copy.exists()
     recipe = load_recipe(user_copy)
-    member = next(m for m in recipe.agents if m.get("id") == "linkedin_writer")
+    member = next(m for m in recipe.agents if m.get("id") == "inbox_triage_agent")
     assert "memory.search" in member["agent"]["tools"]
 
     # install record repointed + the new agent tracked (jigga update manages it)
     from jigga.runtime.recipes import installed_recipes
-    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "social_content_team")
+    record = next(r for r in installed_recipes(paths.home) if r["scaffold_id"] == "personal_admin_team")
     assert record["source"] == str(user_copy)
-    assert "agents/linkedin_writer.yaml" in record["artifacts"]
+    assert "agents/inbox_triage_agent.yaml" in record["artifacts"]
     assert record["modified"] == []                              # pristine from its recipe
 
-    # existing files untouched (create-only): strategist kept as-was
-    assert "content_strategist" in load_agents(paths.agents)
+    # existing files untouched (create-only): the briefing agent kept as-was
+    assert "daily_briefing_agent" in load_agents(paths.agents)
 
 
 def test_staff_existing_files_survive_and_double_staff_refused(tmp_path: Path, capsys) -> None:
     paths = init_runtime(tmp_path, examples=True)
-    strategist = paths.agents / "content_strategist.yaml"
-    strategist.write_text(strategist.read_text(encoding="utf-8") + "# my edit\n", encoding="utf-8")
+    briefing = paths.agents / "daily_briefing_agent.yaml"
+    briefing.write_text(briefing.read_text(encoding="utf-8") + "# my edit\n", encoding="utf-8")
 
-    assert main(["--home", str(tmp_path), "team", "staff", "social_content_team", "editor"]) == 0
+    assert main(["--home", str(tmp_path), "team", "staff", "personal_admin_team",
+                 "inbox_triage_agent"]) == 0
     capsys.readouterr()
-    assert "# my edit" in strategist.read_text(encoding="utf-8")  # create-only: edit survives
+    assert "# my edit" in briefing.read_text(encoding="utf-8")   # create-only: edit survives
 
-    rc = main(["--home", str(tmp_path), "team", "staff", "social_content_team", "editor"])
+    rc = main(["--home", str(tmp_path), "team", "staff", "personal_admin_team",
+               "inbox_triage_agent"])
     assert rc == 1
     assert "already staffed" in capsys.readouterr().out
 
