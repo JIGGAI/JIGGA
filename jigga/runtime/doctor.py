@@ -198,6 +198,18 @@ def _check_channels(paths: JiggaPaths) -> Check:
                      hint="Run `jigga channels setup` (optional).")
     names = ", ".join(name for name, _ in channels)
 
+    # iMessage is the one channel that can be enabled on a machine that cannot
+    # possibly run it — and then silently polls nothing forever. Checked before
+    # the reply-loop below because "can't run at all" outranks "can't reply".
+    if any(name == "imessage" for name, _ in channels):
+        from jigga.runtime.imessage import availability
+
+        state = availability(paths.home)
+        if not state["available"]:
+            return Check("channels", WARN,
+                         f"Enabled: {names}; but iMessage can't run here — {state['reason']}",
+                         hint="Disable it in config, or run JIGGA on the Mac signed in to Messages.")
+
     # Reply-loop check: a channel's routed agent can only respond if it (a) holds
     # the channel's send tool AND (b) is permitted to reach the channel's network
     # host. Missing either => inbound messages complete silently.

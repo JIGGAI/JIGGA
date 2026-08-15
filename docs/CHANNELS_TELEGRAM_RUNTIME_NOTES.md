@@ -160,3 +160,47 @@ and the adapter pre-targets events accordingly. The conversation id is
 `<destination>:<sender>`, so one handset texting two of our numbers is two
 conversations. STOP/START are consent, not conversation: they act on the pair
 they arrived on and never become a task.
+
+---
+
+# iMessage channel (macOS only)
+
+`runtime/imessage.py`. Unlike every other channel, iMessage has no API and no
+provider: inbound is a **read-only query against `~/Library/Messages/chat.db`**,
+outbound is `osascript` driving Messages.app. Both need Full Disk Access granted
+to whatever runs JIGGA.
+
+```yaml
+channels:
+  imessage:
+    enabled: true
+    handles:
+      "work@example.com": {purpose: client work, default_agent: work_lead}
+      "+15550000001":     {purpose: personal,    default_agent: assistant}
+```
+
+**It degrades, never crashes.** A Linux or Windows install has no chat.db and no
+Messages app, so `poll` returns a structured `unsupported` status instead of
+raising — a supervisor tick on a Linux box carrying an iMessage config is a
+no-op, not an outage. `jigga doctor` warns when the channel is enabled somewhere
+it cannot run, because silently polling nothing forever is the failure this
+guards against.
+
+**The database is not ours.** Opened read-only via a `file:` URI with
+`immutable=1` — Messages is a live writer, and taking a lock on a user's message
+store to poll it would be indefensible. Columns are read defensively: Apple has
+changed this schema across releases (`text` went NULL in favour of
+`attributedBody`, `destination_caller_id` arrived later), so a missing column
+costs one field rather than the channel. A message whose body lives only in
+`attributedBody` is surfaced empty rather than dropped — a dropped inbound is
+worse than an obviously empty one.
+
+**Accepted is not delivered.** AppleScript returns once Messages has *taken* the
+message; whether it left the device is not observable from here. `send` reports
+`accepted` with `delivered: None` and never claims more, same as the SMS seam.
+
+**Inbound routes by destination handle.** A Mac signs in to several — a phone
+number and one or more Apple IDs — and `destination_caller_id` says which one a
+message arrived at, so a work Apple ID and a personal number reach different
+agents. Conversation id is `<destination>:<sender>`, so one person reaching two
+of your handles is two conversations.
