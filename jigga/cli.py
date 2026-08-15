@@ -739,6 +739,9 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--type", dest="type_filter", help="Filter by event type (exact or family prefix)")
     audit.add_argument("--since", help="Only events newer than e.g. 30m / 24h / 7d or an ISO timestamp")
     audit.add_argument("--status", help="Filter by status (ok / error / ask / ...)")
+    audit.add_argument("--actor", help="Filter by who acted: 'human' / 'machine', a family "
+                                       "('user', 'agent', 'workflow', 'supervisor'), or an exact "
+                                       "actor like 'agent:chief'")
     audit.add_argument("-n", "--count", type=int, default=None, help="Keep only the most recent N matches")
     audit.add_argument("--json", action="store_true", dest="json_output")
 
@@ -2084,6 +2087,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         type_filter=args.type_filter,
         since=args.since,
         status=args.status,
+        actor=args.actor,
         limit=args.count,
     )
     if args.json_output:
@@ -3132,8 +3136,14 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         parser.print_help()
         return 2
+    # A CLI invocation is a person typing. Everything this command does is
+    # attributed to them unless an agent or workflow inside takes over, which
+    # is what makes "did a human do this, or did JIGGA?" answerable at all.
+    from jigga.runtime.audit import ACTOR_USER, actor_context
+
     try:
-        return handler(args)
+        with actor_context(ACTOR_USER):
+            return handler(args)
     except Exception as exc:  # noqa: BLE001 — top-level CLI error boundary
         print(str(exc), file=sys.stderr)
         return 1

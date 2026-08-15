@@ -33,7 +33,7 @@ from jigga.core.io import ensure_dir, read_json, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowNode, WorkflowStep, now_iso
 from jigga.core.paths import JiggaPaths
 from jigga.runtime.approvals import consume_if_approved, consume_if_denied, pending_approvals, request_approval
-from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
+from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.channels import ADAPTERS, owner_conversation
 from jigga.runtime.dispatcher import RuntimeContext, execute_step
@@ -621,7 +621,8 @@ def advance_all_runs(
     for record in active[:max_runs]:
         before = record.get("status")
         try:
-            with trace_context(record.get("trace_id")):
+            with trace_context(record.get("trace_id")), \
+                    actor_context(f"workflow:{record.get('workflow_id')}"):
                 after = advance_run(paths, record, max_nodes=max_nodes_per_run)
         except Exception as exc:  # noqa: BLE001 — one broken run must not stall every other run on the heartbeat
             append_event(paths.logs, "workflow.advance_error", status="error",

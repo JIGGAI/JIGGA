@@ -34,6 +34,43 @@ An agent does not need root access to cause harm. It may only need access to:
 - SSH keys
 - sensitive project files
 
+## Attribution — who did this
+
+Every audited event carries a top-level `actor`. The format is a prefixed
+label, so machine and human separate on a prefix match:
+
+| Actor | Meaning |
+|---|---|
+| `user` | a person, at the CLI |
+| `user:<channel>` | a person, over a channel they messaged from |
+| `agent:<id>` | an agent's own turn |
+| `workflow:<id>` | a workflow run executing its steps |
+| `supervisor` | the heartbeat, acting on no one's direct instruction |
+| `system` | unattributed — a real answer meaning "nothing claimed this", and a bug wherever it appears on a mutation |
+
+```
+jigga audit --actor human          # everything a person did, however they reached JIGGA
+jigga audit --actor machine        # everything JIGGA did on its own
+jigga audit --actor agent          # the family
+jigga audit --actor agent:chief    # one agent
+```
+
+**Innermost wins.** A supervisor tick that wakes an agent attributes that
+agent's actions to the agent, because that is who performed them. What a human
+*initiated* is a different question with a different answer, recoverable from
+the trace root — `jigga trace <id>` shows the whole causal tree, and its first
+event carries `user`.
+
+Approvals additionally record `resolved_by` and `resolved_by_human` on the
+approval record itself, since an approval's entire purpose is that a person
+made it.
+
+This exists because the precursor stack couldn't answer it. When 22 posts
+vanished (FIELD_LESSONS §3.6), the automation had written through the same API
+as the humans and `created_by` was the constant `dashboard-ui` for every row;
+the only forensic tool left was diffing hourly SQLite snapshots to bound the
+window, and the culprit was permanently unattributable.
+
 ## Tool Grants — deny by default
 
 **An agent may invoke only the actions it has been explicitly granted.** There

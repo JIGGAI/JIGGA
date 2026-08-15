@@ -25,6 +25,44 @@ _current_trace: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "jigga_trace_id", default=None
 )
 
+# Who is acting. On the precursor stack 22 posts vanished and it was
+# permanently unanswerable who deleted them: the automation wrote through the
+# same API as the humans, and `created_by` was the constant `dashboard-ui` for
+# every row. The only forensic tool left was diffing hourly SQLite snapshots.
+#
+# Format is a prefixed label so machine and human separate on a prefix match:
+#   user            a person, at the CLI
+#   user:<channel>  a person, over a channel they messaged from
+#   agent:<id>      an agent's own turn
+#   workflow:<id>   a workflow run executing its steps
+#   supervisor      the heartbeat acting on no one's direct instruction
+#   system          unattributed (the default, and a bug wherever it shows up
+#                   on a mutation)
+#
+# Unlike the trace id, the INNERMOST binding wins: a supervisor tick that wakes
+# an agent attributes that agent's actions to the agent, because that is who
+# performed them. What a human initiated is recoverable from the trace root,
+# which carries `user` — the two questions are "who did this" and "what set it
+# off", and they have different answers.
+ACTOR_USER = "user"
+ACTOR_SYSTEM = "system"
+ACTOR_SUPERVISOR = "supervisor"
+
+_current_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "jigga_actor", default=None
+)
+
+
+def current_actor() -> str:
+    return _current_actor.get() or ACTOR_SYSTEM
+
+
+def is_human(actor: str | None = None) -> bool:
+    """True when the actor is a person rather than something JIGGA ran itself.
+    The distinction the precursor stack could not make."""
+    resolved = actor if actor is not None else current_actor()
+    return resolved == ACTOR_USER or resolved.startswith(f"{ACTOR_USER}:")
+
 # Detail keys whose values are scrubbed regardless of content. Matched at word
 # boundaries (see `_SENSITIVE_KEY_PATTERNS`) so `token` redacts `bot_token` /
 # `access_token` but not the non-secret `input_tokens` / `output_tokens`.
@@ -80,6 +118,20 @@ def trace_context(trace_id: str | None = None) -> Iterator[str]:
         _current_trace.reset(token)
 
 
+@contextlib.contextmanager
+def actor_context(actor: str) -> Iterator[str]:
+    """Bind who is acting for the duration of a block.
+
+    Innermost wins, deliberately — see the note on `_current_actor`. Every
+    `append_event` inside the block carries this under `actor`.
+    """
+    token = _current_actor.set(actor)
+    try:
+        yield actor
+    finally:
+        _current_actor.reset(token)
+
+
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
     return any(pattern.search(lowered) for pattern in _SENSITIVE_KEY_PATTERNS)
@@ -122,6 +174,10 @@ def append_event(logs_dir: Path, event_type: str, status: str = "ok", **details:
         "time": now_iso(),
         "type": event_type,
         "status": status,
+        # Top-level, not inside details: attribution is a property of the event
+        # itself, and `jigga audit --actor` must not have to reach into a bag
+        # that individual call sites control.
+        "actor": current_actor(),
         "details": scrubbed,
     }
     with (logs_dir / "events.jsonl").open("a", encoding="utf-8") as handle:

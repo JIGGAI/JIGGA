@@ -43,7 +43,7 @@ from typing import Any
 
 from jigga.core.config import load_runtime_config, resolve_default_agent
 from jigga.runtime.agent import run_agent
-from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.audit import ACTOR_USER, actor_context, append_event, trace_context
 from jigga.runtime.approvals import find_by_code, parse_approval_reply, resolve_and_requeue
 from jigga.runtime.channels import (
     ADAPTERS,
@@ -155,90 +155,95 @@ def _ingest_once(
                              chat_id=event.conversation_id, sender=event.actor_name,
                              event_id=event.id, reason="sender not in allowlist")
                 continue
-            # Approval reply? (B6) An allowlisted sender typing `approve <code>` /
-            # `deny <code>` resolves a pending approval and re-queues the held
-            # task — it is not turned into a new task. Only intercept when the
-            # code matches a real pending approval (so ordinary prose passes through).
-            parsed = parse_approval_reply(event.text)
-            if parsed is not None:
-                approved, code = parsed
-                record = find_by_code(home / "approvals", code)
-                if record is not None:
-                    resolve_and_requeue(home / "approvals", tasks_dir, code, approved=approved)
-                    append_event(logs_dir, "approval.resolved", status="ok" if approved else "deny",
-                                 channel=name, code=code, approved=approved,
-                                 task_id=record.get("task_id"), agent_id=record.get("agent_id"))
-                    if approved and record.get("agent_id"):
-                        affected_agents.add(record["agent_id"])
-                    try:
-                        adapter.send(home, conversation_id=event.conversation_id,
-                                     text=f"{'Approved' if approved else 'Denied'} {code}."
-                                          + (" Resuming." if approved else ""))
-                    except Exception as exc:  # noqa: BLE001 — notify failure must not break ingest
-                        append_event(logs_dir, "approval.notify_failed", status="error", code=code, error=str(exc))
-                    continue
-                # no matching pending code → fall through; treat as a normal message
+            # Everything past the allowlist check is an authorized person
+            # acting: the task they create, the approval they resolve. The
+            # precursor stack could not tell those apart from automation
+            # writing through the same API.
+            with actor_context(f"{ACTOR_USER}:{name}"):
+                # Approval reply? (B6) An allowlisted sender typing `approve <code>` /
+                # `deny <code>` resolves a pending approval and re-queues the held
+                # task — it is not turned into a new task. Only intercept when the
+                # code matches a real pending approval (so ordinary prose passes through).
+                parsed = parse_approval_reply(event.text)
+                if parsed is not None:
+                    approved, code = parsed
+                    record = find_by_code(home / "approvals", code)
+                    if record is not None:
+                        resolve_and_requeue(home / "approvals", tasks_dir, code, approved=approved)
+                        append_event(logs_dir, "approval.resolved", status="ok" if approved else "deny",
+                                     channel=name, code=code, approved=approved,
+                                     task_id=record.get("task_id"), agent_id=record.get("agent_id"))
+                        if approved and record.get("agent_id"):
+                            affected_agents.add(record["agent_id"])
+                        try:
+                            adapter.send(home, conversation_id=event.conversation_id,
+                                         text=f"{'Approved' if approved else 'Denied'} {code}."
+                                              + (" Resuming." if approved else ""))
+                        except Exception as exc:  # noqa: BLE001 — notify failure must not break ingest
+                            append_event(logs_dir, "approval.notify_failed", status="error", code=code, error=str(exc))
+                        continue
+                    # no matching pending code → fall through; treat as a normal message
 
-            # Activation mode — should this message wake the agent at all?
-            if not activation_allows(event, cfg):
-                append_event(logs_dir, "channel.message.ignored", channel=name,
-                             chat_id=event.conversation_id, event_id=event.id,
-                             reason=f"activation={cfg.get('activation') or 'always'}",
-                             conversation_type=event.conversation_type)
-                continue
-            # An adapter may pre-target a specific agent (webchat's agent
-            # picker sets event.target from the sender's choice). Honor it only
-            # when that agent actually exists — else audit and fall back to the
-            # channel default, so a typo'd/stale target can't drop a message.
-            assignee = default_agent
-            requested = (event.target or {}).get("agent")
-            if requested and requested != default_agent:
-                if (Path(agents_dir) / f"{requested}.yaml").exists():
-                    assignee = requested
-                else:
-                    append_event(logs_dir, "channel.target_unknown", status="ask", channel=name,
-                                 requested_agent=requested, fallback=default_agent,
-                                 event_id=event.id)
-            event.target = {"agent": assignee}
-            # Conversation continuity for external channels: record every
-            # gate-passing inbound message into the channel's local transcript
-            # (webchat declares `self_transcribed` — its inbox IS the
-            # transcript). Best-effort: a transcript fault must not break
-            # ingest; the message still becomes a task either way.
-            if not getattr(adapter, "self_transcribed", False):
-                try:
-                    from jigga.runtime.channel_transcript import record as record_transcript
-                    record_transcript(home, name, conversation_id=event.conversation_id,
-                                      sender=event.actor_name, text=event.text,
-                                      direction="in", message_id=event.raw.get("message_id"))
-                except Exception as exc:  # noqa: BLE001
-                    append_event(logs_dir, "channel.transcript_error", status="error",
-                                 channel=name, error=str(exc))
-            title, description = _event_to_task_fields(event)
-            task = create_task(
-                tasks_dir,
-                title=title,
-                description=description,
-                assignee=assignee,
-                metadata={
-                    "channel": name,
-                    "chat_id": event.conversation_id,
-                    "sender": event.actor.get("name"),
-                    "message_id": event.raw.get("message_id"),
-                    "text": event.text,
-                    "event_id": event.id,
-                    "conversation_type": event.conversation_type,
-                    # Group/channel messages should run with restricted memory
-                    # (prompt-injection safety). Recorded now; agent-loop
-                    # enforcement of the restricted scope is a follow-up.
-                    "restricted_memory": from_public_conversation(event),
-                },
-            )
-            created.append(task.to_dict())
-            append_event(logs_dir, "channel.message.received", channel=name, task_id=task.id,
-                         chat_id=event.conversation_id, sender=event.actor.get("name"), event_id=event.id)
-            if assignee:
-                affected_agents.add(assignee)
+                # Activation mode — should this message wake the agent at all?
+                if not activation_allows(event, cfg):
+                    append_event(logs_dir, "channel.message.ignored", channel=name,
+                                 chat_id=event.conversation_id, event_id=event.id,
+                                 reason=f"activation={cfg.get('activation') or 'always'}",
+                                 conversation_type=event.conversation_type)
+                    continue
+                # An adapter may pre-target a specific agent (webchat's agent
+                # picker sets event.target from the sender's choice). Honor it only
+                # when that agent actually exists — else audit and fall back to the
+                # channel default, so a typo'd/stale target can't drop a message.
+                assignee = default_agent
+                requested = (event.target or {}).get("agent")
+                if requested and requested != default_agent:
+                    if (Path(agents_dir) / f"{requested}.yaml").exists():
+                        assignee = requested
+                    else:
+                        append_event(logs_dir, "channel.target_unknown", status="ask", channel=name,
+                                     requested_agent=requested, fallback=default_agent,
+                                     event_id=event.id)
+                event.target = {"agent": assignee}
+                # Conversation continuity for external channels: record every
+                # gate-passing inbound message into the channel's local transcript
+                # (webchat declares `self_transcribed` — its inbox IS the
+                # transcript). Best-effort: a transcript fault must not break
+                # ingest; the message still becomes a task either way.
+                if not getattr(adapter, "self_transcribed", False):
+                    try:
+                        from jigga.runtime.channel_transcript import record as record_transcript
+                        record_transcript(home, name, conversation_id=event.conversation_id,
+                                          sender=event.actor_name, text=event.text,
+                                          direction="in", message_id=event.raw.get("message_id"))
+                    except Exception as exc:  # noqa: BLE001
+                        append_event(logs_dir, "channel.transcript_error", status="error",
+                                     channel=name, error=str(exc))
+                title, description = _event_to_task_fields(event)
+                task = create_task(
+                    tasks_dir,
+                    title=title,
+                    description=description,
+                    assignee=assignee,
+                    metadata={
+                        "channel": name,
+                        "chat_id": event.conversation_id,
+                        "sender": event.actor.get("name"),
+                        "message_id": event.raw.get("message_id"),
+                        "text": event.text,
+                        "event_id": event.id,
+                        "conversation_type": event.conversation_type,
+                        # Group/channel messages should run with restricted memory
+                        # (prompt-injection safety). Recorded now; agent-loop
+                        # enforcement of the restricted scope is a follow-up.
+                        "restricted_memory": from_public_conversation(event),
+                    },
+                )
+                created.append(task.to_dict())
+                append_event(logs_dir, "channel.message.received", channel=name, task_id=task.id,
+                             chat_id=event.conversation_id, sender=event.actor.get("name"), event_id=event.id)
+                if assignee:
+                    affected_agents.add(assignee)
 
     runs: list[dict[str, Any]] = []
     if process_agents:

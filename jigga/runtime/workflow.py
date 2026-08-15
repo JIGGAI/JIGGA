@@ -7,7 +7,7 @@ from jigga.core.config import default_permission_mode, load_agents, load_workflo
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.core.paths import JiggaPaths
-from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
+from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
@@ -173,7 +173,7 @@ def run_workflow(
     project_capabilities: Path | None = None,
 ) -> dict[str, Any]:
     # Inherits the supervisor trace when scheduled; mints its own on CLI apply.
-    with trace_context():
+    with trace_context(), actor_context(f"workflow:{workflow_id}"):
         return _run_workflow(paths, workflow_id, project_capabilities)
 
 

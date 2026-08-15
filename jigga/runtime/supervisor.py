@@ -8,7 +8,7 @@ from jigga.core.config import load_agents, load_workflows, max_wakes_per_hour
 from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
-from jigga.runtime.audit import append_event, trace_context
+from jigga.runtime.audit import ACTOR_SUPERVISOR, actor_context, append_event, trace_context
 from jigga.runtime.channel_listener import enabled_channels, ingest_once
 from jigga.runtime.compaction import maybe_compact
 from jigga.runtime.log_rotation import rotate_logs
@@ -119,7 +119,10 @@ def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds
     # One trace per tick: every event this tick produces — agent runs, workflow
     # runs, and the subagents they spawn — shares this id, so `jigga trace <id>`
     # returns the whole tick's causal tree.
-    with trace_context():
+    # The heartbeat acts on no one's direct instruction — anything it does
+    # unattended is attributed to it, unless an agent or workflow inside
+    # takes over (innermost actor wins).
+    with trace_context(), actor_context(ACTOR_SUPERVISOR):
         return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
 
 

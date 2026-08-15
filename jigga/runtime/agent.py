@@ -8,7 +8,7 @@ from jigga.core.config import default_permission_mode, load_agents, load_runtime
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.approvals import consume_if_approved, request_approval
-from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_context
+from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.channels import ADAPTERS
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.dispatcher import (
@@ -359,7 +359,7 @@ def run_agent(
 ) -> dict[str, Any]:
     # Inherits the supervisor/channel trace when called from one; mints its own
     # when run standalone (CLI). Either way every event below shares the id.
-    with trace_context():
+    with trace_context(), actor_context(f"agent:{agent_id}"):
         return _run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id, dry_run_model)
 
 
