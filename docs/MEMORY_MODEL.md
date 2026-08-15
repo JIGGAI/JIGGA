@@ -80,12 +80,38 @@ Examples:
 - keyword index
 - vector index
 - metadata index
+- graph index (typed entities/edges with temporal validity)
 
 Location:
 
 ```text
 ~/.jigga/memory/indexes/
 ```
+
+#### Pluggable Backends
+
+Indexed and derived layers use a **pluggable backend architecture** (same
+pattern JIGGA already uses for secrets and sandboxing in Milestone E). The
+file-first canonical layers (`raw/`, `structured/`) stay ground truth; indexes
+and graphs are **derived** — rebuildable from files, diff-able, deletable
+without data loss.
+
+```yaml
+memory:
+  backends:
+    keyword: file            # DEFAULT — existing FTS5, unchanged
+    vector:  none            # 'none' | 'local' | 'lancedb'
+    graph:   none            # 'none' | 'graphiti' | 'kuzu-native'
+```
+
+Zero-config installs behave exactly as today. Vector and graph are strictly
+opt-in. Every backend implements a JIGGA-native protocol
+(`KeywordIndex` / `VectorIndex` / `GraphIndex`) so drivers can be swapped
+without touching call sites. Every write path passes machine-checkable
+verifier primitives before insertion.
+
+Full driver contracts, config surface, tool surface, and the Graphiti-as-driver
+decision live in [`MEMORY_BACKENDS.md`](./MEMORY_BACKENDS.md).
 
 ## Memory Scopes
 
