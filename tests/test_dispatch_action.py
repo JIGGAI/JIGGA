@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
@@ -20,11 +20,14 @@ class _Agent:
     role: str = "test"
     memory_scope: str | None = "task_only"
     permissions: dict | None = None
+    # Dispatch denies any action the agent wasn't granted, so a test double
+    # has to name what it's allowed to invoke — same as a real agent yaml.
+    tools: list[str] = field(default_factory=list)
 
 
-def _runtime(paths) -> RuntimeContext:
+def _runtime(paths, *grants: str) -> RuntimeContext:
     return RuntimeContext(
-        agent=_Agent(),
+        agent=_Agent(tools=list(grants)),
         home=paths.home,
         logs_dir=paths.logs,
         sessions_dir=paths.sessions,
@@ -51,7 +54,7 @@ def test_dispatch_action_invokes_handler_without_a_workflow(tmp_path: Path) -> N
         step,
         resolved_input={},
         memory_context={},
-        runtime=_runtime(paths),
+        runtime=_runtime(paths, "calendar.list_events"),
         registry=_registry(paths),
         logs_dir=paths.logs,
         run_id="agent_run_x",
@@ -68,7 +71,7 @@ def test_dispatch_action_emits_invocation_events(tmp_path: Path) -> None:
         step,
         resolved_input={},
         memory_context={},
-        runtime=_runtime(paths),
+        runtime=_runtime(paths, step.action),
         registry=_registry(paths),
         logs_dir=paths.logs,
         run_id="agent_run_y",
@@ -86,7 +89,7 @@ def test_dispatch_action_raises_for_unknown_action(tmp_path: Path) -> None:
             step,
             resolved_input={},
             memory_context={},
-            runtime=_runtime(paths),
+            runtime=_runtime(paths, step.action),
             registry=_registry(paths),
             logs_dir=paths.logs,
             run_id="agent_run_z",
@@ -102,7 +105,7 @@ def test_dispatch_action_workflow_id_optional(tmp_path: Path) -> None:
         step,
         resolved_input={},
         memory_context={},
-        runtime=_runtime(paths),
+        runtime=_runtime(paths, step.action),
         registry=_registry(paths),
         logs_dir=paths.logs,
         run_id="r",

@@ -11,7 +11,7 @@ from jigga.runtime.audit import append_event, current_trace_id, new_id, trace_co
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
 from jigga.runtime.memory import build_context_package, write_memory_result
-from jigga.runtime.policy import evaluate_workflow_step, resolve_permission_mode
+from jigga.runtime.policy import evaluate_tool_grant, evaluate_workflow_step, resolve_permission_mode
 
 
 def _required_permissions(workflow: WorkflowConfig) -> list[str]:
@@ -33,10 +33,25 @@ def _step_policy(
         status = "skipped"
     mode = resolve_permission_mode(agent, default_mode) if agent else None
     capability = registry.resolve_action(step.action) if registry else None
+    # A nonexistent action is reported as such before anything else — "no
+    # capability registered" is the useful diagnostic for a typo, and an
+    # unregistered action can't dispatch regardless.
+    #
+    # The grant check then precedes risk level, permission_mode, and resource
+    # permissions: an action the agent was never given is blocked outright, and
+    # no autonomous mode or open filesystem policy can talk it into running.
+    # Workflow steps used to skip this check entirely, so naming an action in a
+    # workflow was enough to execute it against an agent granted nothing.
+    grant = (evaluate_tool_grant(agent, step.action)
+             if status == "allow" and step.agent and capability is not None else None)
     if status == "allow" and registry is not None and capability is None:
         status = "blocked"
         reason = f"No capability registered for workflow action: {step.action}"
         permission = "capability.available"
+    elif grant is not None and grant.status != "allow":
+        status = "blocked"
+        reason = grant.reason
+        permission = grant.permission
     elif status == "allow" and capability is not None and capability.risk_level in {"medium", "high"} and mode != "autonomous":
         status = "needs_approval"
         reason = f"Capability {capability.name} risk_level={capability.risk_level} requires approval."

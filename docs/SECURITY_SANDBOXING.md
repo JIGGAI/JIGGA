@@ -34,6 +34,52 @@ An agent does not need root access to cause harm. It may only need access to:
 - SSH keys
 - sensitive project files
 
+## Tool Grants — deny by default
+
+**An agent may invoke only the actions it has been explicitly granted.** There
+is no implicit grant, no "all bundled capabilities" default, and no execution
+path that skips the check. An agent with no `tools:` can do nothing.
+
+```yaml
+# agents/researcher.yaml
+tools:                      # the grant list — this IS the boundary
+  - memory.search
+  - web.fetch
+permissions:
+  tools:
+    allow:                  # equivalent second source, merged with `tools:`
+      - summarize_day
+```
+
+Enforced at three layers, each independent:
+
+| Layer | What it does |
+|---|---|
+| `agent.py::_resolve_agent_actions` | The model is only *offered* function schemas for granted actions |
+| `workflow.py::_step_policy` | A workflow step naming an ungranted action is `blocked`, at plan time and at run time |
+| `dispatcher.py::dispatch_action` | Final floor before any handler runs — raises `PermissionError` and audits `capability.invocation.denied` |
+
+The floor exists because the first two are caller-side. Historically the grant
+list gated only the model-facing menu, so anything naming an action directly —
+a workflow node, a recipe, a scheduled job — reached the handler regardless. An
+agent with `tools: []` could write files through a workflow while its tool list
+showed nothing. The floor means a future caller that forgets cannot reintroduce
+that gap.
+
+Grant denial precedes risk level, `permission_mode`, and resource permissions:
+no `autonomous` mode and no open filesystem policy can talk an ungranted action
+into running. The one carve-out is **agent-less dispatch** — the engine acting
+on its own behalf (workspace writeback and similar), which is not an agent
+exercising authority, and is the same carve-out the runtime-only check makes.
+
+### Command-line access is guarded twice
+
+`shell.run` is not offered by any setup wizard at any setting — turning it on
+requires a deliberate hand-edit of the agent's yaml. Even then the grant alone
+is not enough: `permissions.shell` must independently permit the command, or
+`safe_process` refuses it. Granting the tool and allowing the command are two
+separate decisions, and both are required.
+
 ## Permission Model
 
 Example:

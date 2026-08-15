@@ -186,7 +186,7 @@ def test_capabilities_approve_cli_records_approval(tmp_path: Path, capsys) -> No
     assert capsys.readouterr().out.strip() == "[]"
 
 
-def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> None:
+def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path, grant) -> None:
     # A user-local capability declares its handler as `module.path:function`.
     # The dispatcher imports it lazily and calls it. This is the extensibility
     # path: third-party packs no longer need to monkey-patch HANDLERS.
@@ -213,7 +213,8 @@ def test_dispatcher_resolves_handler_via_dotted_import_path(tmp_path: Path) -> N
         },
     )
     # User-local capability needs first-use approval before run_workflow's
-    # registry will dispatch through it.
+    # registry will dispatch through it, and the agent needs the grant.
+    grant(paths, "daily_briefing_agent", "custom.run")
     record_approval(paths.policies, load_capability_manifest(cap_dir / "manifest.yaml"))
     result = run_workflow(
         paths, "custom"
@@ -341,7 +342,7 @@ def test_medium_risk_capability_can_run_under_autonomous_mode(tmp_path: Path) ->
     assert first["status"] == "allow"
 
 
-def test_capability_calendar_permission_requires_agent_grant(tmp_path: Path) -> None:
+def test_capability_calendar_permission_requires_agent_grant(tmp_path: Path, grant) -> None:
     cap_dir = tmp_path / "capabilities" / "writer-cap"
     cap_dir.mkdir(parents=True)
     write_yaml(
@@ -365,6 +366,7 @@ def test_capability_calendar_permission_requires_agent_grant(tmp_path: Path) -> 
             "steps": [{"id": "list", "agent": "content_strategist", "action": "calendar.list_events"}],
         },
     )
+    grant(paths, "content_strategist", "calendar.list_events")   # granted, but no calendar permission
     plan = plan_workflow(
         load_workflows(paths.workflows)["needs_calendar"],
         load_agents(paths.agents),
@@ -374,7 +376,7 @@ def test_capability_calendar_permission_requires_agent_grant(tmp_path: Path) -> 
     assert plan["steps"][0]["policy"]["permission"] == "calendar.read"
 
 
-def test_capability_memory_access_requires_memory_scope(tmp_path: Path) -> None:
+def test_capability_memory_access_requires_memory_scope(tmp_path: Path, grant) -> None:
     # Build an agent with no memory_scope and a capability that declares memory.
     paths = init_runtime(tmp_path, examples=True)
     write_yaml(
@@ -383,6 +385,7 @@ def test_capability_memory_access_requires_memory_scope(tmp_path: Path) -> None:
             "id": "scopeless",
             "name": "Scopeless",
             "role": "test",
+            "tools": ["summarize_day"],   # granted, but no memory_scope
             "permissions": {"calendar": "read"},
         },
     )
@@ -403,7 +406,7 @@ def test_capability_memory_access_requires_memory_scope(tmp_path: Path) -> None:
     assert plan["steps"][0]["policy"]["permission"] == "memory.scope"
 
 
-def test_capability_filesystem_permissions_are_checked_against_agent_policy(tmp_path: Path) -> None:
+def test_capability_filesystem_permissions_are_checked_against_agent_policy(tmp_path: Path, grant) -> None:
     cap_dir = tmp_path / "capabilities" / "writer"
     cap_dir.mkdir(parents=True)
     write_yaml(
@@ -426,6 +429,7 @@ def test_capability_filesystem_permissions_are_checked_against_agent_policy(tmp_
             "steps": [{"id": "write", "agent": "daily_briefing_agent", "action": "writer.write"}],
         },
     )
+    grant(paths, "daily_briefing_agent", "writer.write")   # granted, but no filesystem permission
     plan = plan_workflow(
         load_workflows(paths.workflows)["writer"],
         load_agents(paths.agents),

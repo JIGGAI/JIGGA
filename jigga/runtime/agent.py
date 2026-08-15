@@ -24,7 +24,7 @@ from jigga.runtime.model_router import (
     resolve_agent_model,
     resolve_agent_model_profile,
 )
-from jigga.runtime.policy import NON_EXECUTING_MODES, resolve_permission_mode
+from jigga.runtime.policy import NON_EXECUTING_MODES, granted_actions, resolve_permission_mode
 from jigga.runtime.handoffs import fire_handoffs
 from jigga.runtime.tasks import set_task_state, tasks_for_agent
 from jigga.runtime.context_pack import assemble_agent_context
@@ -53,20 +53,16 @@ def _to_tool_name(action: str) -> str:
 
 
 def _resolve_agent_actions(agent: AgentConfig, registry: CapabilityRegistry) -> list[str]:
-    """Effective tool allowlist: `agent.tools` plus any `permissions.tools.allow`,
+    """Effective tool allowlist: the agent's grants (`policy.granted_actions`)
     filtered to actions that actually resolve to a registered capability.
     Non-resolving names (e.g. `memory.write_summary`, which isn't a capability)
-    are silently skipped — they're not offered to the model."""
-    allowed: list[str] = list(agent.tools or [])
-    perms = agent.permissions or {}
-    tools_perm = perms.get("tools") if isinstance(perms, dict) else None
-    if isinstance(tools_perm, dict):
-        allowed += list(tools_perm.get("allow") or [])
-    resolved: list[str] = []
-    for action in dict.fromkeys(allowed):  # dedupe, preserve order
-        if registry.resolve_action(action) is not None:
-            resolved.append(action)
-    return resolved
+    are silently skipped — they're not offered to the model.
+
+    Shares `granted_actions` with the policy layer deliberately: what the model
+    is offered and what the runtime will execute must come from one list, or
+    they drift apart and the offer stops describing the boundary."""
+    return [action for action in granted_actions(agent)
+            if registry.resolve_action(action) is not None]
 
 
 def _build_tool_schemas(actions: list[str], registry: CapabilityRegistry) -> list[dict[str, Any]]:

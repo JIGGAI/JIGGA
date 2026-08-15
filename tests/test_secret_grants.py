@@ -89,7 +89,9 @@ def test_dispatch_binds_the_context_end_to_end(tmp_path: Path) -> None:
     set_secret(paths.home, "email_imap.json", json.dumps(
         {"imap_host": "i", "smtp_host": "s", "username": "u", "password": "p"}))
 
-    agent = AgentConfig(id="reader", name="R", role="r",
+    # Granted the tool, so the failure under test is the SECRET grant, not the
+    # tool grant that now precedes it at dispatch.
+    agent = AgentConfig(id="reader", name="R", role="r", tools=["email.search"],
                         permissions={"email": "read", "network": {"mode": "allow"},
                                      "secrets": {"allow": ["something_else"]}})
     runtime = RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs,

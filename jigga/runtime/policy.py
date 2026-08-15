@@ -96,6 +96,47 @@ def resolve_permission_mode(agent: AgentConfig | None, default_mode: str) -> str
     return agent.permission_mode
 
 
+def granted_actions(agent: AgentConfig) -> list[str]:
+    """Every action explicitly granted to an agent: its `tools:` list plus any
+    `permissions.tools.allow`. Order-preserving and deduped. This is the single
+    source of truth for what an agent may invoke — the agent loop uses it to
+    decide which function schemas the model is offered, and the policy layer
+    uses it to decide what may actually run."""
+    # getattr rather than attribute access: agent stand-ins (tests, and any
+    # duck-typed caller) may not carry every field, and a missing `tools` must
+    # read as "granted nothing" rather than raising past the check.
+    allowed = list(getattr(agent, "tools", None) or [])
+    perms = getattr(agent, "permissions", None)
+    tools_perm = perms.get("tools") if isinstance(perms, dict) else None
+    if isinstance(tools_perm, dict):
+        allowed += list(tools_perm.get("allow") or [])
+    return list(dict.fromkeys(allowed))
+
+
+def evaluate_tool_grant(agent: AgentConfig | None, action: str) -> PolicyDecision:
+    """Deny any action the agent was not explicitly granted.
+
+    The grant list used to gate only *which function schemas the model was
+    offered* — a menu, not a boundary. Anything that named an action directly
+    (a workflow node, a recipe, a scheduled job) reached the handler regardless,
+    so an agent with `tools: []` could write files through a workflow while the
+    model-facing tool list showed nothing. This is the boundary; every
+    execution path checks it, and `dispatch_action` re-checks as a floor so a
+    future caller can't reintroduce the bypass.
+    """
+    if agent is None:
+        return PolicyDecision(
+            "deny", f"No agent configured to grant {action!r}.", "tools.grant")
+    if action in granted_actions(agent):
+        return PolicyDecision("allow")
+    return PolicyDecision(
+        "deny",
+        f"Action {action!r} is not granted to agent {agent.id!r}. "
+        f"Add it under `tools:` in agents/{agent.id}.yaml to allow it.",
+        "tools.grant",
+    )
+
+
 def evaluate_workflow_step(
     step: WorkflowStep,
     agent: AgentConfig | None = None,

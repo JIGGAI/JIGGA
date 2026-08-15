@@ -28,7 +28,8 @@ def _echo_user(home, logs_dir, request) -> ModelCallResult:
 def _writer_agent(paths) -> None:
     write_yaml(paths.agents / "writer.yaml", {
         "id": "writer", "name": "Writer", "role": "Writes copy.",
-        "memory_scope": "task_only", "model": "profile:default", "tools": [],
+        "memory_scope": "task_only", "model": "profile:default",
+        "tools": ["draft_with_model"],
         "permissions": {"network": {"mode": "ask"}, "shell": {"mode": "deny"}},
     })
 
