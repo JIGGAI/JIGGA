@@ -166,8 +166,9 @@ def test_cli_capabilities_list_picks_up_project_pack(tmp_path: Path, capsys) -> 
     assert actions.get("mycap.run") == "mycap"
 
 
-def test_cli_workflow_run_uses_project_capability(tmp_path: Path) -> None:
+def test_cli_workflow_run_uses_project_capability(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "proj.skill_run")
     project_root = tmp_path / "project"
     project_cap_dir = project_root / ".jigga" / "capabilities" / "proj-skill"
     project_cap_dir.mkdir(parents=True)

@@ -51,7 +51,7 @@ agents:
       # run `jigga model use chatgpt` / `jigga model login`). No tools — this agent
       # drafts text.
       model: profile:default
-      tools: [memory.search, tickets.move, tickets.list]
+      tools: [draft_with_model, memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask
@@ -67,7 +67,7 @@ agents:
       description: Drafting agent for the marketing team example.
       memory_scope: task_only
       model: profile:default
-      tools: [memory.search, tickets.move, tickets.list]
+      tools: [draft_with_model, memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask
@@ -83,7 +83,7 @@ agents:
       description: Review agent for the marketing team example.
       memory_scope: task_only
       model: profile:default
-      tools: [memory.search, tickets.move, tickets.list]
+      tools: [draft_with_model, memory.search, tickets.move, tickets.list]
       permissions:
         network:
           mode: ask

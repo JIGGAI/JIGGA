@@ -83,8 +83,9 @@ def _copy_pack(source: Path, dest: Path) -> Path:
     return dest
 
 
-def test_skill_pack_dispatches_through_model_router(tmp_path: Path) -> None:
+def test_skill_pack_dispatches_through_model_router(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "skill.draft_outline")
     pack_dir = _copy_pack(EXAMPLE_SKILL_PACK, paths.capabilities / "skill-outline")
     record_approval(paths.policies, load_capability_manifest(pack_dir / "manifest.yaml"))
 
@@ -115,8 +116,9 @@ def test_skill_pack_dispatches_through_model_router(tmp_path: Path) -> None:
     assert "Dry-run model response" in output["content"]
 
 
-def test_skill_pack_missing_instructions_file_errors(tmp_path: Path) -> None:
+def test_skill_pack_missing_instructions_file_errors(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "broken.run")
     cap_dir = paths.capabilities / "broken-skill"
     cap_dir.mkdir(parents=True)
     write_yaml(
@@ -149,8 +151,9 @@ def test_skill_pack_missing_instructions_file_errors(tmp_path: Path) -> None:
 # --- MCP server dispatch (end-to-end against the demo server) --------------
 
 
-def test_mcp_server_dispatches_against_demo_server(tmp_path: Path) -> None:
+def test_mcp_server_dispatches_against_demo_server(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "demo.echo")
     pack_dir = _copy_pack(EXAMPLE_MCP_PACK, paths.capabilities / "mcp-echo")
     # Rewrite manifest to use this venv's python so the test is portable, and
     # declare the capability as low-risk so the risk-level approval gate

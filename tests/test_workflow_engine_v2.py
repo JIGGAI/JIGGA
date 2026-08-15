@@ -172,8 +172,9 @@ def test_optional_node_failure_is_tolerated(tmp_path: Path) -> None:
     assert result["status"] == "completed"
 
 
-def test_llm_node_drafts_via_model(tmp_path: Path) -> None:
+def test_llm_node_drafts_via_model(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, AGENT, "draft_with_model")   # llm nodes desugar to draft_with_model
     _write_workflow(paths, _dag("llm_flow", nodes=[
         {"id": "think", "type": "llm", "agent": AGENT,
          "input": {"prompt": "Summarize the day"}, "output": "summary.md"},

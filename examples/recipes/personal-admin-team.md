@@ -29,8 +29,10 @@ agents:
       memory_scope: manager_view
       tools:
         - calendar.list_events
+        - calendar.get_event
         - email.search
         - notifications.send
+        - summarize_day
         - memory.write_summary
         - memory.search
       # Where notifications.send reaches the user: "default" = the user's default

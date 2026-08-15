@@ -34,6 +34,7 @@ agents:
       model: gpt-5.5
       memory_scope: content_team_view
       tools:
+        - extract_core_message
         - filesystem.read
         - filesystem.write
         - memory.search

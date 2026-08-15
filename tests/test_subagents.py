@@ -122,8 +122,9 @@ def test_spawn_subagent_capability_is_registered() -> None:
     assert capability.risk_level == "medium"
 
 
-def test_workflow_dispatch_spawns_subagent(tmp_path: Path) -> None:
+def test_workflow_dispatch_spawns_subagent(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "content_strategist", "spawn_subagent")
     write_yaml(
         paths.workflows / "delegate.yaml",
         {

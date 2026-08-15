@@ -22,6 +22,26 @@ def _disable_real_notifications_in_tests() -> None:
     os.environ.pop("JIGGA_NOTIFICATION_MODE", None)
 
 
+@pytest.fixture
+def grant():
+    """Grant capability actions to an existing agent yaml.
+
+    Dispatch denies any action an agent wasn't explicitly granted — the grant
+    list is the security boundary, not just the menu the model is offered — so
+    a test driving a workflow step has to grant it exactly as a real install
+    would. Deliberately not autouse: a test that forgets should fail.
+    """
+    from jigga.core.io import read_yaml, write_yaml
+
+    def _grant(paths, agent_id: str, *actions: str) -> None:
+        path = paths.agents / f"{agent_id}.yaml"
+        doc = read_yaml(path)
+        doc["tools"] = list(dict.fromkeys([*(doc.get("tools") or []), *actions]))
+        write_yaml(path, doc)
+
+    return _grant
+
+
 @pytest.fixture(autouse=True)
 def _isolate_from_real_system(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Tests never touch the real system (or see its state).

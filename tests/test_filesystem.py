@@ -341,8 +341,9 @@ def test_bundled_filesystem_capability_resolves_each_action() -> None:
 # --- workflow integration ---------------------------------------------------
 
 
-def test_workflow_round_trip_write_then_read(tmp_path: Path) -> None:
+def test_workflow_round_trip_write_then_read(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "filesystem.write_file", "filesystem.read_file")
     # The bundled daily_briefing_agent allows ~/.jigga/memory/summaries; tests
     # use a tmp_path runtime, so we widen the agent's allow list to include
     # this test's runtime home. This mirrors the real user pattern: pick an
@@ -386,8 +387,9 @@ def test_workflow_round_trip_write_then_read(tmp_path: Path) -> None:
     assert result["outputs"]["read"]["content"] == "ready"
 
 
-def test_workflow_filesystem_denied_path_blocks_at_runtime(tmp_path: Path) -> None:
+def test_workflow_filesystem_denied_path_blocks_at_runtime(tmp_path: Path, grant) -> None:
     paths = init_runtime(tmp_path, examples=True)
+    grant(paths, "daily_briefing_agent", "filesystem.write_file", "filesystem.read_file")
     # daily_briefing_agent has no read access to /etc/passwd.
     write_yaml(
         paths.workflows / "rogue.yaml",

@@ -37,6 +37,7 @@ from jigga.runtime.policy import (
     evaluate_filesystem,
     evaluate_network,
     evaluate_resource_permission,
+    evaluate_tool_grant,
 )
 from jigga.runtime.reminders import reminders_handler
 from jigga.runtime.runtime_context import Handler, RuntimeContext
@@ -251,6 +252,18 @@ def dispatch_action(
                      reason="runtime-only action — the supervisor owns this; agents must not call it")
         raise ValueError(
             f"{step.action} is runtime-only (the supervisor owns it); agents cannot call it.")
+    # The grant floor. Callers are expected to have checked already (the agent
+    # loop only offers granted schemas; `_step_policy` blocks ungranted steps),
+    # but this is the last gate before a handler runs — so a caller that forgets
+    # can't hand an agent authority it was never given. Engine-internal dispatch
+    # carries no agent and is out of scope, exactly like the runtime-only check.
+    if runtime.agent is not None:
+        grant = evaluate_tool_grant(runtime.agent, step.action)
+        if grant.status != "allow":
+            append_event(logs_dir, "capability.invocation.denied", run_id=run_id, step=step.id,
+                         action=step.action, capability=capability.name, status="deny",
+                         agent=runtime.agent.id, reason=grant.reason, permission=grant.permission)
+            raise PermissionError(grant.reason)
 
     append_event(
         logs_dir,
