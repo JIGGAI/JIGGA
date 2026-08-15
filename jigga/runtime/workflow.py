@@ -9,7 +9,12 @@ from jigga.core.models import AgentConfig, WorkflowConfig, WorkflowStep, now_iso
 from jigga.core.paths import JiggaPaths
 from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
-from jigga.runtime.dispatcher import RuntimeContext, evaluate_capability_permissions, execute_step
+from jigga.runtime.dispatcher import (
+    RuntimeContext,
+    evaluate_capability_permissions,
+    execute_step,
+    register_outputs,
+)
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.policy import evaluate_tool_grant, evaluate_workflow_step, resolve_permission_mode
 
@@ -91,6 +96,7 @@ def _plan_workflow_v2(
     from jigga.runtime.workflow_engine import validate_graph
 
     problems = validate_graph(workflow)
+    contract_gaps = untyped_model_outputs_consumed(list(workflow.nodes))
     nodes = []
     for node in workflow.nodes:
         if node.type == "human_approval":
@@ -106,6 +112,10 @@ def _plan_workflow_v2(
                           "permission_mode": None, "capability": None, "risk_level": None}
             else:
                 policy = _step_policy(step, workflow, agents, default_mode, registry)
+        problem = _contract_problem(node, contract_gaps)
+        if problem and policy["status"] not in {"blocked", "skipped"}:
+            policy = {**policy, "status": "blocked", "reason": problem,
+                      "permission": "workflow.output_contract"}
         nodes.append({"id": node.id, "type": node.type, "agent": node.agent, "action": node.action,
                       "output": node.output, "optional": node.optional, "policy": policy})
     return {
@@ -128,6 +138,72 @@ def _plan_workflow_v2(
     }
 
 
+_MODEL_ACTIONS = {"draft_with_model"}
+
+
+def _is_model_backed(item: Any) -> bool:
+    return getattr(item, "type", None) == "llm" or getattr(item, "action", None) in _MODEL_ACTIONS
+
+
+def _referenced_names(item: Any) -> set[str]:
+    """Every output name an item's input refers to — explicit `${name}` and the
+    deprecated bare form alike, since both consume an upstream output."""
+    from jigga.runtime.dispatcher import _REFERENCE
+
+    found: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            match = _REFERENCE.match(value.strip())
+            found.add(match.group(1).strip() if match else value)
+        elif isinstance(value, list):
+            for entry in value:
+                walk(entry)
+        elif isinstance(value, dict):
+            for entry in value.values():
+                walk(entry)
+
+    walk(getattr(item, "input", None) or {})
+    return found
+
+
+def untyped_model_outputs_consumed(items: list[Any]) -> list[dict[str, str]]:
+    """Model-backed steps whose output another step consumes while declaring no
+    `output_fields`. Returns `[{producer, consumer, reference}]`.
+
+    This is the check that would have caught the woods corruption at authoring
+    time. An untyped `llm` node returned `{"markdown_lines": [...]}` instead of
+    prose, the save node wrote that JSON object into the calendar file, and the
+    file lost every `### Week N` header the *next* week's workflow parses — so it
+    surfaced a week later, in a different workflow, as a content mismatch. The
+    same workflow had run correctly for months elsewhere purely because that
+    model happened to reply with raw text (FIELD_LESSONS §3.1).
+    """
+    produced: dict[str, Any] = {}
+    findings: list[dict[str, str]] = []
+    for item in items:
+        for name in _referenced_names(item):
+            producer = produced.get(name)
+            if producer is not None:
+                findings.append({"producer": producer.id, "consumer": item.id, "reference": name})
+        if _is_model_backed(item) and not (getattr(item, "output_fields", None) or []):
+            produced[item.id] = item
+            if getattr(item, "output", None):
+                produced[item.output] = item
+    return findings
+
+
+def _contract_problem(item: Any, findings: list[dict[str, str]]) -> str | None:
+    """The plan-blocking reason for a producer, if it has one."""
+    mine = [f for f in findings if f["producer"] == item.id]
+    if not mine:
+        return None
+    consumers = ", ".join(sorted({f["consumer"] for f in mine}))
+    return (f"model step {item.id!r} declares no output_fields but its output is consumed by "
+            f"{consumers}. Add output_fields, or stop referencing it — an untyped model reply "
+            f"is whatever shape the model felt like returning that day.")
+
+
 def plan_workflow(
     workflow: WorkflowConfig,
     agents: dict[str, AgentConfig],
@@ -136,8 +212,14 @@ def plan_workflow(
 ) -> dict[str, Any]:
     if workflow.nodes:
         return _plan_workflow_v2(workflow, agents, default_mode, registry)
+    contract_gaps = untyped_model_outputs_consumed(list(workflow.steps))
     steps = []
     for step in workflow.steps:
+        policy = _step_policy(step, workflow, agents, default_mode, registry)
+        problem = _contract_problem(step, contract_gaps)
+        if problem and policy["status"] not in {"blocked", "skipped"}:
+            policy = {**policy, "status": "blocked", "reason": problem,
+                      "permission": "workflow.output_contract"}
         steps.append(
             {
                 "id": step.id,
@@ -146,7 +228,7 @@ def plan_workflow(
                 "output": step.output,
                 "optional": step.optional,
                 "approval": step.approval or "not_required",
-                "policy": _step_policy(step, workflow, agents, default_mode, registry),
+                "policy": policy,
             }
         )
     return {
@@ -233,9 +315,7 @@ def _run_workflow(
         output, artifact = execute_step(
             step, run_dir, outputs, memory_context, runtime, registry, logs_dir, workflow_id, run_id
         )
-        outputs[step.id] = output
-        if step.output:
-            outputs[step.output] = output
+        register_outputs(outputs, step, output)
         append_event(
             logs_dir,
             "workflow.step.completed",

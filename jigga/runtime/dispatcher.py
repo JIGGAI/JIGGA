@@ -117,6 +117,26 @@ def resolve_value(value: Any, outputs: dict[str, Any], *,
     return value
 
 
+def register_outputs(outputs: dict[str, Any], step: Any, value: Any) -> None:
+    """Record a completed step's output under every name it can be referenced by.
+
+    Always its own `id`, and its `output:` name when it declares one. A step that
+    declared more than one `output_fields` additionally registers each field as
+    `<name>.<field>` — so `${draft.markdown}` addresses one field of a multi-field
+    reply without needing dotted lookup anywhere in `resolve_value`.
+    """
+    outputs[step.id] = value
+    if getattr(step, "output", None):
+        outputs[step.output] = value
+    fields = [str((f or {}).get("name") or "").strip() for f in (getattr(step, "output_fields", None) or [])]
+    fields = [f for f in fields if f]
+    if len(fields) > 1 and isinstance(value, dict):
+        for base in {step.id, getattr(step, "output", None)} - {None}:
+            for name in fields:
+                if name in value:
+                    outputs[f"{base}.{name}"] = value[name]
+
+
 def _requests_resource_access(declared: Any) -> bool:
     """Return True when a capability's resource declaration *requests* access.
 

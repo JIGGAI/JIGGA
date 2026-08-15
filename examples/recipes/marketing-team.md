@@ -108,6 +108,10 @@ workflows:
             Product: a local-first OS for personal AI workers that run on your own
             machine. Distill the core launch message and the single sharpest angle in
             2-3 sentences.
+        # Declared because `copy` consumes this. Without it the reply is whatever
+        # shape the model felt like returning, and the consumer silently gets it.
+        output_fields:
+          - {name: markdown, type: text}
         output: core_message.md
         approval: not_required
       - id: copy
@@ -116,6 +120,8 @@ workflows:
         input:
           prompt: "Write (a) one launch tweet under 200 characters and (b) a 3-sentence LinkedIn post."
           core_message: ${core_message.md}
+        output_fields:                       # consumed by `review`
+          - {name: markdown, type: text}
         output: copy.md
         approval: not_required
       - id: review

@@ -25,6 +25,12 @@ def _echo_user(home, logs_dir, request) -> ModelCallResult:
     return _result(content=f"ECHO[{request.items[-1].content}]")
 
 
+def _echo_json(home, logs_dir, request) -> ModelCallResult:
+    """Same, but honoring a declared output contract."""
+    import json as _json
+    return _result(content=_json.dumps({"markdown": f"ECHO[{request.items[-1].content}]"}))
+
+
 def _writer_agent(paths) -> None:
     write_yaml(paths.agents / "writer.yaml", {
         "id": "writer", "name": "Writer", "role": "Writes copy.",
@@ -95,18 +101,22 @@ def test_handler_raises_on_model_error(tmp_path: Path) -> None:
 
 
 def test_workflow_chains_model_backed_steps(tmp_path: Path) -> None:
+    """The producer declares a contract because its output is consumed — an
+    untyped producer is blocked at plan time now (see the test below)."""
     paths = init_runtime(tmp_path)
     _writer_agent(paths)
     write_yaml(paths.workflows / "two_step.yaml", {
         "id": "two_step", "name": "Two Step",
         "steps": [
             {"id": "draft", "agent": "writer", "action": "draft_with_model",
-             "input": {"prompt": "Write a tagline"}, "output": "tagline.md", "approval": "not_required"},
+             "input": {"prompt": "Write a tagline"}, "output": "tagline.md",
+             "output_fields": [{"name": "markdown", "type": "text"}], "approval": "not_required"},
             {"id": "polish", "agent": "writer", "action": "draft_with_model",
-             "input": {"prompt": "Polish it", "draft": "tagline.md"}, "output": "final.md", "approval": "not_required"},
+             "input": {"prompt": "Polish it", "draft": "${tagline.md}"}, "output": "final.md",
+             "approval": "not_required"},
         ],
     })
-    with patch.object(handlers, "call_model", _echo_user):
+    with patch.object(handlers, "call_model", _echo_json):
         result = run_workflow(paths, "two_step")
 
     assert result["status"] == "completed"

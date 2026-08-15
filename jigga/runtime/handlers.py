@@ -485,6 +485,59 @@ def _draft_prompt(agent: AgentConfig, resolved_input: Any) -> tuple[str, str]:
     return system, json.dumps(resolved_input, indent=2, default=str)
 
 
+class OutputContractError(ValueError):
+    """A model-backed step declared `output_fields` and the reply didn't match."""
+
+
+def _field_names(output_fields: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for spec in output_fields or []:
+        name = str((spec or {}).get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _contract_instruction(output_fields: list[dict[str, Any]]) -> str:
+    """Append the declared shape to the prompt as an explicit JSON contract."""
+    lines = ["Reply with a single JSON object and nothing else — no prose before or after,",
+             "no code fence. It must contain exactly these keys:"]
+    for spec in output_fields:
+        name = str(spec.get("name", "")).strip()
+        kind = str(spec.get("type", "text")).strip() or "text"
+        note = str(spec.get("description", "")).strip()
+        lines.append(f"- {name} ({kind}){f' — {note}' if note else ''}")
+    return "\n".join(lines)
+
+
+def _parse_contract(raw: str, names: list[str], step_id: str) -> dict[str, Any]:
+    """Parse and validate a contracted reply. Raises `OutputContractError` with
+    the model's actual reply attached, because the failure people hit is "it
+    returned something else" and the reply is the only useful evidence."""
+    text = (raw or "").strip()
+    if text.startswith("```"):   # tolerate a fenced block; nothing else
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise OutputContractError(
+            f"step {step_id!r} declares output_fields but the model did not return JSON "
+            f"({exc}). Reply began: {text[:200]!r}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise OutputContractError(
+            f"step {step_id!r} declares output_fields but the model returned "
+            f"{type(parsed).__name__}, not an object. Reply began: {text[:200]!r}"
+        )
+    missing = [name for name in names if name not in parsed]
+    if missing:
+        raise OutputContractError(
+            f"step {step_id!r} reply is missing declared field(s) {', '.join(missing)} "
+            f"(got: {', '.join(sorted(parsed)) or 'nothing'})"
+        )
+    return parsed
+
+
 def _draft_with_model_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,
@@ -494,13 +547,27 @@ def _draft_with_model_handler(
 ) -> Any:
     """Make a workflow step *think*: route its brief through the agent's model.
 
-    Returns the model's text directly (not a dict) so it chains cleanly — a
-    downstream step's `input: {context: this_step_output.md}` receives the prose,
-    and a `.md`/`.txt` `output:` writes the prose verbatim.
+    **Untyped (no `output_fields`)** returns the model's text directly so it
+    chains cleanly — a downstream `input: {context: "${this_step}"}` receives the
+    prose, and a `.md`/`.txt` `output:` writes it verbatim.
+
+    **Typed** asks for JSON matching the declared fields and validates the reply.
+    One declared field returns that field's value, so chaining is unchanged; more
+    than one returns the dict, with each field additionally addressable as
+    `${<output>.<field>}`.
+
+    The typed form exists because the untyped one is luck-dependent. On the
+    precursor stack an untyped node ran correctly for months on one machine and
+    corrupted a file on another, purely because that model happened to reply with
+    raw text rather than JSON — a class of bug that passes every test you write
+    and fails on a model upgrade (FIELD_LESSONS §3.1).
     """
     if runtime.agent is None:
         raise ValueError("draft_with_model requires an executing agent")
+    names = _field_names(getattr(step, "output_fields", None) or [])
     system, brief = _draft_prompt(runtime.agent, resolved_input)
+    if names:
+        system = f"{system}\n\n{_contract_instruction(step.output_fields)}"
     task = {"id": f"draft_{step.id}", "title": step.action, "description": brief}
     items = [
         ModelCallItem(id=f"draft_system:{step.id}", role="system", content=system),
@@ -518,7 +585,10 @@ def _draft_with_model_handler(
     result = call_model(runtime.home, runtime.logs_dir, request)
     if result.status != "ok":
         raise RuntimeError(f"draft_with_model step {step.id!r} failed: {result.error}")
-    return result.content
+    if not names:
+        return result.content
+    parsed = _parse_contract(result.content, names, step.id)
+    return parsed[names[0]] if len(names) == 1 else {name: parsed[name] for name in names}
 
 
 def _skill_pack_handler(
