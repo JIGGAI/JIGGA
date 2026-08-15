@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from jigga.core.io import write_yaml
 from jigga.core.paths import JiggaPaths
-from jigga.runtime.term_select import Option, select_one, supports_picker
+from jigga.runtime.term_select import Option, multi_select, select_one, supports_picker
 
 # Both roles get the same powers (all capabilities + cross-team read, per the
 # design); they differ in persona + how aggressively they delegate.
@@ -54,21 +54,112 @@ _STYLES = {
     "warm": "Communicate in a warm, conversational, personable tone.",
 }
 
+# What the assistant can do, grouped for a human rather than listed as ~30 raw
+# actions. Groups are keyed by *capability name* (not action) so adding an
+# action to an existing capability needs no change here; a capability that
+# matches no group lands in the catch-all and stays enabled, so a new bundled
+# capability is never silently withheld.
+#
+# `default_on` is False for anything that reaches off the machine or runs
+# arbitrary commands. Granting those unasked is how an install ends up with
+# more authority than its owner realizes they agreed to.
+_TOOL_GROUPS: list[dict[str, Any]] = [
+    {"key": "files", "label": "Files", "detail": "Read and write in the folders you allow",
+     "capabilities": ["filesystem"], "default_on": True},
+    {"key": "memory", "label": "Memory", "detail": "Remember, recall, and summarize",
+     "capabilities": ["memory-write", "memory-search", "summarization"], "default_on": True},
+    {"key": "notify", "label": "Notify", "detail": "Desktop notifications and channel messages",
+     "capabilities": ["notifications", "webchat", "mailbox"], "default_on": True},
+    {"key": "writing", "label": "Writing", "detail": "Draft and review prose with the model",
+     "capabilities": ["text-generation", "content-drafting"], "default_on": True},
+    {"key": "schedule", "label": "Schedule", "detail": "Reminders, calendar, and mail lookups",
+     "capabilities": ["reminders", "calendar", "email"], "default_on": True},
+    {"key": "teams", "label": "Teams", "detail": "Delegate work and oversee every team",
+     "capabilities": ["team-insight", "team-orchestration", "subagent-delegation", "tickets"],
+     "default_on": True},
+    {"key": "web", "label": "Web", "detail": "Fetch pages and search the web (leaves this machine)",
+     "capabilities": ["web"], "default_on": False},
+    {"key": "shell", "label": "Shell", "detail": "Run shell commands on this machine (HIGH RISK)",
+     "capabilities": ["shell"], "default_on": False},
+]
+_CATCH_ALL = {"key": "other", "label": "Other", "detail": "Everything else bundled with JIGGA",
+              "capabilities": [], "default_on": True}
 
-def _all_capability_actions() -> list[str]:
+
+def _actions_of(cap: Any) -> list[str]:
+    # Runtime-only actions (e.g. webchat.poll_messages) belong to the ingest
+    # pipeline — never list them as agent tools; the dispatcher would deny them
+    # and the model would just waste a turn trying.
+    return [a for a in cap.actions if not cap.is_runtime_only(a)]
+
+
+def _tool_groups() -> list[dict[str, Any]]:
+    """The tool groups with their live action lists resolved from the bundled
+    registry. Groups whose capabilities aren't installed drop out; anything
+    bundled that no group claims joins the catch-all."""
     from jigga.runtime.capabilities import bundled_capabilities
 
-    actions: list[str] = []
-    for cap in bundled_capabilities():
-        for action in cap.actions:
-            # Runtime-only actions (e.g. webchat.poll_messages) belong to the
-            # ingest pipeline — never list them as agent tools; the dispatcher
-            # would deny them and the model would just waste a turn trying.
-            if cap.is_runtime_only(action):
+    by_name = {cap.name: cap for cap in bundled_capabilities()}
+    claimed: set[str] = set()
+    groups: list[dict[str, Any]] = []
+    for spec in _TOOL_GROUPS:
+        actions: list[str] = []
+        for cap_name in spec["capabilities"]:
+            cap = by_name.get(cap_name)
+            if cap is None:
                 continue
-            if action not in actions:
-                actions.append(action)
+            claimed.add(cap_name)
+            actions.extend(a for a in _actions_of(cap) if a not in actions)
+        if actions:
+            groups.append({**spec, "actions": actions})
+    leftover: list[str] = []
+    for name, cap in by_name.items():
+        if name not in claimed:
+            leftover.extend(a for a in _actions_of(cap) if a not in leftover)
+    if leftover:
+        groups.append({**_CATCH_ALL, "actions": leftover})
+    return groups
+
+
+def _all_capability_actions() -> list[str]:
+    actions: list[str] = []
+    for group in _tool_groups():
+        actions.extend(a for a in group["actions"] if a not in actions)
     return actions
+
+
+def _choose_tools(input_fn: Callable[[str], str], print_fn: Callable[..., None],
+                  agent_name: str) -> tuple[list[str], list[str]]:
+    """Walk the tool groups. Returns (granted actions, enabled group labels).
+
+    Previously every bundled action was granted unconditionally, `shell.run`
+    included — a fresh install handed its assistant the ability to run
+    arbitrary commands without ever saying so out loud.
+    """
+    groups = _tool_groups()
+    title = f"What should {agent_name} be able to do?"
+    if supports_picker():
+        print_fn("")
+        picked = multi_select(title, [
+            Option(label=f"{g['label']:9} {g['detail']}", selected=bool(g["default_on"]))
+            for g in groups
+        ])
+        chosen = groups if picked is None else [groups[i] for i in picked]
+    else:
+        print_fn(f"\n{title}")
+        for i, g in enumerate(groups, 1):
+            mark = "x" if g["default_on"] else " "
+            print_fn(f"  {i}. [{mark}] {g['label']:9} {g['detail']}")
+        raw = input_fn("Enter to accept, or list the numbers you want (e.g. 1,2,5): ").strip()
+        if not raw:
+            chosen = [g for g in groups if g["default_on"]]
+        else:
+            wanted = {int(p) for p in raw.replace(",", " ").split() if p.strip().isdigit()}
+            chosen = [g for i, g in enumerate(groups, 1) if i in wanted]
+    actions: list[str] = []
+    for group in chosen:
+        actions.extend(a for a in group["actions"] if a not in actions)
+    return actions, [g["label"] for g in chosen]
 
 
 def _normalize_dirs(raw: str) -> list[str]:
@@ -152,13 +243,21 @@ def run_onboarding(
     custom_name = ask(f"Name your assistant? (Enter for \"{base['name']}\") ")
     if custom_name:
         spec["name"] = custom_name
+    agent_name = spec["name"]
+    # Default they/them: a name doesn't imply pronouns, and the wrong guess is
+    # worse than the neutral form. Written into SOUL.md so the agent refers to
+    # itself the way its principal chose.
+    pronouns = ask(f"Pronouns for {agent_name}? (Enter for they/them) ") or "they/them"
     style = _choose(
         input_fn, echo, "Communication style?",
         [("concise", _STYLES["concise"]), ("detailed", _STYLES["detailed"]), ("warm", _STYLES["warm"])],
         default="concise",
     )
+    working_style = ask(f"\nAnything else about how {agent_name} should work with you? (Enter to skip) ")
+    boundaries = ask(f"Anything {agent_name} should never do without asking you first? (Enter to skip) ")
     extra_dirs = _normalize_dirs(ask(
         "\nAny folders the assistant may read/write? (comma-separated, Enter for none) "))
+    tools, tool_groups = _choose_tools(input_fn, echo, agent_name)
 
     # USER.md — generated from the answers, never shipped pre-filled.
     user_path = paths.home / "USER.md"
@@ -179,7 +278,7 @@ def run_onboarding(
             "default": True,
             "memory_scope": "task_only",
             "permission_mode": "autonomous",
-            "tools": _all_capability_actions(),
+            "tools": tools,
             "permissions": {
                 "memory": {"scope": "task_only"},
                 # Scoped to this install's actual runtime home (the only directory
@@ -198,16 +297,55 @@ def run_onboarding(
         })
         created = True
         _write_persona(paths.home, agent_id, spec, _STYLES[style], purpose, call_you,
+                       pronouns=pronouns, working_style=working_style, boundaries=boundaries,
                        overwrite=overwrite, fresh=True)
 
-    echo(f"\n✓ Setup complete. Default agent: {spec['name']} (`{agent_id}`).")
+    echo(f"\n✓ Setup complete. Default agent: {agent_name} (`{agent_id}`).")
     echo(f"  USER.md: {user_path}")
-    echo("  It's the catch-all for inbound messages and can run/oversee every team.")
-    if extra_dirs:
-        echo(f"  Filesystem access: its JIGGA home + {', '.join(extra_dirs)}")
-    return {"agent_id": agent_id, "name": spec["name"], "role_kind": role_kind,
+    for line in _introduction(spec, call_you, timezone, purpose, style, pronouns,
+                              tool_groups, extra_dirs, paths.home):
+        echo(line)
+    return {"agent_id": agent_id, "name": agent_name, "role_kind": role_kind,
             "style": style, "created": created, "user_md": str(user_path),
-            "extra_dirs": extra_dirs}
+            "extra_dirs": extra_dirs, "pronouns": pronouns, "tools": tools,
+            "tool_groups": tool_groups}
+
+
+def _introduction(spec: dict, call_you: str, timezone: str, purpose: str, style: str,
+                  pronouns: str, tool_groups: list[str], extra_dirs: list[str],
+                  home: Path) -> list[str]:
+    """The assistant's first words to the person it works for.
+
+    Setup used to end on `✓ Setup complete.` — the installer had just named a
+    colleague, chosen how it speaks and what it may touch, and then never heard
+    from it. This is deterministic text assembled from the answers, so it works
+    with no model configured and in non-interactive runs; a model-generated
+    greeting replaces it when a provider is live, with this as the fallback.
+    """
+    name = spec["name"]
+    greeting = f"Hi {call_you} — I'm {name}." if call_you else f"I'm {name}."
+    lines = ["", f"— Meet {name} —", "", greeting, ""]
+    lines.append(f"  {spec['role']}")
+    if pronouns and pronouns != "they/them":
+        lines.append(f"  Pronouns: {pronouns}")
+    if purpose:
+        lines.append(f"  What you've pointed me at: {purpose}")
+    if timezone:
+        lines.append(f"  I'll assume you're in {timezone}.")
+    lines.append(f"  How I'll talk: {_STYLES[style].split('—')[0].strip().lower()}")
+    lines.append("")
+    if tool_groups:
+        lines.append(f"  I can: {', '.join(tool_groups).lower()}")
+    else:
+        lines.append("  I have no tools enabled yet — I can only talk.")
+    lines.append(f"  I can read and write in {home}"
+                 + (f" and {', '.join(extra_dirs)}" if extra_dirs else ""))
+    lines.append("  Everything I do lands in the audit log — `jigga trace` shows any of it.")
+    lines.append("")
+    lines.append("  Change any of this later: `jigga setup --overwrite`,")
+    lines.append("  or edit my SOUL.md to change who I am.")
+    lines.append("")
+    return lines
 
 
 def _looks_filled(user_path: Path) -> bool:
@@ -223,8 +361,9 @@ def _looks_filled(user_path: Path) -> bool:
 
 
 def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
-                   purpose: str, call_you: str, *, overwrite: bool = False,
-                   fresh: bool = False) -> None:
+                   purpose: str, call_you: str, *, pronouns: str = "they/them",
+                   working_style: str = "", boundaries: str = "",
+                   overwrite: bool = False, fresh: bool = False) -> None:
     """Author the default agent's identity files in its workspace — SOUL.md
     (persona), AGENTS.md (charter + guardrails), and MEMORY.md (the agent's own
     curated notes) — so the context pack injects them. No TOOLS.md: the tool
@@ -248,8 +387,26 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
     ws_id = ensure_agent_workspace(home, home / "teams", agent)
     role_dir = workspace_dir(home, ws_id) / "roles" / agent_id
     ensure_dir(role_dir)
-    soul = (f"# SOUL — {spec['name']}\nYour name is {spec['name']}.\n"
-            f"{spec['posture']}\n\n{style_line}\n")
+    # SOUL is who the agent *is* — name, pronouns, voice, and the lines it
+    # doesn't cross. It's injected on every wake, so it stays short: the
+    # charter (AGENTS.md) carries procedure, this carries identity.
+    soul_lines = [f"# SOUL — {spec['name']}", "", f"Your name is {spec['name']}."]
+    if pronouns:
+        soul_lines.append(f"Your pronouns are {pronouns}.")
+    if call_you:
+        soul_lines.append(f"You work for {call_you}. Address them as {call_you}.")
+    soul_lines += ["", "## Your role", spec["posture"], "", "## Your voice", style_line]
+    if working_style:
+        soul_lines += ["", "## How your principal wants to work with you", working_style]
+    if boundaries:
+        soul_lines += [
+            "", "## Never without asking first",
+            boundaries,
+            "",
+            "When one of these comes up, stop and ask — an approval you didn't need "
+            "costs a message; one you skipped can't be taken back.",
+        ]
+    soul = "\n".join(soul_lines) + "\n"
     charter = [f"# {spec['name']} — charter", "", spec["role"], ""]
     if purpose:
         charter += [f"**Purpose of this install:** {purpose}", ""]
