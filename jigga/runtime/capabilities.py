@@ -331,6 +331,22 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "handler": "runtime.web",
     },
     {
+        "name": "media",
+        "version": "0.1.0",
+        "summary": "Generate an image from a prompt (media.generate_image) via the "
+                   "configured media.image provider. Returns the image inline; a step's "
+                   "`output:` decides where it is written.",
+        "when_to_use": "A workflow needs a picture — social post art, a diagram, a cover. "
+                       "Needs an API-keyed provider configured under media.image; the text "
+                       "model provider cannot serve this.",
+        "actions": ["media.generate_image"],
+        # Network egress to a third party plus real spend per call → approval
+        # gated outside autonomous mode, like every other paid remote call.
+        "risk_level": "medium",
+        "permissions": {"network": {"mode": "allow"}},
+        "handler": "runtime.media",
+    },
+    {
         "name": "shell",
         "version": "0.1.0",
         "summary": "Run a command as an argv list through the policy-gated safe-process "

@@ -40,7 +40,7 @@ from jigga.runtime.dispatcher import RuntimeContext, execute_step, register_outp
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.notifications import NotificationRequest, delivery_mode, send_notification
 
-NODE_TYPES = {"tool", "llm", "human_approval", "writeback"}
+NODE_TYPES = {"tool", "llm", "media", "human_approval", "writeback"}
 EDGE_ON = {"success", "error", "always"}
 _TERMINAL = {"done", "failed", "skipped"}
 # Per-advance node budget: bounds a tick's work so one sprawling run can't
@@ -355,10 +355,20 @@ def _approval_resolution(paths: JiggaPaths, record: dict[str, Any], node_id: str
 # --- node execution --------------------------------------------------------
 
 
+# Sugar: a node type that implies its action, so a graph reads as what it does
+# rather than as which capability it happens to call.
+_NODE_TYPE_ACTIONS = {"llm": "draft_with_model", "media": "media.generate_image"}
+
+
 def _node_step(node: WorkflowNode) -> WorkflowStep:
-    action = node.action or ("draft_with_model" if node.type == "llm" else "")
+    action = node.action or _NODE_TYPE_ACTIONS.get(node.type, "")
     return WorkflowStep(id=node.id, action=action, agent=node.agent,
-                        input=dict(node.input or {}), output=node.output, optional=node.optional)
+                        input=dict(node.input or {}), output=node.output, optional=node.optional,
+                        # getattr: output contracts land in a separate PR, and
+                        # these two must not depend on each other's merge order.
+                        **({"output_fields": list(getattr(node, "output_fields", None) or [])}
+                           if hasattr(WorkflowStep, "__dataclass_fields__")
+                           and "output_fields" in WorkflowStep.__dataclass_fields__ else {}))
 
 
 def _writeback_target(paths: JiggaPaths, raw: str) -> Path:

@@ -14,6 +14,7 @@ from jigga.runtime.email_imap import email_imap_handler
 from jigga.runtime.filesystem import filesystem_handler
 from jigga.runtime.gog import gog_handler
 from jigga.runtime.google_calendar import google_calendar_handler
+from jigga.runtime.media import binary_payload, media_handler
 from jigga.runtime.handlers import (
     _calendar_handler,
     _draft_prompt,
@@ -234,6 +235,7 @@ HANDLERS: dict[str, Handler] = {
     "runtime.shell": shell_handler,
     "runtime.reminders": reminders_handler,
     "runtime.telegram": telegram_handler,
+    "runtime.media": media_handler,
     "runtime.web": web_handler,
     "runtime.webchat": webchat_handler,
     "skill_pack.default": _skill_pack_handler,
@@ -408,7 +410,12 @@ def execute_step(
     artifact = None
     if step.output:
         artifact = run_dir / step.output
-        if artifact.suffix in {".md", ".txt"}:
+        # Binary first: an image artifact must land as bytes. Without this a
+        # `output: cover.png` would get a base64 blob serialized into it as JSON.
+        blob = binary_payload(output)
+        if blob is not None:
+            artifact.write_bytes(blob)
+        elif artifact.suffix in {".md", ".txt"}:
             artifact.write_text(str(output), encoding="utf-8")
         else:
             write_json(artifact, output)
