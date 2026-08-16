@@ -433,11 +433,17 @@ def _execute_node(
                 paths.logs, record["workflow_id"], record["id"],
             )
     except Exception as exc:  # noqa: BLE001 — a node fault fails the node (error edges may handle it), never the runner
+        from jigga.runtime.model_router import error_category
+
         state["status"] = "failed"
         state["error"] = str(exc)
+        # Assertion 12: a failed node must say what *kind* of failure it was.
+        # "unknown" on an auth failure is itself the bug.
+        state["error_category"] = error_category(exc)
         state["completed_at"] = now_iso()
         append_event(paths.logs, "workflow.node.failed", status="failed", workflow=record["workflow_id"],
-                     run_id=record["id"], node=node.id, error=str(exc))
+                     run_id=record["id"], node=node.id, error=str(exc),
+                     error_category=state["error_category"])
         return
     state["status"] = "done"
     state["completed_at"] = now_iso()

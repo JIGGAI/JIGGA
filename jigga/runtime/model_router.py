@@ -38,10 +38,65 @@ class ModelProviderConfig:
     min_seconds_between_calls: float | None = None
 
 
-class RateLimitError(RuntimeError):
+class ModelError(RuntimeError):
+    """Base for model-call failures, carrying a `category` the run record can name.
+
+    On the prior-gen stack every LLM failure reached the run record as
+    `errorCategory: "unknown"` (2026-07-31, woods). A dead OAuth refresh and a
+    typo'd model name were indistinguishable, and the one log line that held the
+    answer was going to /dev/null. Days were lost to it. The category exists so
+    the run record says *which kind* of failure it was without anyone reading a
+    daemon log, and `hint` names the command that fixes it.
+    """
+
+    category = "unknown"
+
+    def __init__(self, message: str, *, provider: str | None = None, model: str | None = None,
+                 status: int | None = None, hint: str | None = None) -> None:
+        super().__init__(f"{message} — {hint}" if hint else message)
+        self.provider = provider
+        self.model = model
+        self.status = status
+        self.hint = hint
+
+
+class ModelAuthError(ModelError):
+    """Credentials are missing, expired, or rejected (401/403, or a refresh that
+    failed).
+
+    A fallback provider is still tried — one dead credential should not stop a
+    working provider from serving (#85). What must not happen is the failure
+    going out looking like any other: it gets its own `model.auth.failed` event
+    so a dead credential is greppable and alarmable even when the fallback
+    covers for it and the run succeeds."""
+
+    category = "auth"
+
+
+class RateLimitError(ModelError):
     """A provider returned 429 and retries were exhausted — distinct from other
     failures so the call loop can trip the circuit breaker (#84) before falling
     through to the next provider (#85)."""
+
+    category = "rate_limit"
+
+
+class ModelProviderError(ModelError):
+    """The provider answered, but with a non-auth, non-429 HTTP error."""
+
+    category = "provider"
+
+
+class ModelResponseError(ModelError):
+    """The call succeeded at the transport level but the body was unusable."""
+
+    category = "response"
+
+
+def error_category(exc: BaseException) -> str:
+    """The category to stamp on a run record. Anything that isn't a typed model
+    error is honestly reported as `unknown` rather than guessed at."""
+    return getattr(exc, "category", "unknown")
 
 
 @dataclass(frozen=True)
@@ -124,6 +179,10 @@ class ModelCallResult:
     content: str
     dry_run: bool
     error: str | None = None
+    # Which *kind* of failure this was — "auth", "rate_limit", "provider",
+    # "response", or "unknown" when nothing typed reached us. Only meaningful
+    # when status == "error"; see ModelError. Assertion 12.
+    error_category: str | None = None
     fallback_used: bool = False
     # Non-empty → this is a tool-call turn; `content` may be empty. Empty →
     # `content` is the model's final answer.
@@ -263,10 +322,13 @@ def _dry_run_result(request: ModelCallRequest, provider_id: str = "dry_run", mod
 
 def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallRequest, model: str) -> ModelCallResult:
     if not provider.api_key_env:
-        raise ValueError(f"Provider {provider.id} is missing api_key_env")
+        raise ModelAuthError(f"Provider {provider.id} is missing api_key_env", provider=provider.id,
+                             hint=f"set `api_key_env` for provider {provider.id} in config.yaml")
     api_key = os.environ.get(provider.api_key_env)
     if not api_key:
-        raise ValueError(f"Environment variable {provider.api_key_env} is not set")
+        raise ModelAuthError(f"Environment variable {provider.api_key_env} is not set",
+                             provider=provider.id,
+                             hint=f"export {provider.api_key_env}, or store it with `jigga secrets set`")
     base_url = (provider.base_url or "https://api.openai.com/v1").rstrip("/")
     payload: dict[str, Any] = {
         "model": model,
@@ -289,12 +351,20 @@ def _call_openai_compatible(provider: ModelProviderConfig, request: ModelCallReq
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Model request failed: HTTP {exc.code}: {detail}") from exc
+        if exc.code in (401, 403):  # a rejected key is not a retryable transport fault
+            raise ModelAuthError(
+                f"{provider.id} rejected the credential: HTTP {exc.code}: {detail}",
+                provider=provider.id, model=model, status=exc.code,
+                hint=f"check that {provider.api_key_env} holds a valid key for {provider.id}",
+            ) from exc
+        raise ModelProviderError(f"Model request failed: HTTP {exc.code}: {detail}",
+                                 provider=provider.id, model=model, status=exc.code) from exc
     message = data.get("choices", [{}])[0].get("message", {})
     tool_calls = _parse_tool_calls(message.get("tool_calls"))
     content = message.get("content")
     if not content and not tool_calls:
-        raise RuntimeError("Model response included neither content nor tool_calls")
+        raise ModelResponseError("Model response included neither content nor tool_calls",
+                                 provider=provider.id, model=model)
     usage = data.get("usage") or {}
     input_tokens = int(usage.get("prompt_tokens") or 0) or _prompt_tokens(request)
     output_tokens = int(usage.get("completion_tokens") or 0) or estimate_tokens(content or "")
@@ -451,9 +521,13 @@ def _retry_after_seconds(exc: urllib.error.HTTPError, attempt: int, *, rand: Any
 
 def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str, home: Path) -> ModelCallResult:
     """Call the ChatGPT/Codex backend on a subscription OAuth token (no API key)."""
-    from jigga.runtime.chatgpt_auth import load_credentials  # local import: optional dependency path
+    from jigga.runtime.chatgpt_auth import ChatGptAuthError, load_credentials  # local import: optional dependency path
 
-    creds = load_credentials(home=home)
+    try:
+        creds = load_credentials(home=home)
+    except ChatGptAuthError as exc:
+        raise ModelAuthError(f"ChatGPT credentials unavailable: {exc}", provider=provider.id, model=model,
+                             hint="run `jigga model login`") from exc
     payload = json.dumps(_build_responses_payload(request, model)).encode("utf-8")
 
     def _post(access_token: str, account_id: str | None):
@@ -482,24 +556,42 @@ def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest
             break
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403) and not refreshed:  # token expired/rejected → refresh once
-                creds.force_refresh()
+                try:
+                    creds.force_refresh()
+                except ChatGptAuthError as refresh_exc:
+                    # The woods failure verbatim: the refresh token itself was
+                    # revoked (`invalid_refresh_token`). A live OPENAI_API_KEY
+                    # proves nothing here — this path never reads one.
+                    raise ModelAuthError(
+                        f"ChatGPT token refresh failed: {refresh_exc}", provider=provider.id, model=model,
+                        status=exc.code, hint="run `jigga model login` to re-authorize the subscription",
+                    ) from refresh_exc
                 refreshed = True
                 continue
             if exc.code == 429 and attempt < _CHATGPT_MAX_RETRIES:
                 time.sleep(_retry_after_seconds(exc, attempt))
                 continue
             if exc.code == 429:  # retries exhausted on a 429 → typed so the caller can break the circuit
-                raise RateLimitError("ChatGPT rate-limited (429), retries exhausted") from exc
+                raise RateLimitError("ChatGPT rate-limited (429), retries exhausted",
+                                     provider=provider.id, model=model, status=429) from exc
             detail = exc.read().decode("utf-8", errors="replace")
-            suffix = " after refresh" if refreshed else ""
-            raise RuntimeError(f"ChatGPT request failed{suffix}: HTTP {exc.code}: {detail}") from exc
+            if exc.code in (401, 403):  # still rejected after a successful refresh → the grant is gone
+                raise ModelAuthError(
+                    f"ChatGPT rejected the refreshed token: HTTP {exc.code}: {detail}",
+                    provider=provider.id, model=model, status=exc.code,
+                    hint="run `jigga model login` to re-authorize the subscription",
+                ) from exc
+            raise ModelProviderError(f"ChatGPT request failed: HTTP {exc.code}: {detail}",
+                                     provider=provider.id, model=model, status=exc.code) from exc
     if response is None:  # exhausted retries without a definitive HTTPError to raise
-        raise RateLimitError("ChatGPT rate-limited (429), retries exhausted")
+        raise RateLimitError("ChatGPT rate-limited (429), retries exhausted",
+                             provider=provider.id, model=model, status=429)
 
     with response:
         parsed = parse_responses_stream(response)
     if not parsed["content"] and not parsed["tool_calls"]:
-        raise RuntimeError("ChatGPT response included neither content nor tool_calls")
+        raise ModelResponseError("ChatGPT response included neither content nor tool_calls",
+                                 provider=provider.id, model=model)
     return ModelCallResult(
         status="ok", provider=provider.id, model=model, content=parsed["content"], dry_run=False,
         tool_calls=parsed["tool_calls"],
@@ -659,6 +751,10 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
 
     threshold, cooldown = _breaker_config(home)
     failures: list[str] = []
+    # The category of the last failure seen. With a fallback chain the useful
+    # answer is the most recent one — the fallback's failure is what the caller
+    # is actually stuck on. None only when no provider was reachable at all.
+    last_category: str | None = None
     for index, provider_id in enumerate(_provider_order(profile)):
         provider = providers.get(provider_id)
         if provider is None:
@@ -704,11 +800,21 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
             opened = model_throttle.note_rate_limited(home, provider_id, now=time.time(),
                                                       threshold=threshold, cooldown=cooldown)
             failures.append(f"{provider_id}: {exc}")
+            last_category = exc.category
             append_event(logs_dir, "model.rate_limited", status="error", agent_id=request.agent_id,
                          provider=provider_id, breaker_opened=opened)
+        except ModelAuthError as exc:  # a dead credential gets its own alarm, then falls through (#85)
+            failures.append(f"{provider_id}: {exc}")
+            last_category = exc.category
+            append_event(logs_dir, "model.auth.failed", status="error", agent_id=request.agent_id,
+                         provider=provider_id, status_code=exc.status, hint=exc.hint, error=str(exc))
+            append_event(logs_dir, "model.call.failed", status="error", agent_id=request.agent_id,
+                         provider=provider_id, error_category=exc.category, error=str(exc))
         except Exception as exc:  # provider fallback boundary
             failures.append(f"{provider_id}: {exc}")
-            append_event(logs_dir, "model.call.failed", status="error", agent_id=request.agent_id, provider=provider_id, error=str(exc))
+            last_category = error_category(exc)
+            append_event(logs_dir, "model.call.failed", status="error", agent_id=request.agent_id,
+                         provider=provider_id, error_category=last_category, error=str(exc))
 
     return ModelCallResult(
         status="error",
@@ -717,4 +823,5 @@ def call_model(home: Path, logs_dir: Path, request: ModelCallRequest) -> ModelCa
         content="",
         dry_run=False,
         error="; ".join(failures) or "No model providers available",
+        error_category=last_category,
     )
