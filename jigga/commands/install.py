@@ -23,6 +23,7 @@ from typing import Callable
 
 from jigga.core.io import ensure_dir, read_json, read_yaml, write_json
 from jigga.core.paths import JiggaPaths
+from jigga.runtime.audit import append_event
 from jigga.runtime.term_select import Option, select_one, supports_picker
 from jigga.optional_capabilities import (
     OptionalCapability,
@@ -115,10 +116,26 @@ def install_capability(
                     "Setup did not complete; rolled back manifest copy. "
                     "No approval recorded."
                 )
+            # A failed install is worth a record too: it distinguishes "never
+            # attempted" from "attempted and rolled back", which is the
+            # difference between a missing capability and a broken setup.
+            append_event(paths.logs, "capability.install_failed", status="error",
+                         capability=optional.name, exit_code=exit_code,
+                         rolled_back=not already_installed)
             return exit_code
 
     capability = load_capability_manifest(target_manifest)
     record_approval(paths.policies, capability)
+    # An install grants an agent new powers and auto-approves the manifest that
+    # defines them — the most privileged mutation the CLI performs, and until
+    # now the only one that left no trace. The hash is recorded because that is
+    # what the approval is bound to: a later `changed` verdict from
+    # `doctor --capabilities` is only meaningful against a known starting point.
+    append_event(paths.logs, "capability.installed",
+                 capability=capability.name, version=capability.version,
+                 actions=capability.actions, risk_level=capability.risk_level,
+                 manifest_hash=capability.manifest_hash, handler=capability.handler,
+                 reinstall=already_installed, auto_approved=True)
     print_fn(f"\n{optional.name!r} installed and approved. You can now use:")
     for action in capability.actions:
         print_fn(f"  • {action}")
@@ -140,6 +157,14 @@ def uninstall_capability(
         print_fn(f"{name!r} is not installed.")
         return 1
 
+    # Read the manifest before deleting it — afterwards there is nothing left
+    # to say what was removed, which is precisely when the record matters.
+    try:
+        removed = load_capability_manifest(target_manifest)
+        actions, version = removed.actions, removed.version
+    except Exception:  # noqa: BLE001 — an unreadable manifest still uninstalls
+        actions, version = [], None
+
     target_manifest.unlink()
     try:
         target_dir.rmdir()
@@ -148,6 +173,8 @@ def uninstall_capability(
 
     _drop_approval(paths.policies, name)
     _drop_capability_secrets(paths.secrets, name, print_fn=print_fn)
+    append_event(paths.logs, "capability.uninstalled", capability=name, version=version,
+                 actions=actions, approval_dropped=True)
     print_fn(f"Uninstalled {name!r}.")
     return 0
 
