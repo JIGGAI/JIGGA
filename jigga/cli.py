@@ -688,6 +688,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only enqueue messages as tasks; don't run agents (let the supervisor handle them)",
     )
 
+    webhook = sub.add_parser(
+        "webhook", help="Inbound webhook endpoint — issue and revoke per-caller API keys"
+    )
+    webhook_sub = webhook.add_subparsers(dest="webhook_command", required=True)
+    webhook_issue = webhook_sub.add_parser(
+        "issue", help="Mint an API key for a third party (printed ONCE, then stored)"
+    )
+    webhook_issue.add_argument("caller", help="Name of the third party, e.g. postiz")
+    webhook_sub.add_parser("list", help="Callers with an issued key (names only)")
+    webhook_revoke = webhook_sub.add_parser("revoke", help="Revoke one caller's key")
+    webhook_revoke.add_argument("caller")
+    webhook_sub.add_parser("status", help="Whether the listener is configured, and for whom")
+
     webchat = sub.add_parser(
         "webchat", help="Browser chat channel (jiggaview Chat page) — file-backed, local-only"
     )
@@ -1998,6 +2011,61 @@ def _ensure_webchat_enabled(paths: Any, *, target_agent: str | None = None) -> d
     return {"enabled_now": enabled_now, "granted": next((g for g in grants if g), None)}
 
 
+def _cmd_webhook(args: argparse.Namespace) -> int:
+    """Issue, list and revoke the per-caller keys JIGGA hands to third parties.
+
+    Printed once on issue and never again: the value lives in the secrets
+    broker, and re-printing a stored credential on demand turns every shell
+    history and terminal scrollback into a copy of it.
+    """
+    import secrets as _secrets
+
+    from jigga.runtime.secrets_broker import delete_secret, set_secret
+    from jigga.runtime.webhook import (
+        ISSUED_KEY_PREFIX,
+        api_key,
+        is_enabled,
+        issued_keys,
+    )
+
+    paths = get_paths(args.home)
+    if args.webhook_command == "issue":
+        caller = args.caller.strip()
+        if not caller or "@" in caller:
+            print("Caller name must be non-empty and contain no '@'.")
+            return 1
+        value = _secrets.token_urlsafe(32)
+        set_secret(paths.home, f"{ISSUED_KEY_PREFIX}@{caller}", value)
+        print(f"Issued a webhook key for {caller!r}. Give this to them — it is not shown again:\n")
+        print(f"  {value}\n")
+        print("They should send it as:  Authorization: Bearer <key>")
+        print(f"Restrict a workflow to this caller with `trigger: {{webhook: <kind>, source: {caller}}}`.")
+        return 0
+    if args.webhook_command == "list":
+        callers = sorted(issued_keys(paths))
+        if not callers:
+            print("No webhook keys issued. `jigga webhook issue <caller>` mints one.")
+        for caller in callers:
+            print(f"- {caller}")
+        if api_key(paths):
+            print("\n! A legacy shared key is also set; requests using it are attributed to "
+                 "'shared'. Issue per-caller keys and remove it to get real attribution.")
+        return 0
+    if args.webhook_command == "revoke":
+        removed = delete_secret(paths.home, f"{ISSUED_KEY_PREFIX}@{args.caller}")
+        print(f"Revoked {args.caller!r}." if removed else f"No key issued for {args.caller!r}.")
+        return 0 if removed else 1
+    # status
+    callers = sorted(issued_keys(paths))
+    print(f"enabled: {is_enabled(paths.home)}")
+    print(f"callers: {', '.join(callers) if callers else '(none)'}")
+    print(f"shared key: {'set' if api_key(paths) else 'not set'}")
+    if is_enabled(paths.home) and not callers and not api_key(paths):
+        print("\n! Enabled but no keys issued — the listener refuses to start unauthenticated.")
+        return 1
+    return 0
+
+
 def _cmd_webchat(args: argparse.Namespace) -> int:
     from jigga.runtime import webchat
     from jigga.runtime.channel_listener import ingest_once
@@ -3164,6 +3232,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "gog": _cmd_gog,
     "telegram": _cmd_telegram,
     "channels": _cmd_channels,
+    "webhook": _cmd_webhook,
     "webchat": _cmd_webchat,
     "approvals": _cmd_approvals,
     "logs": _cmd_logs,

@@ -22,24 +22,46 @@ instead of growing separate ones that drift apart.
 
 Three steps. The listener will not start until all three are done.
 
-**1. Store an API key.**
+**1. Issue a key to each third party.**
 
-`jigga secrets set` takes only the **name** and prompts for the value, so the
-key never lands in your shell history:
-
-```bash
-jigga secrets set webhook_api_key
-# Value for webhook_api_key: <paste it here>
-```
-
-Generate one first if you need to:
+JIGGA is the *provider* here: it mints a credential and you paste it into the
+caller's dashboard. Issue one **per caller**, not one shared key — that is what
+makes a caller nameable in the audit log, revocable on its own, and restrictable
+to its own workflows.
 
 ```bash
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+jigga webhook issue postiz
 ```
 
-There is no non-interactive flag by design. For an unattended install, set the
-backend to `env` and export `JIGGA_SECRET_WEBHOOK_API_KEY` instead.
+```
+Issued a webhook key for 'postiz'. Give this to them — it is not shown again:
+
+  1pLMJfxdg2uTjCNekF29Y-Ho5NGxTnpSCPWTiHjYFJQ
+
+They should send it as:  Authorization: Bearer <key>
+```
+
+The value is printed **once** and then only ever lives in the secrets broker;
+re-printing a stored credential on demand would copy it into every shell history
+and terminal scrollback. If it is lost, revoke and issue a new one.
+
+```bash
+jigga webhook list      # which callers have keys (names only)
+jigga webhook status    # enabled? for whom? shared key set?
+jigga webhook revoke postiz
+```
+
+Revoking one caller leaves every other integration working — the reason not to
+share a single key.
+
+<details>
+<summary>Single shared key (legacy)</summary>
+
+`jigga secrets set webhook_api_key` still works and is honoured as a fallback,
+but requests using it are attributed to `shared` rather than to a named caller,
+and it cannot be revoked per integration. For an unattended install, use the
+`env` secrets backend and export `JIGGA_SECRET_WEBHOOK_KEY@<CALLER>`.
+</details>
 
 **2. Enable the listener** in `~/.jigga/config.yaml`:
 
@@ -59,6 +81,7 @@ id: publish_result
 name: Handle a publish result
 trigger:
   webhook: publish_result     # must equal the <kind> in the URL path
+  source: postiz              # optional: only this caller's key may start it
 nodes:
   - id: record
     type: tool
@@ -123,6 +146,10 @@ possible: authenticate, enqueue, return.
   drain, not in the listener, so even a compromised listener cannot start an
   arbitrary workflow. An event for a workflow that did not opt in is parked in
   `~/.jigga/events/failed/`, never run.
+- **One key per caller.** The authenticated caller's name is recorded on every
+  event, so a workflow can require `source:` and one integration's key cannot
+  start another's. `source` is always the identity JIGGA authenticated — never
+  anything the request claimed about itself.
 
 Payloads are never trusted. They reach a workflow only as `${trigger.*}`
 references, which **fail closed** — a typo'd `${trigger.tilte}` raises rather
