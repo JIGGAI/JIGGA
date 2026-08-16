@@ -126,6 +126,51 @@ def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds
         return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
 
 
+DEFAULT_MAX_EVENTS_PER_TICK = 20
+
+
+def _drain_event_queue(paths: Any, workflows: dict[str, Any]) -> list[str]:
+    """Run queued inbound events, one workflow run each. Returns the ids run.
+
+    A queued event names a workflow that must have *opted in* by declaring the
+    matching trigger. An event naming an unknown or non-opted-in workflow is
+    parked in `failed/`, never executed — the queue is reachable from outside,
+    so "the sender picked the target" would be remote arbitrary execution.
+    """
+    from jigga.runtime import event_queue
+
+    swept = event_queue.sweep_stale_processing(paths)
+    if swept:
+        append_event(paths.logs, "event.processing_swept", events=swept)
+
+    ran: list[str] = []
+    for path, record in event_queue.claim(paths, DEFAULT_MAX_EVENTS_PER_TICK):
+        workflow_id = (record.get("payload") or {}).get("workflow") or record.get("kind")
+        workflow = workflows.get(workflow_id)
+        if workflow is None:
+            event_queue.fail(paths, path, f"no workflow named {workflow_id!r}")
+            continue
+        if not _accepts_pushed_events(workflow, record):
+            event_queue.fail(
+                paths, path,
+                f"workflow {workflow_id!r} does not declare a `webhook:` trigger for "
+                f"{record.get('kind')!r} — a pushed event may only run a workflow that opted in")
+            continue
+        try:
+            run_workflow(paths, workflow_id, trigger=record.get("payload") or {})
+            event_queue.complete(paths, path)
+            ran.append(str(record.get("id")))
+        except Exception as exc:  # noqa: BLE001 — one bad event must not stop the drain
+            event_queue.fail(paths, path, str(exc))
+    return ran
+
+
+def _accepts_pushed_events(workflow: Any, record: dict[str, Any]) -> bool:
+    """Opt-in check: the workflow's `trigger.webhook` must name this event kind."""
+    declared = (getattr(workflow, "trigger", None) or {}).get("webhook")
+    return bool(declared) and str(declared) == str(record.get("kind"))
+
+
 def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:
     paths = get_paths(home)
     # Roll the audit log over (by day / size) and prune old archives on the
@@ -224,6 +269,15 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     agents = load_agents(paths.agents)
     workflows = load_workflows(paths.workflows)
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)
+    # Pushed events (webhooks) were parked on arrival rather than executed in
+    # the receiving path; the heartbeat is where they actually run, so they are
+    # subject to the same tick budget and the same execution path as pull
+    # triggers. Contained: a bad event must not break the tick.
+    drained: list[str] = []
+    try:
+        drained = _drain_event_queue(paths, workflows)
+    except Exception as exc:  # noqa: BLE001
+        append_event(paths.logs, "event.drain_error", status="error", error=str(exc))
     loop_state = load_loop_state(paths.home)
     now = now_utc()
     # State triggers (#151) evaluate on the same heartbeat as schedules, but
@@ -380,5 +434,6 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
         "targets": targets,
         "throttled": throttled,
         "deferred": deferred,
+        "drained_events": drained,
         "runs": runs,
     }
