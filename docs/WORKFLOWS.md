@@ -12,7 +12,7 @@
 **Built and tested:** declarative workflow files; ordered (linear) steps with
 named-output chaining; `agent`/`action`/`input`/`output`/`approval`/`optional`
 fields; model-backed steps (`draft_with_model`); `trigger.schedule` firing via
-the supervisor; per-step approval gating (explicit or risk-based); memory writes;
+the supervisor (cron or friendly strings); per-step approval gating (explicit or risk-based); memory writes;
 and **workflow inference** (`jigga workflow suggest` / `apply`).
 
 **Also built — the v2 (DAG) engine** (see
@@ -24,11 +24,19 @@ that park the run until `approve <code>` arrives on your channel, `llm` and
 `writeback` nodes, and the supervisor heartbeat advancing parked runs
 (`jigga workflow runs` / `resume`).
 
-**Planned (described below but not yet implemented):** event triggers like
-`calendar_event_upcoming`/offsets (only `trigger.schedule` fires today), media
-nodes (image/video/audio generation — lands with the media-drivers parity
-work), and the v1 `on_fail` field on linear steps (parses but isn't enforced —
-use a v2 error edge instead).
+**Also built — the full trigger surface** (see
+[`TRIGGERS_AND_WEBHOOKS.md`](TRIGGERS_AND_WEBHOOKS.md)): `trigger.schedule`
+takes **5-field cron** as well as the friendly forms; `trigger.event` fires on
+state (`calendar_event_upcoming` with an offset, deduped per subject); and
+`trigger.webhook` accepts pushed events through an authenticated HTTP listener
+that enqueues rather than executing, with the workflow having to opt in by name.
+The firing event is readable from any step as `${trigger.<field>}`.
+
+**Also built:** media nodes (image generation via a provider-agnostic driver
+seam).
+
+**Planned (described below but not yet implemented):** the v1 `on_fail` field on
+linear steps (parses but isn't enforced — use a v2 error edge instead).
 
 ## Definition
 
@@ -54,12 +62,16 @@ Workflows allow users to define repeatable processes such as:
 
 A workflow can be invoked by:
 
-- a user
+- a user (`jigga workflow run`)
 - an agent
 - a team
-- a schedule
-- an external event
+- a schedule — `trigger.schedule`, cron or friendly
+- a state change — `trigger.event`, evaluated on the heartbeat
+- an external system — `trigger.webhook`, authenticated and queued
 - another workflow step
+
+Schedules, state and webhooks are all documented in
+[`TRIGGERS_AND_WEBHOOKS.md`](TRIGGERS_AND_WEBHOOKS.md).
 
 ## Workflow Shape
 

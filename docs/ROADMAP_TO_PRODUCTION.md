@@ -31,8 +31,8 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 > secret resolution so a second tenant needs no fork (#191).
 >
 > **Genuinely open:** assertion 26 (two-tenant proof — deferred until the teams
-> model settles); Slack/Discord/webhook channels; marketplace UX; W7 (#63);
-> event triggers (#151). **Carrying verification debt:** the iMessage channel
+> model settles); Slack/Discord channels; marketplace UX; W7 (#63);
+> **Carrying verification debt:** the iMessage channel
 > was built and tested entirely on Linux against a synthetic `chat.db` and has
 > never run on a Mac.
 >
@@ -321,7 +321,7 @@ These choices will compound through the milestones; worth deciding before A.
 
 ## Recommended next concrete work (updated 2026-07-29)
 
-Milestones A–D, Teams & Workspaces (minus W7), workflow engine v2, and most of F are done. The biggest remaining lift to v1.0 is **Milestone E (real isolation)** — OS sandbox backend, secrets broker, per-capability egress. Working down the production-needs list above, the buildable-now items in value order: **crash-recovery sweep** (item 8 — small, closes a real half-state hole), **`jigga backup create/restore`** (item 4), then Milestone E proper (items 2+3). Smaller open threads: `jigga agents tools <id>` (effective-toolset inspection), media nodes (#150), event triggers (#151), W7 (#63), marketplace UX, telemetry (item 6), additional channels (Slack when an app exists; webhook).
+Milestones A–D, Teams & Workspaces (minus W7), workflow engine v2, and most of F are done. Milestone E (real isolation) has since shipped too — sandbox seam with a bwrap backend, secrets broker, egress proxy — as have the crash-recovery sweep and `jigga backup` / `backup restore`. Smaller open threads: `jigga agents tools <id>` (effective-toolset inspection), W7 (#63), marketplace UX, additional channels (Slack when an app exists). Media nodes (#150), event triggers (#151) and the authenticated webhook listener have since shipped — see `TRIGGERS_AND_WEBHOOKS.md`.
 
 ---
 
