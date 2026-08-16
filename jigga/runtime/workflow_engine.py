@@ -36,7 +36,7 @@ from jigga.runtime.approvals import consume_if_approved, consume_if_denied, pend
 from jigga.runtime.audit import actor_context, append_event, current_trace_id, new_id, trace_context
 from jigga.runtime.capabilities import CapabilityRegistry
 from jigga.runtime.channels import ADAPTERS, owner_conversation
-from jigga.runtime.dispatcher import RuntimeContext, execute_step, register_outputs
+from jigga.runtime.dispatcher import RuntimeContext, execute_step, register_outputs, seed_trigger_outputs
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.notifications import NotificationRequest, delivery_mode, send_notification
 
@@ -206,6 +206,8 @@ def start_run(paths: JiggaPaths, workflow: WorkflowConfig, *, trigger: dict[str,
         "nodes": {node.id: {"status": "pending"} for node in workflow.nodes},
         "outputs": {},
     }
+    # The firing event is referenceable as ${trigger.<field>} from any node.
+    seed_trigger_outputs(record["outputs"], trigger)
     _save(paths, record)
     append_event(paths.logs, "workflow.run.started", workflow=workflow.id, run_id=run_id, engine="v2")
     return record

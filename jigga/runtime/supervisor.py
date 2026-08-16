@@ -226,6 +226,15 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     events = due_events(paths.agents, paths.workflows, agents=agents, workflows=workflows)
     loop_state = load_loop_state(paths.home)
     now = now_utc()
+    # State triggers (#151) evaluate on the same heartbeat as schedules, but
+    # need the loop state to dedup per-subject, so they run after it is loaded.
+    # Contained: a capability fault while evaluating must not break the tick.
+    try:
+        from jigga.runtime.triggers import due_event_triggers
+
+        events.extend(due_event_triggers(paths, workflows, loop_state, now))
+    except Exception as exc:  # noqa: BLE001
+        append_event(paths.logs, "workflow.trigger_sweep_error", status="error", error=str(exc))
     wake_limit = max_wakes_per_hour(paths.home)
     # Disabled agents/teams (config `disabled.*`): the supervisor never wakes
     # them — cron skipped, tasks stay pending (visible, never lost), mail
@@ -271,6 +280,20 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
             if workflow_id in workflows:
                 run_workflow(paths, workflow_id)
             deduped_events.append(event_dict)
+        elif event.type == "workflow.event_due":
+            # Already deduped per-subject inside `due_event_triggers` — a state
+            # trigger is true for a whole window, so the cron time-bucket is the
+            # wrong shape here (see runtime/triggers.py).
+            workflow_id = event.payload.get("workflow")
+            append_event(paths.logs, "event.created", **event_dict)
+            if workflow_id in workflows:
+                run_workflow(paths, workflow_id, trigger=event.payload.get("trigger_payload"))
+            deduped_events.append(event_dict)
+        elif event.type == "workflow.trigger_error":
+            # A trigger that cannot be evaluated is loud, never silently skipped:
+            # "nothing matched" and "this is misconfigured" must not look alike.
+            append_event(paths.logs, "workflow.trigger_error", status="error", **event.payload)
+            skipped_events.append({"reason": "workflow.trigger_error", "event": event_dict})
         else:
             append_event(paths.logs, "event.created", **event_dict)
             deduped_events.append(event_dict)
