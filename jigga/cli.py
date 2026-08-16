@@ -19,7 +19,6 @@ from jigga.commands.install import (
 )
 from jigga.commands.state import inspect_state
 from jigga.core.paths import get_paths, project_capabilities_dir, resolve_project_root
-from jigga.runtime.agent import run_agent
 from jigga.runtime.auth import auth_status, run_external_login
 from jigga.runtime.capabilities import CapabilityRegistry, load_capability_manifest, record_approval
 from jigga.runtime.audit_query import format_event, query_events, tail_events
@@ -29,19 +28,11 @@ from jigga.runtime.log_rotation import rotate_logs
 from jigga.runtime.capability_scanner import scan_capability
 from jigga.runtime.approvals import pending_approvals, resolve_and_requeue
 from jigga.runtime.channel_listener import DEFAULT_LONG_POLL_SECONDS, channel_listen, enabled_channels
-from jigga.runtime.channels import ensure_default_channel
 from jigga.runtime.gog import (
     DEFAULT_SERVICES,
     gog_auth_status,
     keyring_password_path,
     run_gog_interactive,
-)
-from jigga.runtime.telegram import (
-    allowed_chat_ids as telegram_allowed_chat_ids,
-    bot_token_path as telegram_bot_token_path,
-    load_bot_token as telegram_load_bot_token,
-    load_offset as telegram_load_offset,
-    poll_messages as telegram_poll_messages,
 )
 from jigga.runtime.google_calendar import (
     client_config_path,
@@ -59,7 +50,6 @@ from jigga.runtime.memory_proposals import apply_proposal, list_proposals
 from jigga.runtime.model_router import build_task_model_request, call_model, load_model_config
 from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.plan_apply import apply_runtime, plan_runtime, validate_runtime_configs
-from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
 from jigga.runtime.scheduler import serialize_events, due_events
 from jigga.runtime.subagents import cancel_session, list_sessions, read_session
 from jigga.runtime.supervisor import supervisor_tick
@@ -255,6 +245,8 @@ def _channels_setup(paths: Any, *, prompt: Any = input, echo: Any = print,
     entry = config.setdefault("channels", {}).setdefault(name, {})
     entry["enabled"] = True
     entry["activation"] = mode
+    from jigga.runtime.channels import ensure_default_channel
+
     ensure_default_channel(config, name)
     write_yaml(paths.config, config)
 
@@ -1907,6 +1899,16 @@ def _cmd_gog(args: argparse.Namespace) -> int:
 
 
 def _cmd_telegram(args: argparse.Namespace) -> int:
+    # Imported here, not at module scope: `jigga.runtime.telegram` pulls in
+    # urllib/http.client, which every unrelated command was paying for.
+    from jigga.runtime.telegram import (
+        allowed_chat_ids as telegram_allowed_chat_ids,
+        bot_token_path as telegram_bot_token_path,
+        load_bot_token as telegram_load_bot_token,
+        load_offset as telegram_load_offset,
+        poll_messages as telegram_poll_messages,
+    )
+
     paths = get_paths(args.home)
     if args.telegram_command == "status":
         token = telegram_load_bot_token(paths.secrets)
@@ -1980,6 +1982,8 @@ def _ensure_webchat_enabled(paths: Any, *, target_agent: str | None = None) -> d
     if enabled_now:
         entry["enabled"] = True
         entry.setdefault("activation", "always")
+        from jigga.runtime.channels import ensure_default_channel
+
         ensure_default_channel(config, "webchat")
         write_yaml(paths.config, config)
         append_event(paths.logs, "channel.webchat.enabled", activation=entry["activation"])
@@ -2948,6 +2952,8 @@ def _cmd_model(args: argparse.Namespace) -> int:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
+    from jigga.runtime.agent import run_agent
+
     print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id, dry_run_model=args.dry_run_model))
     return 0
 
@@ -2957,6 +2963,8 @@ def _cmd_supervisor(args: argparse.Namespace) -> int:
         print_json(supervisor_tick(args.home))
     elif args.supervisor_command == "start":
         paths = get_paths(args.home)
+        from jigga.runtime.daemon import record_supervisor_start, supervisor_loop
+
         record_supervisor_start(paths.logs, args.interval_seconds, args.max_ticks)
         print_json(supervisor_loop(args.home, interval_seconds=args.interval_seconds, max_ticks=args.max_ticks,
                                    channel_long_poll_seconds=args.channel_poll_seconds))

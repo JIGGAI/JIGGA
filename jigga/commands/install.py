@@ -100,7 +100,7 @@ def install_capability(
         print_fn(f"Installed manifest at {target_manifest}.")
 
     if optional.setup_fn is not None:
-        exit_code = optional.setup_fn(paths, input_fn=input_fn, print_fn=print_fn)
+        exit_code = optional.run_setup(paths, input_fn=input_fn, print_fn=print_fn)
         if exit_code != 0:
             # Roll back the manifest copy only if this was a fresh install,
             # so a re-run setup that fails doesn't strip an already-working
