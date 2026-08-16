@@ -265,6 +265,83 @@ def _check_capabilities(paths: JiggaPaths) -> Check:
     return Check("capabilities", OK, f"{active} capability(ies) loaded, none pending or broken")
 
 
+def _check_leases(paths: JiggaPaths) -> Check:
+    """Claims held past their expiry (assertion 9).
+
+    A hard-killed worker orphans its claim, and the run then sits until the
+    stale sweep releases it — on the prior-gen stack, a `launchctl kickstart -k`
+    stalled a run for the full 120s lease with nothing explaining why.
+
+    A claim held *past* expiry on a live system is the diagnostic: the sweep
+    runs every tick, so if an expired claim is still here, the supervisor isn't
+    ticking. That points at the real fault instead of the symptom.
+    """
+    from jigga.runtime.recovery import held_leases
+
+    try:
+        leases = held_leases(paths)
+    except Exception as exc:  # noqa: BLE001
+        return Check("leases", WARN, f"Could not read held claims: {exc}")
+    if not leases:
+        return Check("leases", OK, "No claims held")
+    expired = [row for row in leases if row["expired"]]
+    if expired:
+        shown = ", ".join(f"{row['kind']} {row['id']}" for row in expired[:3])
+        return Check("leases", FAIL,
+                     f"{len(expired)} claim(s) held past expiry: {shown}",
+                     hint="The stale sweep runs every tick, so an expired claim means the "
+                          "supervisor isn't ticking — check `jigga service status`.")
+    soonest = min((row["seconds_remaining"] for row in leases
+                   if row["seconds_remaining"] is not None), default=None)
+    detail = f"{len(leases)} claim(s) held, none expired"
+    if soonest is not None:
+        detail += f" (next expires in {soonest // 60}m)"
+    return Check("leases", OK, detail)
+
+
+def _check_model_refs(paths: JiggaPaths) -> Check:
+    """Model/provider references that no longer resolve (assertion 14).
+
+    Renamed ones are rewritable by `--fix`. Dangling ones need a human, and are
+    the more dangerous kind because they fail *silently*: a missing profile
+    falls back to the default, so an agent you believe is pinned to a specific
+    model has been quietly running on another one.
+    """
+    from jigga.runtime.model_migration import stale_model_refs
+
+    try:
+        rows = stale_model_refs(paths)
+    except Exception as exc:  # noqa: BLE001
+        return Check("model_refs", WARN, f"Could not check model references: {exc}")
+    if not rows:
+        return Check("model_refs", OK, "All model and provider references resolve")
+    renamed = [r for r in rows if r["problem"] == "renamed"]
+    dangling = [r for r in rows if r["problem"] == "dangling"]
+    parts = []
+    if renamed:
+        parts.append(f"{len(renamed)} renamed")
+    if dangling:
+        shown = ", ".join(f"{r['where']} → {r['ref']!r}" for r in dangling[:2])
+        parts.append(f"{len(dangling)} dangling ({shown})")
+    hint = ("`jigga doctor --fix` rewrites renamed refs across config, agents and stale "
+            "session/run state." if renamed else
+            "A dangling profile silently falls back to the default — set a real profile "
+            "or remove the override.")
+    return Check("model_refs", WARN, "; ".join(parts), hint=hint)
+
+
+def _fix_model_refs(paths: JiggaPaths, _check: Check) -> str | None:
+    """Rewrite renamed refs. Dangling ones are deliberately NOT auto-fixed —
+    guessing which model the user meant is not a safe, non-interactive fix."""
+    from jigga.runtime.model_migration import migrate_model_refs
+
+    result = migrate_model_refs(paths, apply=True)
+    if not result["changed"]:
+        return None
+    files = len({row["path"] for row in result["changed"]})
+    return f"Rewrote {len(result['changed'])} renamed model reference(s) across {files} file(s)."
+
+
 def _check_channels(paths: JiggaPaths) -> Check:
     from jigga.runtime.channel_listener import enabled_channels
 
@@ -437,6 +514,7 @@ def _fix_service(paths: JiggaPaths, check: Check) -> str | None:
 _FIXERS = {
     "runtime": _fix_runtime,
     "service": _fix_service,
+    "model_refs": _fix_model_refs,
 }
 
 
@@ -477,6 +555,8 @@ def run_checks(paths: JiggaPaths, *, probe: bool = False) -> Report:
         report.checks.append(_check_model(paths, probe=probe))
         report.checks.append(_check_agent_tools(paths))
         report.checks.append(_check_capabilities(paths))
+        report.checks.append(_check_leases(paths))
+        report.checks.append(_check_model_refs(paths))
         report.checks.append(_check_channels(paths))
         report.checks.append(_check_service(paths))
         report.checks.append(_check_secrets(paths))

@@ -51,6 +51,48 @@ def _parse(ts: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def held_leases(paths: JiggaPaths, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Every task and v2 node currently holding a claim, with when it expires.
+
+    The expiry was always implicit — `updated_at` plus a threshold buried in
+    config — so a stalled run looked mysterious rather than merely stuck. This
+    makes it a number you can read.
+
+    `expired: True` on a live system means the sweep that should have released
+    it hasn't run, which almost always means the supervisor is down. That is a
+    more useful signal than the stall itself.
+    """
+    now = now or datetime.now(timezone.utc)
+    ttl = timedelta(minutes=_max_stale_minutes(paths.home))
+    rows: list[dict[str, Any]] = []
+
+    def _row(kind: str, ident: str, holder: str | None, since: str | None) -> dict[str, Any]:
+        held_since = _parse(since)
+        expires = held_since + ttl if held_since else None
+        return {
+            "kind": kind,
+            "id": ident,
+            "holder": holder,
+            "held_since": since,
+            "expires_at": expires.isoformat() if expires else None,
+            "expired": bool(expires and expires <= now),
+            "seconds_remaining": int((expires - now).total_seconds()) if expires else None,
+        }
+
+    for task in list_tasks(paths.tasks):
+        if task.state in ("claimed", "running"):
+            rows.append(_row("task", task.id, task.assignee, task.updated_at))
+
+    from jigga.runtime.workflow_engine import list_runs
+
+    for record in list_runs(paths, active_only=True):
+        for node_id, state in (record.get("nodes") or {}).items():
+            if state.get("status") == "running":
+                rows.append(_row("node", f"{record.get('id')}:{node_id}",
+                                 record.get("workflow_id"), state.get("started_at")))
+    return rows
+
+
 def sweep_stale(paths: JiggaPaths, *, now: datetime | None = None) -> dict[str, Any]:
     """Recover tasks and v2 workflow nodes stranded longer than the threshold.
     Returns {"tasks": [ids], "nodes": ["run_id:node_id"]} of what was recovered."""

@@ -122,6 +122,11 @@ def render_launchd_plist(argv: list[str], home: Path, logs_dir: Path, *, run_as:
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <!-- Let the supervisor drain on SIGTERM (it finishes the current tick and
+       exits). launchd's default ExitTimeOut is 20s, which would SIGKILL
+       mid-agent and orphan the task claim. -->
+  <key>ExitTimeOut</key>
+  <integer>{stop_timeout_seconds(home)}</integer>
   <key>StandardOutPath</key>
   <string>{_xml_escape(str(logs_dir / "supervisor.out.log"))}</string>
   <key>StandardErrorPath</key>
@@ -129,6 +134,39 @@ def render_launchd_plist(argv: list[str], home: Path, logs_dir: Path, *, run_as:
 </dict>
 </plist>
 """
+
+
+def stop_timeout_seconds(home: Path) -> int:
+    """How long to let the supervisor drain before the init system kills it.
+
+    The supervisor handles SIGTERM by finishing the tick it is in and then
+    exiting — a real drain. But that only works if the init system waits for
+    it. systemd's default `TimeoutStopSec` is 90s while a tick may legitimately
+    run for `supervisor.max_tick_seconds` (default 300s), so the default
+    escalates to SIGKILL *mid-agent* and orphans the task claim it was about to
+    release — the run then sits wedged until the 120-minute stale sweep.
+
+    Derived from the tick budget rather than fixed, so raising the budget can't
+    silently reintroduce the hard kill. The margin covers the in-flight agent
+    finishing after the budget stops new ones.
+    """
+    from jigga.core.config import max_tick_seconds
+
+    budget = max_tick_seconds(home)
+    if not budget:  # unbounded ticks — pick a generous ceiling, never infinite
+        return _UNBOUNDED_TICK_STOP_SECONDS
+    return int(budget) + _DRAIN_MARGIN_SECONDS
+
+
+# Extra time beyond the tick budget for the agent already running to finish.
+_DRAIN_MARGIN_SECONDS = 120
+# Graceful-stop window for plugin apps (kitchen, jiggaview). They hold no task
+# leases and wait on no model calls, so this is sized for draining in-flight
+# HTTP requests and closing SQLite handles — not for a long agent run.
+APP_STOP_TIMEOUT_SECONDS = 30
+# Used when ticks are explicitly unbounded (max_tick_seconds: 0). Waiting
+# forever would wedge `systemctl restart`, so this is a deliberate ceiling.
+_UNBOUNDED_TICK_STOP_SECONDS = 900
 
 
 def render_systemd_unit(argv: list[str], home: Path, *, run_as: str | None = None) -> str:
@@ -149,6 +187,9 @@ WorkingDirectory={home}
 ExecStart={exec_start}
 Restart=always
 RestartSec=5
+# Let the supervisor drain: SIGTERM makes it finish the current tick and exit.
+# The default 90s would SIGKILL mid-agent and orphan the task claim.
+TimeoutStopSec={stop_timeout_seconds(home)}
 
 [Install]
 WantedBy={wanted_by}
@@ -419,6 +460,10 @@ def render_app_launchd(name: str, argv: list[str], *, cwd: Path, env: dict[str, 
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <!-- launchd's default ExitTimeOut is 20s. Apps hold no task leases, but a
+       hard kill can cut an in-flight request or an open SQLite write. -->
+  <key>ExitTimeOut</key>
+  <integer>{APP_STOP_TIMEOUT_SECONDS}</integer>
   <key>StandardOutPath</key>
   <string>{_xml_escape(str(logs_dir / f"plugin-{name}.out.log"))}</string>
   <key>StandardErrorPath</key>
@@ -442,6 +487,10 @@ WorkingDirectory={cwd}
 ExecStart={exec_start}
 Restart=always
 RestartSec=5
+# Apps hold no task leases, but they are long-running servers: a hard kill can
+# cut an in-flight request or an open SQLite write. Give them a window to
+# close cleanly — short, since nothing here waits on a model call.
+TimeoutStopSec={APP_STOP_TIMEOUT_SECONDS}
 
 [Install]
 WantedBy=default.target

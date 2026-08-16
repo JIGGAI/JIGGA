@@ -30,12 +30,23 @@ def supervisor_loop(
     messages are handled in near-real-time instead of waiting up to
     `interval_seconds` for the next cron tick. With no channel enabled the loop
     keeps the classic cadence: one tick, then sleep `interval_seconds`."""
-    home_path = get_paths(home).home
-    stopped = {"flag": False, "signal": None}
+    paths = get_paths(home)
+    home_path = paths.home
+    stopped = {"flag": False, "signal": None, "at": None}
 
     def _handle(signum: int, _frame: Any) -> None:
         stopped["flag"] = True
         stopped["signal"] = signum
+        stopped["at"] = time.monotonic()
+        # Written from a signal handler deliberately: if the drain is cut short
+        # by a SIGKILL escalation, this is the only record that a clean stop was
+        # ever attempted — which is the difference between "orphaned claim,
+        # cause unknown" and "the stop timeout is too short".
+        try:
+            append_event(paths.logs, "supervisor.draining", status="ask", signal=signum,
+                         note="finishing the current tick before exiting")
+        except Exception:  # noqa: BLE001 — a logging fault must not stop the stop
+            pass
 
     # signal.signal() only works on the main thread; fall back to no-handler
     # behavior (still works for max_ticks-bounded loops in tests) elsewhere.
@@ -82,9 +93,23 @@ def supervisor_loop(
             except (ValueError, OSError):
                 pass
 
+    drain_seconds = None
+    if stopped["flag"] and stopped["at"] is not None:
+        drain_seconds = round(time.monotonic() - stopped["at"], 1)
+        # Pairs with `supervisor.draining`. Present = the drain completed and
+        # nothing was orphaned; absent = the init system killed us first, and
+        # `drain_seconds` on the next successful stop tells you how much
+        # TimeoutStopSec headroom the tick actually needs.
+        try:
+            append_event(paths.logs, "supervisor.drained", signal=stopped["signal"],
+                         drain_seconds=drain_seconds, ticks=count)
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "status": "interrupted" if stopped["flag"] else "stopped",
         "stopped_by_signal": stopped["signal"],
+        "drain_seconds": drain_seconds,
         "tick_count": count,
         "ticks": list(ticks),
     }
