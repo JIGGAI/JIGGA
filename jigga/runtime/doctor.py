@@ -242,7 +242,14 @@ def _check_capabilities(paths: JiggaPaths) -> Check:
         return Check("capabilities", FAIL, f"Capability registry failed to load: {exc}",
                      hint="Check the manifests under ~/.jigga/capabilities/.")
 
+    from jigga.runtime.dispatcher import handler_problem
+
     broken = [f"{err.name} ({err.reason.split(':')[0]})" for err in registry.load_errors]
+    # A capability whose handler doesn't exist loads fine and reports ready —
+    # it only fails when something calls it. That is an absence, not an error,
+    # so it has to be looked for deliberately.
+    broken += [f"{cap.name} (no handler)" for cap in registry.list()
+               if handler_problem(cap) is not None]
     changed = sorted(n for n, why in registry.pending_reasons.items() if why == "changed")
     unapproved = sorted(n for n, why in registry.pending_reasons.items() if why == "unapproved")
     active = len(registry.list())

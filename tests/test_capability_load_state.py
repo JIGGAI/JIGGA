@@ -205,3 +205,81 @@ def test_the_capabilities_check_runs_as_part_of_the_report(tmp_path: Path) -> No
     capabilities = [c for c in report.checks if c.name == "capabilities"]
     assert len(capabilities) == 1
     assert report.failed, "a capability that cannot load must fail the overall report"
+
+
+# --- a handler that isn't there ---------------------------------------------
+
+
+def _ghost(paths, handler: str) -> None:
+    """A capability that parses perfectly and names a handler that doesn't exist."""
+    directory = paths.capabilities / "ghost"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "manifest.yaml"
+    write_yaml(path, {"name": "ghost", "version": "1.0.0", "type": "native",
+                      "summary": "Names a handler that does not exist.",
+                      "actions": ["ghost.do"], "handler": handler})
+    _approve(paths, path)
+
+
+def test_a_missing_handler_used_to_report_ready(tmp_path: Path) -> None:
+    """The gap the parse check missed: this manifest is valid YAML, loads
+    cleanly, and was offered to the model as a working tool. It failed only when
+    something actually called it."""
+    from jigga.core.models import AgentConfig
+    from jigga.runtime.dispatcher import effective_tools, unusable_grants
+
+    paths = init_runtime(tmp_path)
+    _ghost(paths, "jigga.runtime.does_not_exist:go")
+    registry = _registry(paths)
+    agent = AgentConfig(id="a", name="A", role="r", tools=["ghost.do"])
+
+    row = effective_tools(agent, registry)[0]
+    assert row["status"] == "no_handler"
+    assert "not importable" in row["reason"]
+    assert [r["action"] for r in unusable_grants(agent, registry)] == ["ghost.do"]
+
+
+def test_doctor_fails_on_a_capability_with_no_handler(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _ghost(paths, "jigga.runtime.does_not_exist:go")
+
+    check = doctor._check_capabilities(paths)
+
+    assert check.status == doctor.FAIL
+    assert "ghost (no handler)" in check.detail
+
+
+def test_a_handler_that_is_not_a_reference_at_all_is_caught(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path)
+    _ghost(paths, "totally-made-up")
+
+    from jigga.runtime.dispatcher import handler_problem
+    capability = next(c for c in _registry(paths).list() if c.name == "ghost")
+    assert "neither a built-in handler" in handler_problem(capability)
+
+
+def test_the_handler_check_does_not_import_the_module(tmp_path: Path, monkeypatch) -> None:
+    """Importing here would execute user-controlled code on every doctor run and
+    every tool-list build. `find_spec` answers the question without that."""
+    import importlib
+
+    paths = init_runtime(tmp_path)
+    _ghost(paths, "jigga.runtime.does_not_exist:go")
+    called: list[str] = []
+    monkeypatch.setattr(importlib, "import_module",
+                        lambda name, *a, **k: called.append(name) or (_ for _ in ()).throw(ImportError(name)))
+
+    doctor._check_capabilities(paths)
+
+    assert called == [], f"handler check imported {called}"
+
+
+def test_every_bundled_capability_resolves_its_handler() -> None:
+    """The regression guard: a shipped capability that names a handler nobody
+    registered is a tool the model is offered and can never use."""
+    from jigga.runtime.capabilities import bundled_capabilities
+    from jigga.runtime.dispatcher import handler_problem
+
+    broken = [(c.name, c.handler, handler_problem(c))
+              for c in bundled_capabilities() if handler_problem(c) is not None]
+    assert broken == [], f"bundled capabilities with unresolvable handlers: {broken}"

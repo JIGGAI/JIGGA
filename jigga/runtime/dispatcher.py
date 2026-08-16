@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import importlib
+import importlib.util
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,7 @@ def effective_tools(agent: AgentConfig, registry: CapabilityRegistry) -> list[di
 
     - `ready`          — resolves and its requirements are met
     - `unregistered`   — names no capability (a typo, or a renamed action)
+    - `no_handler`     — resolves to a capability whose handler doesn't exist
     - `needs_approval` — resolves, but a requirement parks for approval
     - `blocked`        — resolves, but a requirement is denied outright
     """
@@ -142,6 +144,15 @@ def effective_tools(agent: AgentConfig, registry: CapabilityRegistry) -> list[di
         if capability is None:
             rows.append({"action": action, "capability": None, "status": "unregistered",
                          "reason": "no registered capability provides this action"})
+            continue
+        broken = handler_problem(capability)
+        if broken is not None:
+            # Checked before permissions: a handler that isn't there can't be
+            # fixed by granting anything, so reporting a permission problem
+            # would send the operator down the wrong path.
+            rows.append({"action": action, "capability": capability.name,
+                         "risk_level": capability.risk_level, "status": "no_handler",
+                         "reason": broken, "permission": None})
             continue
         decision = evaluate_capability_permissions(capability, agent)
         status = {"allow": "ready", "ask": "needs_approval", "deny": "blocked"}[decision.status]
@@ -159,7 +170,7 @@ def unusable_grants(agent: AgentConfig, registry: CapabilityRegistry) -> list[di
     broken one.
     """
     return [row for row in effective_tools(agent, registry)
-            if row["status"] in {"unregistered", "blocked"}]
+            if row["status"] in {"unregistered", "blocked", "no_handler"}]
 
 
 def register_outputs(outputs: dict[str, Any], step: Any, value: Any) -> None:
@@ -326,6 +337,42 @@ def resolve_handler(name: str) -> Handler:
     if handler is not None:
         return handler
     return _import_handler(name)
+
+
+def handler_problem(capability: CapabilityManifest) -> str | None:
+    """Why this capability's handler can't be resolved, or None if it can.
+
+    A manifest naming a handler that doesn't exist loads perfectly, reports
+    `ready`, gets offered to the model, and fails only at the moment of use —
+    the "declared but not started" state that made the kitchen's port go dark
+    with nothing reporting it. This is the check that turns it into an absence
+    the operator can see.
+
+    Deliberately does *not* import the target: `find_spec` proves a module
+    exists without executing it. Importing here would run user-controlled code
+    on every `doctor` and every tool-list build, which is both slower and a
+    wider trust surface than the question warrants. The cost is that a module
+    which imports but lacks the function is still only caught at dispatch —
+    the common failures (a typo, an uninstalled dependency, a pruned symlink)
+    are all module-level.
+    """
+    reference = capability.handler
+    if not reference:
+        return "declares no handler"
+    if reference in HANDLERS:
+        return None
+    if ":" not in reference:
+        return (f"handler {reference!r} is neither a built-in handler nor a "
+                "'module.path:function' reference")
+    module_name, _, function_name = reference.partition(":")
+    if not module_name or not function_name:
+        return f"invalid handler reference {reference!r}"
+    try:
+        if importlib.util.find_spec(module_name) is None:
+            return f"handler module {module_name!r} is not importable"
+    except (ImportError, ValueError, ModuleNotFoundError) as exc:
+        return f"handler module {module_name!r} is not importable: {exc}"
+    return None
 
 
 def dispatch_action(
