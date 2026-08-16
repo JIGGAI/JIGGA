@@ -4,20 +4,38 @@ Snapshot of where we are, what's specced-but-unbuilt, what's missing for product
 
 Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 passing tests, ~4,300 LOC implementation).
 
-> **Status as of 2026-07-29** (963 tests on main; ~21k LOC): Milestones A
-> (**complete** — provider-agnostic email shipped as `email-imap`, #155), B, C,
-> D, and Teams & Workspaces (including W3 ticket lanes, #136) are **done**.
-> Workflow engine v2 (DAG + resumable runs + approval nodes) **merged** (#149).
-> The 2026-07-27 capability wave also shipped: **skills as a top-level feature**
-> (trigger injection + `jigga skills`, #153), **web.fetch/web.search** with
-> pluggable providers (DDG/SearXNG/Brave packs, #154/#159), **shell.run** over
-> the safe-process runner (#156), and **one-shot reminders** (#157). Much of
-> Milestone F is in: PyPI (#145), service autostart/stop/start/`--system`
-> (#73/#143/#144), `jigga update` (#103), `doctor --fix` (#75/#142), jiggaview
-> as a plugin. **Open:** Milestone E (isolation, secrets broker, OS-level
-> egress) in full; from the production-needs list: backup/restore, telemetry,
-> crash-recovery sweep; more channels (Slack/Discord/webhook/iMessage);
-> marketplace UX; W7 (#63); media nodes (#150); event triggers (#151).
+> **Status as of 2026-08-16** (1292 tests on main; ~25.6k LOC implementation,
+> ~20.6k LOC tests). **Every milestone A–F is built**, and the runtime is
+> running in production on the maintainer's box.
+>
+> Since the last banner, the correction that matters most: **Milestone E is
+> done, not open.** Secrets broker (`runtime/secrets_broker.py`), the sandbox
+> seam with a bwrap backend (`runtime/sandbox.py`), and the egress proxy
+> (`runtime/egress_proxy.py`) all shipped, and `jigga doctor` checks the last
+> two. So did three items the old banner listed as missing: **backup/restore**
+> (`jigga backup` / `backup restore`), **telemetry** (opt-in, default off), and
+> the **crash-recovery sweep** (`runtime/recovery.py`). Also shipped: **media
+> nodes** (#150/#183), an **iMessage channel** (#185), and a provider-agnostic
+> **SMS driver seam** (#184, deliberately not registered as a channel).
+>
+> **The 2026-08 production-hardening pass** worked through Part 4 of
+> `docs/FIELD_LESSONS_HMX_PRODUCTION.md` — 26 assertions drawn from the
+> prior-gen stack's real outages, verified against this code. 25 are now
+> closed. Highlights: approval gates fail closed with an undeliverable-ask
+> alarm (#174); a live model probe in `doctor` (#175); **tool grants enforced
+> at every dispatch path** (#177); explicit `${}` workflow refs that raise
+> instead of silently rendering as literals (#181); typed model errors so a
+> dead credential is no longer `unknown` (#187); capability load failures made
+> loud and enumerable (#188); execution timeouts at the tick and at dispatch
+> (#189); drain-on-restart plus visible lease expiry (#190); and team-scoped
+> secret resolution so a second tenant needs no fork (#191).
+>
+> **Genuinely open:** assertion 26 (two-tenant proof — deferred until the teams
+> model settles); Slack/Discord/webhook channels; marketplace UX; W7 (#63);
+> event triggers (#151). **Carrying verification debt:** the iMessage channel
+> was built and tested entirely on Linux against a synthetic `chat.db` and has
+> never run on a Mac.
+>
 > Line-items below are kept as written; trust this banner and the ✅ marks where
 > they disagree.
 
@@ -46,7 +64,7 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 | Subagent delegation (`dry_run` + gated `codex_cli` + gated `claude_code`) with sandbox primitive | ✅ |
 | Audit log (JSONL, lifecycle events for every major boundary) | ✅ |
 
-**Footprint:** stdlib + PyYAML only; 905 passing tests as of 2026-07-27 (920 once PR #149 merges).
+**Footprint:** stdlib + PyYAML only; 1292 passing tests on main as of 2026-08-16.
 
 ### Shipped since the original plan (off-sequence — recorded here so the plan matches reality)
 
@@ -88,6 +106,8 @@ Each row maps to a doc under `docs/tools/` or `docs/`. The "Has" column is what 
 | Channel onboarding | ✅ `jigga channels setup` (pluggable catalog) | — |
 | Activation modes | ✅ `always` / `mention` / `direct_message_only` / `disabled` | — |
 | Approval queue via channel | ✅ `approve <code>` / `deny <code>` (PR #37) | — |
+| iMessage | ✅ adapter (#185): reads `chat.db` read-only, sends via `osascript` | **unverified on a real Mac** — built against a synthetic `chat.db`; `attributedBody`-only message bodies may need an NSAttributedString parser |
+| SMS | ✅ provider-agnostic `SMS_DRIVERS` seam + dry-run driver (#184) | deliberately NOT registered as a channel (kept for future use); a Multitel driver when API details land |
 | Local webhook | not started | HTTP endpoint the supervisor watches; auth |
 | Slack / Discord | not started | OAuth + DM/mention routing + outbound reply (Slack deferred until a Slack app exists) |
 | Email-as-inbox / Mobile push / SMS bridge (iMessage) | not started | Per the channel doc; iMessage is macOS-only |
@@ -137,12 +157,12 @@ The planning docs are strong on the "what JIGGA does" axis but quiet on a handfu
 1. **Packaging and install.** ✅ Mostly shipped: PyPI package (`pipx install jigga`, PR #145), supervisor autostart (`jigga service install [--system]`, launchd/systemd, PRs #73/#144), `service stop/start/uninstall` (PR #143). Still missing: optional standalone binary, Windows Service template.
 2. **Secrets.** Today: env-var pull-through via `SandboxSpec.secrets_required`. Missing: a real secrets broker so capabilities request `GITHUB_TOKEN` and get it from a vault/keychain rather than the user's shell env. Mac Keychain / Linux Secret Service / Windows Credential Manager / 1Password CLI integration.
 3. **Network isolation per capability.** Today: env scrub on subprocesses. Missing: real egress controls (capability declares allowed domains; subprocess can only reach those — needs DNS/iptables or a proxy). This is the gap between "MCP server can't see my OPENAI_API_KEY" and "MCP server can't exfiltrate data to attacker.com."
-4. **Backup, restore, sync.** Today: everything in `~/.jigga/`, no backup story. Missing: encrypted backup target (S3/B2/local), restore command, optional encrypted cloud sync for the subset of state safe to sync (workflows, agents, summaries — not raw transcripts or secrets).
+4. **Backup, restore, sync.** ✅ Shipped: `jigga backup` / `jigga backup restore` (`runtime/backup.py`) archive and restore the runtime home. Still missing: an off-machine target (S3/B2) and optional encrypted cloud sync for the subset of state safe to sync (workflows, agents, summaries — never raw transcripts or secrets).
 5. **Update model.** ✅ `jigga update` shipped (PR #103: reconciles recipes, config keys, service). Still missing: `jigga capabilities update <name>` triggering scan + re-approval; rollback.
-6. **Telemetry (opt-in).** Today: nothing. For a real product: opt-in error reporting + usage telemetry so you can detect breakage in the wild without violating local-first. Default off; explicit opt-in; documented payload schema.
+6. **Telemetry (opt-in).** ✅ Shipped: `runtime/telemetry.py` sends at most one anonymized-counts payload per day, default OFF, contained so an unreachable endpoint can't break the supervisor tick.
 7. **Cost / budget enforcement.** ✅ Shipped: per-agent budget caps with soft warning at 80% / hard stop at 100% (Milestone C), plus a derived spend ledger (H1a) and model rate-limit resilience (PR #146). Still missing: per-workflow run cap.
-8. **Crash recovery.** Today: the supervisor loop is single-process. If it crashes mid-tick (after task state transitions but before workflow.run.completed), the task is in a half-state. Missing: idempotent tick semantics + a recovery sweep that detects and resolves stale `claimed`/`running` tasks on startup.
-9. **Multi-tenant / multi-machine.** Today: single user, single machine. Missing: if/when a household or team wants shared JIGGA, the state model needs an `owner` field, per-user permission scoping, and a sync story.
+8. **Crash recovery.** ✅ Shipped: `runtime/recovery.py` sweeps tasks stuck `claimed`/`running` and v2 nodes stuck `running` past a staleness threshold, marking them failed with an audit event — visible, never silently retried, since a half-executed side effect must not be blindly re-run. Age-filtered, so running it every tick is idempotent. #190 added the other half: the supervisor drains on SIGTERM within a stop timeout derived from the tick budget, and `held_leases()` makes claim expiry readable rather than implicit.
+9. **Multi-tenant / multi-machine.** Partly addressed. Per-team workspaces, per-agent tool/secret grants, and team-scoped secret resolution (#191 — `<name>@<team>`, falling back to `<name>`) mean a second tenant with conflicting config no longer forces a fork; isolation there is structural, not a grant. Still missing: an `owner` field on state, per-*user* (as opposed to per-team) scoping, and any multi-machine sync story. Assertion 26 — proving a second tenant needs zero code deletion — is the open test.
 
 ---
 
@@ -250,8 +270,10 @@ Pull remaining items in "when it makes sense" rather than all at once.
 
 **Exit:** ✅ **Milestone D complete.** Memory is searchable (D1 FTS5), agents write durable team/role knowledge (D2), it stays bounded via compaction (D3), and sensitive writes can be gated behind approval (D4). Optional follow-ups (don't block): vector index behind a flag; model-backed task *summaries* in compaction (today it archives).
 
-### Milestone E — Real isolation
+### Milestone E — Real isolation — **DONE** (browser automation deferred)
 *Goal: a misbehaving capability can't ruin your day.*
+
+**Status (2026-08-16):** the sandbox seam with a bwrap backend (`runtime/sandbox.py`), the secrets broker (`runtime/secrets_broker.py`, with file / keychain / encrypted-file backends and per-agent grant enforcement), and the egress proxy (`runtime/egress_proxy.py`) all shipped; `jigga doctor` checks the last two. Browser automation is the one item still deferred.
 
 - OS-level sandbox backend behind `runtime.sandbox.run_sandboxed`. Linux: `bwrap` or `firejail`. macOS: `sandbox-exec`. Windows: `WinSandbox` / `JobObject`. Behind a config flag; off by default until per-platform UX is right.
 - Secrets broker: macOS Keychain / Linux Secret Service / Windows Credential Manager + a YAML mapping of secret names → broker keys. Capabilities request by name; broker resolves; subprocess gets the value without it ever touching the user's shell env.
@@ -271,7 +293,7 @@ Pull remaining items in "when it makes sense" rather than all at once.
 - Capability marketplace UX: `jigga capabilities search <query>`, `jigga capabilities install <name>`, `jigga capabilities update`. Backed by a static registry index (git-based, no server needed for v1).
 - Encrypted backup with `jigga backup create / restore`. Cloud sync as an optional layer (S3-compatible, age-encrypted).
 - Opt-in telemetry: documented payload, off by default, `jigga telemetry on/off` toggle.
-- Crash recovery sweep on supervisor startup: any task in `claimed`/`running` for more than the configured runtime gets marked `failed` with an audit event.
+- ✅ Crash recovery sweep (`runtime/recovery.py`): any task in `claimed`/`running`, or v2 node stuck `running`, past the staleness threshold is marked `failed` with an audit event. Runs every tick rather than only at startup, and is age-filtered so it is idempotent.
 
 **Exit:** v1.0 release-ready. A user with no JIGGA context can `brew install jigga` (or equivalent), run `jigga init`, and have something working in five minutes.
 
