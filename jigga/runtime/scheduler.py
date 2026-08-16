@@ -99,6 +99,66 @@ def _friendly_schedule_due(schedule: str, now: datetime) -> bool:
     return now.hour == hour and now.minute == minute
 
 
+_CRON_TERM = re.compile(
+    r"^(\*|\d+|\d+-\d+|(?:SUN|MON|TUE|WED|THU|FRI|SAT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
+    r"(?:-(?:SUN|MON|TUE|WED|THU|FRI|SAT|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))?)(/\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_cron_field(field: str) -> bool:
+    return bool(field) and all(_CRON_TERM.match(term) for term in field.split(","))
+
+
+def looks_like_cron(schedule: str) -> bool:
+    """Five whitespace-separated fields, each shaped like a cron field.
+
+    Deliberately stricter than a bare field count: `"every day at 6:30 pm"` is
+    also five tokens, and misreading it as cron would make a working schedule
+    silently stop firing.
+    """
+    parts = str(schedule).split()
+    return len(parts) == 5 and all(_is_cron_field(part) for part in parts)
+
+
+def schedule_due(schedule: str, now: datetime) -> bool:
+    """Whether a workflow's `trigger.schedule` is due.
+
+    Accepts full 5-field cron *or* the friendly forms. Agents already took cron
+    strings; workflows only understood the friendly parser, so a monthly
+    schedule — "day 20 at 10:00", which is what a real marketing calendar runs
+    on — simply could not be expressed. Same surface, same syntax, either way.
+    """
+    if looks_like_cron(schedule):
+        return _cron_due(schedule, now)
+    return _friendly_schedule_due(schedule, now)
+
+
+def schedule_problem(schedule: Any) -> str | None:
+    """Why this schedule will never fire, or None if it is understood.
+
+    A schedule that parses as neither cron nor a friendly form is currently
+    silent — it just never runs, and nothing says why. That is the same failure
+    this codebase keeps closing elsewhere, so it is worth naming here.
+    """
+    if not isinstance(schedule, str) or not schedule.strip():
+        return "schedule is empty"
+    text = schedule.strip()
+    if looks_like_cron(text):
+        parts = text.split()
+        for label, field, bound in (("minute", parts[0], 59), ("hour", parts[1], 23),
+                                    ("day-of-month", parts[2], 31), ("month", parts[3], 12)):
+            for term in field.split(","):
+                for number in re.findall(r"\d+", term.split("/")[0]):
+                    if int(number) > bound:
+                        return f"{label} field {field!r} is out of range (max {bound})"
+        return None
+    if _parse_friendly_time(text.lower()) is not None:
+        return None
+    return (f"unrecognized schedule {schedule!r} — use 5-field cron (`0 10 20 * *`) "
+            "or a friendly form (`weekdays at 09:00`)")
+
+
 def due_events(
     agents_dir: Path,
     workflows_dir: Path,
@@ -134,7 +194,7 @@ def due_events(
 
     for workflow in workflows.values():
         schedule = workflow.trigger.get("schedule")
-        if isinstance(schedule, str) and _friendly_schedule_due(schedule, current):
+        if isinstance(schedule, str) and schedule_due(schedule, current):
             events.append(
                 JiggaEvent.create(
                     "workflow.schedule_due",
