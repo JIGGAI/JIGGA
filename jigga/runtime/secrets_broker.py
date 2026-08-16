@@ -32,7 +32,11 @@ from typing import Any
 from jigga.core.config import load_runtime_config
 from jigga.core.io import ensure_dir
 
-_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+# `@` separates a secret from the team it belongs to: `postiz_api_key@oakwood`.
+# Two tenants needing different accounts for the same logical secret is a
+# correctness constraint, not a convenience — see `resolve_secret_name`.
+_NAME = re.compile(r"^[A-Za-z0-9._-]+(@[A-Za-z0-9._-]+)?$")
+_TEAM_SEPARATOR = "@"
 
 # E1c: when a capability invocation is in flight, the dispatcher binds
 # (executing agent, logs_dir) here; get_secret enforces the agent's grant
@@ -233,15 +237,56 @@ def _env_var(name: str) -> str:
     return "JIGGA_SECRET_" + re.sub(r"[^A-Za-z0-9]", "_", name).upper()
 
 
-def get_secret(home: Path, name: str) -> str | None:
-    """The secret's value, or None when unset. All runtime secret reads route
-    here — never open files under secrets/ directly. Inside a capability
-    invocation, the executing agent's `permissions.secrets` grant is enforced
-    before anything is released (E1c)."""
-    _validate(name)
-    ctx = _capability_ctx.get()
-    if ctx is not None and ctx[0] is not None:
-        _enforce_grant(Path(home), name, ctx[0], ctx[1])
+def team_of(home: Path, agent: Any) -> str | None:
+    """The team an agent belongs to, or None if it belongs to none."""
+    from jigga.core.config import load_teams
+
+    agent_id = getattr(agent, "id", None)
+    if not agent_id:
+        return None
+    try:
+        teams = load_teams(Path(home) / "teams")
+    except Exception:  # noqa: BLE001 — an unreadable team file must not block a secret read
+        return None
+    for team_id, team in sorted(teams.items()):
+        for member in team.agents or []:
+            member_id = member.get("id") if isinstance(member, dict) else member
+            if member_id == agent_id:
+                return team_id
+    return None
+
+
+def resolve_secret_name(home: Path, name: str, agent: Any) -> str:
+    """The physical secret name to read for `name` on behalf of `agent`.
+
+    Two tenants on one runtime need *different* accounts behind the same
+    logical secret — Oakwood and Driftwood each have their own Postiz login,
+    and a handler asking for `postiz_api_key` must not get the other venue's.
+    Before this, the namespace was flat and handlers resolved literal names, so
+    the only way to serve a second tenant was to fork the capability. That is
+    exactly the "a second customer arrives as a fork" failure the field lessons
+    warn about.
+
+    Resolution is team-scoped and falls back: `<name>@<team>` if it exists,
+    else `<name>`. So a single-tenant install needs no change at all, and a
+    tenant opts in simply by storing a scoped secret.
+
+    The isolation here is *structural*, not a grant. An agent's team decides
+    which value it sees, so an Oakwood agent cannot reach Driftwood's
+    credential even if someone grants it the logical name — which is the
+    property that makes mutually-exclusive tenants safe on one box.
+    """
+    if _TEAM_SEPARATOR in name:
+        return name  # already explicit; caller asked for a specific tenant
+    team = team_of(home, agent)
+    if not team:
+        return name
+    scoped = f"{name}{_TEAM_SEPARATOR}{team}"
+    return scoped if _read_backend(home, scoped) is not None else name
+
+
+def _read_backend(home: Path, name: str) -> str | None:
+    """Read a stored secret by its physical name. No policy, no scoping."""
     backend = _backend(home)
     if backend == "env":
         return os.environ.get(_env_var(name))
@@ -255,6 +300,24 @@ def get_secret(home: Path, name: str) -> str | None:
         # `jigga secrets set` on this backend migrates them forward.
     path = _file_path(home, name)
     return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def get_secret(home: Path, name: str) -> str | None:
+    """The secret's value, or None when unset. All runtime secret reads route
+    here — never open files under secrets/ directly. Inside a capability
+    invocation, the executing agent's `permissions.secrets` grant is enforced
+    before anything is released (E1c), and the name is resolved against the
+    agent's team so two tenants can hold different values for one logical
+    secret."""
+    _validate(name)
+    ctx = _capability_ctx.get()
+    if ctx is not None and ctx[0] is not None:
+        # Enforced on the LOGICAL name the capability asked for. Team scoping is
+        # automatic, so a grant is written once (`postiz_api_key`) rather than
+        # per tenant — and cannot be used to reach across teams either way.
+        _enforce_grant(Path(home), name, ctx[0], ctx[1])
+        name = resolve_secret_name(Path(home), name, ctx[0])
+    return _read_backend(home, name)
 
 
 def set_secret(home: Path, name: str, value: str) -> str:
