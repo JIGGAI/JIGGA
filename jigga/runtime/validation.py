@@ -131,6 +131,15 @@ def validate_configs(
     for team in teams.values():
         problems.extend(validate_team(team))
     for workflow in (workflows or {}).values():
+        # A schedule that parses as neither cron nor a friendly form never
+        # fires, and says nothing about why.
+        declared = (getattr(workflow, "trigger", None) or {}).get("schedule")
+        if declared is not None:
+            from jigga.runtime.scheduler import schedule_problem
+
+            problem = schedule_problem(declared)
+            if problem:
+                problems.append(f"workflow {workflow.id}: {problem}")
         if getattr(workflow, "nodes", None):
             from jigga.runtime.workflow_engine import validate_graph
 
