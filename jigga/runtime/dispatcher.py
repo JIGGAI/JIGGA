@@ -177,6 +177,28 @@ def register_outputs(outputs: dict[str, Any], step: Any, value: Any) -> None:
                     outputs[f"{base}.{name}"] = value[name]
 
 
+def seed_trigger_outputs(outputs: dict[str, Any], trigger: dict[str, Any] | None) -> None:
+    """Make the firing event referenceable as `${trigger}` / `${trigger.<field>}`.
+
+    A run started by an event trigger (#151) should be able to use what fired it
+    — the meeting title, the sender, the record id — the same way it references
+    any other step output, rather than through a second templating dialect.
+
+    Only scalar fields are exposed individually; nested structures stay
+    addressable through `${trigger}` as a whole. For push triggers this payload
+    is externally controlled, which is exactly why `${}` refs fail closed
+    (#181): a typo'd `${trigger.tilte}` raises instead of quietly rendering as
+    the literal text, which is how the precursor stack published 20 unapproved
+    items.
+    """
+    if not trigger:
+        return
+    outputs["trigger"] = trigger
+    for key, value in trigger.items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            outputs[f"trigger.{key}"] = value
+
+
 def _requests_resource_access(declared: Any) -> bool:
     """Return True when a capability's resource declaration *requests* access.
 

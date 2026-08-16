@@ -14,6 +14,7 @@ from jigga.runtime.dispatcher import (
     evaluate_capability_permissions,
     execute_step,
     register_outputs,
+    seed_trigger_outputs,
 )
 from jigga.runtime.memory import build_context_package, write_memory_result
 from jigga.runtime.policy import evaluate_tool_grant, evaluate_workflow_step, resolve_permission_mode
@@ -254,16 +255,22 @@ def run_workflow(
     paths: JiggaPaths,
     workflow_id: str,
     project_capabilities: Path | None = None,
+    *,
+    trigger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """`trigger` is the event payload that fired this run (#151), made available
+    to steps as `${trigger.<field>}`. None for scheduled and manual runs."""
     # Inherits the supervisor trace when scheduled; mints its own on CLI apply.
     with trace_context(), actor_context(f"workflow:{workflow_id}"):
-        return _run_workflow(paths, workflow_id, project_capabilities)
+        return _run_workflow(paths, workflow_id, project_capabilities, trigger=trigger)
 
 
 def _run_workflow(
     paths: JiggaPaths,
     workflow_id: str,
     project_capabilities: Path | None = None,
+    *,
+    trigger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     home, logs_dir, workflows_dir, agents_dir, memory_dir = (
         paths.home, paths.logs, paths.workflows, paths.agents, paths.memory,
@@ -284,7 +291,8 @@ def _run_workflow(
         # Imported lazily: workflow_engine reuses this module's policy helper.
         from jigga.runtime.workflow_engine import run_workflow_v2
 
-        return run_workflow_v2(paths, workflow, project_capabilities=project_capabilities)
+        return run_workflow_v2(paths, workflow, project_capabilities=project_capabilities,
+                               trigger=trigger)
 
     plan = plan_workflow(workflow, agents, default_mode=default_permission_mode(home), registry=registry)
     if not plan["can_run"]:
@@ -296,6 +304,7 @@ def _run_workflow(
     run_dir = home / "runs" / "workflows" / workflow_id / run_id
     ensure_dir(run_dir)
     outputs: dict[str, Any] = {}
+    seed_trigger_outputs(outputs, trigger)
     started_at = now_iso()
     append_event(logs_dir, "workflow.run.started", workflow=workflow_id, run_id=run_id)
 
