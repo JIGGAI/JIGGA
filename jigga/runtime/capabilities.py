@@ -437,14 +437,44 @@ def load_capability_manifest(path: Path) -> CapabilityManifest:
     )
 
 
-def scan_capability_dir(path: Path) -> list[CapabilityManifest]:
+@dataclass(frozen=True)
+class CapabilityLoadError:
+    """A manifest that is present on disk but could not be loaded.
+
+    Assertion 15: a capability that fails to load must be a loud, enumerable
+    state — not an absence. An empty capability list looks identical to a
+    working system right up until something calls one.
+    """
+
+    name: str      # the directory name, which is what an operator recognizes
+    path: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "path": self.path, "reason": self.reason}
+
+
+def scan_capability_dir(path: Path) -> tuple[list[CapabilityManifest], list[CapabilityLoadError]]:
+    """Load every manifest under `path`, returning what loaded and what didn't.
+
+    A broken manifest is recorded rather than raised: one unparseable file used
+    to abort the whole registry load, taking every capability down with it and
+    breaking commands that had nothing to do with it.
+    """
     if not path.exists():
-        return []
+        return [], []
     manifests: list[CapabilityManifest] = []
+    errors: list[CapabilityLoadError] = []
     for file in list_config_files(path):
         if file.name == "manifest.yaml" or file.name == "manifest.yml":
-            manifests.append(load_capability_manifest(file))
-    return manifests
+            try:
+                manifests.append(load_capability_manifest(file))
+            except Exception as exc:  # noqa: BLE001 — one bad manifest must not blind the rest
+                errors.append(CapabilityLoadError(
+                    name=file.parent.name, path=str(file),
+                    reason=f"{type(exc).__name__}: {exc}".replace("\n", " ")[:200],
+                ))
+    return manifests, errors
 
 
 def approvals_path(approvals_dir: Path) -> Path:
@@ -493,9 +523,18 @@ class CapabilityRegistry:
         self,
         capabilities: list[CapabilityManifest],
         pending: list[CapabilityManifest] | None = None,
+        load_errors: list[CapabilityLoadError] | None = None,
+        pending_reasons: dict[str, str] | None = None,
     ):
         self.capabilities = capabilities
         self.pending = pending or []
+        # Present on disk, unloadable. Enumerable so `doctor` can be loud about
+        # it rather than reporting a smaller-but-healthy-looking registry.
+        self.load_errors = load_errors or []
+        # Why each pending capability is parked: "unapproved" (installed, never
+        # approved) vs "changed" (approved once, the file differs since). Very
+        # different severities — one is a routine next step, the other is drift.
+        self.pending_reasons = pending_reasons or {}
         self._by_name = {capability.name: capability for capability in capabilities}
         self._by_action: dict[str, CapabilityManifest] = {}
         for capability in capabilities:
@@ -523,14 +562,17 @@ class CapabilityRegistry:
         approved = load_approval_index(approvals_dir) if approvals_dir is not None else None
         active: list[CapabilityManifest] = []
         pending: list[CapabilityManifest] = []
-        if project_capabilities is not None:
-            for capability in scan_capability_dir(project_capabilities):
-                _route_user_capability(capability, approved, active, pending)
-        if user_capabilities is not None:
-            for capability in scan_capability_dir(user_capabilities):
-                _route_user_capability(capability, approved, active, pending)
+        errors: list[CapabilityLoadError] = []
+        reasons: dict[str, str] = {}
+        for source in (project_capabilities, user_capabilities):
+            if source is None:
+                continue
+            found, failed = scan_capability_dir(source)
+            errors.extend(failed)
+            for capability in found:
+                _route_user_capability(capability, approved, active, pending, reasons)
         active.extend(bundled_capabilities())
-        return cls(active, pending)
+        return cls(active, pending, load_errors=errors, pending_reasons=reasons)
 
     def list(self) -> list[CapabilityManifest]:
         return list(self.capabilities)
@@ -548,6 +590,8 @@ class CapabilityRegistry:
         return {
             "capabilities": [capability.to_dict() for capability in self.capabilities],
             "pending": [capability.to_dict() for capability in self.pending],
+            "pending_reasons": dict(self.pending_reasons),
+            "load_errors": [error.to_dict() for error in self.load_errors],
             "actions": {
                 action: capability.name
                 for action, capability in sorted(self._by_action.items())
@@ -560,6 +604,7 @@ def _route_user_capability(
     approved: dict[str, dict[str, Any]] | None,
     active: list[CapabilityManifest],
     pending: list[CapabilityManifest],
+    reasons: dict[str, str] | None = None,
 ) -> None:
     if approved is None:
         active.append(capability)
@@ -567,5 +612,9 @@ def _route_user_capability(
     recorded = approved.get(capability.name)
     if recorded is not None and recorded.get("manifest_hash") == capability.manifest_hash:
         active.append(capability)
-    else:
-        pending.append(capability)
+        return
+    pending.append(capability)
+    if reasons is not None:
+        # An approval that exists but no longer matches means the file changed
+        # underneath it — drift or tampering, not a missing first approval.
+        reasons[capability.name] = "changed" if recorded is not None else "unapproved"
