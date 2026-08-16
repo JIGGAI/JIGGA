@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from jigga.core.config import load_agents, load_workflows, max_wakes_per_hour
+from jigga.core.config import load_agents, load_workflows, max_tick_seconds, max_wakes_per_hour
 from jigga.core.models import now_iso
 from jigga.core.paths import get_paths
 from jigga.runtime.agent import run_agent
@@ -306,7 +306,19 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
 
     runs = []
     throttled: list[str] = []
+    # Tick deadline: the supervisor is one sequential process, so an agent that
+    # blocks (a handler with no timeout, a wedged subprocess) delays every agent
+    # behind it — and the next tick stacks on top. This can't reclaim a run
+    # that's already hung, but it stops the tick from starting new work it has
+    # no time for. Deferred agents keep their pending tasks, so nothing is lost;
+    # they wake on the next tick.
+    budget = max_tick_seconds(paths.home)
+    started = time.monotonic()
+    deferred: list[str] = []
     for agent_id in targets:
+        if budget and (time.monotonic() - started) >= budget:
+            deferred.append(agent_id)
+            continue
         if agent_id not in agents:
             append_event(paths.logs, "supervisor.target_missing", status="failed", agent=agent_id)
             continue
@@ -326,6 +338,14 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
         record_wake(loop_state, agent_id, now)
         runs.append(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, agent_id))
 
+    if deferred:
+        # Loud, not silent: a tick that keeps running out of time is evidence
+        # something is slow, and that is worth seeing before it becomes a
+        # backlog nobody can explain.
+        append_event(paths.logs, "supervisor.tick_budget_exhausted", status="ask",
+                     budget_seconds=budget, elapsed_seconds=round(time.monotonic() - started, 1),
+                     ran=len(runs), deferred=deferred)
+
     save_loop_state(paths.home, loop_state)
 
     state = read_state(paths.state)
@@ -336,5 +356,6 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
         "skipped_events": skipped_events,
         "targets": targets,
         "throttled": throttled,
+        "deferred": deferred,
         "runs": runs,
     }

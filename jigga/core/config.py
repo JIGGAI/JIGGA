@@ -7,6 +7,14 @@ from jigga.core.models import AgentConfig, MemoryScope, TeamConfig, WorkflowConf
 
 DEFAULT_MAX_WAKES_PER_HOUR = 12
 DEFAULT_PERMISSION_MODE = "ask"
+# How long one supervisor tick may spend waking agents before it stops starting
+# new ones. The supervisor is a single sequential process, so a slow or hung
+# agent delays every other agent behind it — this bounds that blast radius.
+# Deferred agents keep their pending tasks and run on the next tick.
+DEFAULT_MAX_TICK_SECONDS = 300
+# Default wall-clock ceiling for a single capability invocation. A capability
+# may raise its own via `limits.timeout_seconds` in its manifest.
+DEFAULT_CAPABILITY_TIMEOUT_SECONDS = 120
 
 
 def load_runtime_config(home: Path) -> dict:
@@ -20,6 +28,27 @@ def max_wakes_per_hour(home: Path) -> int:
     config = load_runtime_config(home)
     supervisor = config.get("supervisor") or {}
     return int(supervisor.get("max_wakes_per_agent_per_hour", DEFAULT_MAX_WAKES_PER_HOUR))
+
+
+def max_tick_seconds(home: Path) -> float:
+    """Wall-clock budget for the agent-waking phase of one tick (0 = unbounded)."""
+    config = load_runtime_config(home)
+    supervisor = config.get("supervisor") or {}
+    try:
+        return max(0.0, float(supervisor.get("max_tick_seconds", DEFAULT_MAX_TICK_SECONDS)))
+    except (TypeError, ValueError):
+        return float(DEFAULT_MAX_TICK_SECONDS)
+
+
+def default_capability_timeout(home: Path) -> float:
+    """Default per-invocation ceiling for capabilities (0 = unbounded)."""
+    config = load_runtime_config(home)
+    capabilities = config.get("capabilities") or {}
+    try:
+        return max(0.0, float(capabilities.get("default_timeout_seconds",
+                                               DEFAULT_CAPABILITY_TIMEOUT_SECONDS)))
+    except (TypeError, ValueError):
+        return float(DEFAULT_CAPABILITY_TIMEOUT_SECONDS)
 
 
 def default_permission_mode(home: Path) -> str:

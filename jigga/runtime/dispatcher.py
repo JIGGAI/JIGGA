@@ -9,6 +9,7 @@ from typing import Any
 from jigga.core.io import ensure_dir, write_json
 from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
+from jigga.core.config import DEFAULT_CAPABILITY_TIMEOUT_SECONDS, default_capability_timeout
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
 from jigga.runtime.email_imap import email_imap_handler
 from jigga.runtime.filesystem import filesystem_handler
@@ -328,6 +329,101 @@ def resolve_handler(name: str) -> Handler:
     return _import_handler(name)
 
 
+class CapabilityTimeout(TimeoutError):
+    """A capability invocation outran its wall-clock budget.
+
+    Read the docstring on `_run_with_timeout` before trusting this too far: the
+    handler is abandoned, not killed.
+    """
+
+    def __init__(self, capability: str, action: str, seconds: float) -> None:
+        super().__init__(
+            f"Capability {capability!r} did not return within {seconds:g}s while running "
+            f"{action!r}. The call was abandoned; the thread running it may still be alive."
+        )
+        self.capability = capability
+        self.action = action
+        self.seconds = seconds
+
+
+def capability_timeout(capability: CapabilityManifest, home: Path | None) -> float:
+    """Seconds this capability may run for. 0 disables the bound.
+
+    A manifest opts out of the global default with `limits: {timeout_seconds: N}`
+    — legitimately needed by anything that waits on a human or a long render.
+    """
+    limits = (capability.permissions or {}).get("limits") or {}
+    declared = limits.get("timeout_seconds")
+    if declared is not None:
+        try:
+            return max(0.0, float(declared))
+        except (TypeError, ValueError):
+            pass
+    if home is None:
+        return float(DEFAULT_CAPABILITY_TIMEOUT_SECONDS)
+    return default_capability_timeout(home)
+
+
+def _run_with_timeout(call: Any, *, seconds: float, capability: CapabilityManifest,
+                      step: WorkflowStep, logs_dir: Path, workflow_id: str, run_id: str) -> Any:
+    """Run `call`, raising `CapabilityTimeout` if it outruns `seconds`.
+
+    **This reports a hang; it does not cure one.** Python cannot interrupt a
+    synchronous call from outside it: `signal.alarm` only fires on the main
+    thread and only at bytecode boundaries, so a C-level blocking read ignores
+    it entirely. The handler therefore runs on a daemon worker thread and the
+    caller stops waiting — the worker keeps going, holding whatever it holds,
+    until the process exits.
+
+    That is deliberately a partial fix, and it earns its place anyway: before
+    this, a hung handler blocked its caller forever with no event, no
+    attribution, and no bound. Now the step fails, the audit log names the
+    capability, and the supervisor's tick budget can act on it.
+
+    Real reclamation needs the handler out-of-process, which is Milestone E's
+    isolation work. When that lands it slots in behind this same
+    `limits.timeout_seconds` field with no config change.
+
+    The leak is bounded in practice by the tick budget above it: wedged threads
+    make ticks slower, the budget defers work, and the operator sees
+    `supervisor.tick_budget_exhausted` instead of a silent stall.
+    """
+    if not seconds:
+        return call()
+
+    import contextvars
+    import threading
+
+    box: dict[str, Any] = {}
+    # ContextVars do not cross a thread boundary on their own. The secret
+    # broker's binding, the trace id and the actor all live in contextvars set
+    # on *this* thread, so a bare `Thread(target=call)` would run the handler
+    # with no bound secrets and file its audit events unattributed. Copying the
+    # context in keeps moving the call off-thread invisible to the handler.
+    context = contextvars.copy_context()
+
+    def _target() -> None:
+        try:
+            box["value"] = context.run(call)
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller's thread below
+            box["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True,
+                              name=f"jigga-cap-{capability.name}-{step.id}")
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        append_event(logs_dir, "capability.invocation.timeout", status="error",
+                     workflow=workflow_id, run_id=run_id, step=step.id, action=step.action,
+                     capability=capability.name, handler=capability.handler,
+                     timeout_seconds=seconds,
+                     note="handler abandoned, not killed — the thread may still be running")
+        raise CapabilityTimeout(capability.name, step.action, seconds)
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def dispatch_action(
     step: WorkflowStep,
     resolved_input: Any,
@@ -397,7 +493,15 @@ def dispatch_action(
     from jigga.runtime.secrets_broker import capability_secret_context
 
     with capability_secret_context(runtime.agent, logs_dir):
-        output = handler(step, capability, resolved_input, memory_context, runtime)
+        output = _run_with_timeout(
+            lambda: handler(step, capability, resolved_input, memory_context, runtime),
+            seconds=capability_timeout(capability, runtime.home),
+            capability=capability,
+            step=step,
+            logs_dir=logs_dir,
+            workflow_id=workflow_id,
+            run_id=run_id,
+        )
 
     append_event(
         logs_dir,
