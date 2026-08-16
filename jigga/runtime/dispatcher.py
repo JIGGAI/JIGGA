@@ -11,11 +11,8 @@ from jigga.core.models import AgentConfig, WorkflowStep
 from jigga.runtime.audit import append_event
 from jigga.core.config import DEFAULT_CAPABILITY_TIMEOUT_SECONDS, default_capability_timeout
 from jigga.runtime.capabilities import CapabilityManifest, CapabilityRegistry
-from jigga.runtime.email_imap import email_imap_handler
 from jigga.runtime.filesystem import filesystem_handler
-from jigga.runtime.gog import gog_handler
-from jigga.runtime.google_calendar import google_calendar_handler
-from jigga.runtime.media import binary_payload, media_handler
+from jigga.runtime.media import binary_payload
 from jigga.runtime.handlers import (
     _calendar_handler,
     _draft_prompt,
@@ -46,9 +43,6 @@ from jigga.runtime.policy import (
 from jigga.runtime.reminders import reminders_handler
 from jigga.runtime.runtime_context import Handler, RuntimeContext
 from jigga.runtime.shell import shell_handler
-from jigga.runtime.telegram import telegram_handler
-from jigga.runtime.web import web_handler
-from jigga.runtime.webchat import webchat_handler
 
 # Re-exported for back-compat: callers historically import RuntimeContext and
 # the handler functions from this module. Their canonical homes are now
@@ -260,6 +254,28 @@ def evaluate_capability_permissions(capability: CapabilityManifest, agent: Agent
     return PolicyDecision("allow")
 
 
+def _lazy_handler(reference: str) -> Handler:
+    """A handler whose module is imported on first call, not at import time.
+
+    Connector handlers pull in heavy stdlib (`imaplib`, `smtplib`,
+    `urllib.request`, `http.client`). Because almost everything imports the
+    dispatcher, every `jigga` invocation paid for every connector — including
+    commands that dispatch nothing at all.
+
+    The name stays a key in HANDLERS, so `handler_problem` still resolves it
+    without importing anything.
+    """
+    def _call(*args: Any, **kwargs: Any) -> Any:
+        module_name, _, function_name = reference.partition(":")
+        return getattr(importlib.import_module(module_name), function_name)(*args, **kwargs)
+
+    _call.__name__ = reference.rpartition(":")[2]
+    # Exposed so a test can verify every reference resolves without dispatching
+    # to it — a typo here would otherwise only surface on first real use.
+    _call._reference = reference
+    return _call
+
+
 HANDLERS: dict[str, Handler] = {
     "dry_run.calendar": _calendar_handler,
     "dry_run.email": _email_handler,
@@ -273,16 +289,16 @@ HANDLERS: dict[str, Handler] = {
     "runtime.draft_with_model": _draft_with_model_handler,
     "runtime.search_memory": _search_memory_handler,
     "runtime.remember": _remember_handler,
-    "runtime.email_imap": email_imap_handler,
+    "runtime.email_imap": _lazy_handler("jigga.runtime.email_imap:email_imap_handler"),
     "runtime.filesystem": filesystem_handler,
-    "runtime.google_calendar": google_calendar_handler,
-    "runtime.gog": gog_handler,
+    "runtime.google_calendar": _lazy_handler("jigga.runtime.google_calendar:google_calendar_handler"),
+    "runtime.gog": _lazy_handler("jigga.runtime.gog:gog_handler"),
     "runtime.shell": shell_handler,
     "runtime.reminders": reminders_handler,
-    "runtime.telegram": telegram_handler,
-    "runtime.media": media_handler,
-    "runtime.web": web_handler,
-    "runtime.webchat": webchat_handler,
+    "runtime.telegram": _lazy_handler("jigga.runtime.telegram:telegram_handler"),
+    "runtime.media": _lazy_handler("jigga.runtime.media:media_handler"),
+    "runtime.web": _lazy_handler("jigga.runtime.web:web_handler"),
+    "runtime.webchat": _lazy_handler("jigga.runtime.webchat:webchat_handler"),
     "skill_pack.default": _skill_pack_handler,
     "mcp_server.subprocess": _mcp_server_handler,
     "runtime.team_insight": _team_insight_handler,

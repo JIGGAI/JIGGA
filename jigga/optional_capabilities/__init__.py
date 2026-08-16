@@ -28,19 +28,11 @@ Adding a new first-party optional capability: drop the package under
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from jigga.optional_capabilities.brave_search import setup as brave_search_setup
-from jigga.optional_capabilities.email import setup as email_setup
-from jigga.optional_capabilities.gog import setup as gog_setup
-from jigga.optional_capabilities.image_generation import setup as image_generation_setup
-from jigga.optional_capabilities.searxng import setup as searxng_setup
-from jigga.optional_capabilities.google_calendar import (
-    setup as google_calendar_setup,
-)
-from jigga.optional_capabilities.telegram import setup as telegram_setup
 
 
 @dataclass(frozen=True)
@@ -48,7 +40,21 @@ class OptionalCapability:
     name: str
     summary: str
     manifest_path: Path
-    setup_fn: Callable[..., int] | None = None
+    # Either a callable, or a `module.path:function` reference resolved on
+    # first use. References are the norm: importing every connector's setup
+    # eagerly cost ~33ms on *every* `jigga` invocation — including the ones
+    # that never install anything — because one of them pulls in imaplib.
+    setup_fn: Callable[..., int] | str | None = None
+
+    def run_setup(self, paths: Any, **kwargs: Any) -> int:
+        """Resolve (if needed) and run this capability's setup step."""
+        if self.setup_fn is None:
+            return 0
+        target = self.setup_fn
+        if isinstance(target, str):
+            module_name, _, function_name = target.partition(":")
+            target = getattr(importlib.import_module(module_name), function_name)
+        return target(paths, **kwargs)
 
 
 def _here() -> Path:
@@ -66,43 +72,43 @@ REGISTRY: dict[str, OptionalCapability] = {
         name="image-generation",
         summary="Generate images from prompts — Gemini (nano-banana) or an OpenAI-compatible endpoint",
         manifest_path=_here() / "image_generation" / "manifest.yaml",
-        setup_fn=image_generation_setup,
+        setup_fn="jigga.optional_capabilities.image_generation:setup",
     ),
     "brave-search": OptionalCapability(
         name="brave-search",
         summary="Web search via the Brave Search API (API key, free tier)",
         manifest_path=_here() / "brave_search" / "manifest.yaml",
-        setup_fn=brave_search_setup,
+        setup_fn="jigga.optional_capabilities.brave_search:setup",
     ),
     "searxng": OptionalCapability(
         name="searxng",
         summary="Web search via a SearXNG metasearch instance (no API key)",
         manifest_path=_here() / "searxng" / "manifest.yaml",
-        setup_fn=searxng_setup,
+        setup_fn="jigga.optional_capabilities.searxng:setup",
     ),
     "email-imap": OptionalCapability(
         name="email-imap",
         summary="Provider-agnostic email — IMAP search/read, local drafts, SMTP send",
         manifest_path=_here() / "email" / "manifest.yaml",
-        setup_fn=email_setup,
+        setup_fn="jigga.optional_capabilities.email:setup",
     ),
     "gog": OptionalCapability(
         name="gog",
         summary="Google Workspace (Gmail, Calendar, Drive, Sheets) via the gogcli tool",
         manifest_path=_here() / "gog" / "manifest.yaml",
-        setup_fn=gog_setup,
+        setup_fn="jigga.optional_capabilities.gog:setup",
     ),
     "google-calendar": OptionalCapability(
         name="google-calendar",
         summary="Read events from your Google Calendar via OAuth (native, no external tool)",
         manifest_path=_here() / "google_calendar" / "manifest.yaml",
-        setup_fn=google_calendar_setup,
+        setup_fn="jigga.optional_capabilities.google_calendar:setup",
     ),
     "telegram": OptionalCapability(
         name="telegram",
         summary="Telegram channel — receive and reply to messages via a bot",
         manifest_path=_here() / "telegram" / "manifest.yaml",
-        setup_fn=telegram_setup,
+        setup_fn="jigga.optional_capabilities.telegram:setup",
     ),
 }
 
