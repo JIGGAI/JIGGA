@@ -57,6 +57,17 @@ def supervisor_loop(
     except (ValueError, OSError):
         pass
 
+    # Optional inbound listener. It only authenticates and enqueues; the drain
+    # in the tick below is what actually runs anything, so it inherits the tick
+    # budget and the opt-in targeting check rather than having its own.
+    webhook = None
+    try:
+        from jigga.runtime.webhook import serve_in_background
+
+        webhook = serve_in_background(paths)
+    except Exception as exc:  # noqa: BLE001 — the supervisor runs agents with or without it
+        append_event(paths.logs, "webhook.not_started", status="error", error=str(exc))
+
     ticks: deque[dict[str, Any]] = deque(maxlen=_TICK_HISTORY)
     count = 0
     try:
@@ -82,6 +93,17 @@ def supervisor_loop(
             # handler runs, sets the flag, and sleep returns early.
             time.sleep(0 if channels_on else interval_seconds)
     finally:
+        if webhook is not None:
+            # Stop accepting before the drain finishes: anything already queued
+            # is durable on disk, but taking new work while shutting down would
+            # leave it for a restart that may be a different version.
+            server, _thread = webhook
+            try:
+                server.shutdown()
+                server.server_close()
+                append_event(paths.logs, "webhook.stopped")
+            except Exception:  # noqa: BLE001 — shutdown must not mask the real exit
+                pass
         if previous_int is not None:
             try:
                 signal.signal(signal.SIGINT, previous_int)
