@@ -219,6 +219,52 @@ def _check_agent_tools(paths: JiggaPaths) -> Check:
                  hint="`jigga agents tools <id>` shows the full picture per agent.")
 
 
+def _check_capabilities(paths: JiggaPaths) -> Check:
+    """Capabilities that are installed but not dispatchable (assertions 15/16).
+
+    On the prior-gen stack an upgrade changed plugin discovery and the kitchen
+    and recipes plugins silently dropped — the gateway booted with only bundled
+    plugins and the kitchen's port went dark. Nothing said so; an empty
+    capability list is indistinguishable from a working one until something
+    calls an action that isn't there.
+
+    Three states are worth naming, and they are not equally bad:
+      - *broken*     — a manifest on disk that will not load at all
+      - *changed*    — approved once, the file differs since (drift or tamper)
+      - *unapproved* — installed and never approved; the routine next step
+    """
+    from jigga.runtime.capabilities import CapabilityRegistry
+
+    try:
+        registry = CapabilityRegistry.load(user_capabilities=paths.capabilities,
+                                           approvals_dir=paths.policies)
+    except Exception as exc:  # noqa: BLE001
+        return Check("capabilities", FAIL, f"Capability registry failed to load: {exc}",
+                     hint="Check the manifests under ~/.jigga/capabilities/.")
+
+    broken = [f"{err.name} ({err.reason.split(':')[0]})" for err in registry.load_errors]
+    changed = sorted(n for n, why in registry.pending_reasons.items() if why == "changed")
+    unapproved = sorted(n for n, why in registry.pending_reasons.items() if why == "unapproved")
+    active = len(registry.list())
+
+    if broken or changed:
+        parts = []
+        if broken:
+            parts.append(f"{len(broken)} won't load: {', '.join(broken[:3])}")
+        if changed:
+            parts.append(f"{len(changed)} changed since approval: {', '.join(changed[:3])}")
+        return Check("capabilities", FAIL, "; ".join(parts),
+                     hint="`jigga capabilities list --json` shows load_errors and pending_reasons. "
+                          "A changed manifest needs `jigga capabilities approve <name>` after you "
+                          "confirm the diff is yours.")
+    if unapproved:
+        return Check("capabilities", WARN,
+                     f"{len(unapproved)} installed but not approved, so not dispatchable: "
+                     f"{', '.join(unapproved[:4])}",
+                     hint="`jigga capabilities approve <name>` to activate.")
+    return Check("capabilities", OK, f"{active} capability(ies) loaded, none pending or broken")
+
+
 def _check_channels(paths: JiggaPaths) -> Check:
     from jigga.runtime.channel_listener import enabled_channels
 
@@ -430,6 +476,7 @@ def run_checks(paths: JiggaPaths, *, probe: bool = False) -> Report:
         report.checks.append(_check_default_agent(paths))
         report.checks.append(_check_model(paths, probe=probe))
         report.checks.append(_check_agent_tools(paths))
+        report.checks.append(_check_capabilities(paths))
         report.checks.append(_check_channels(paths))
         report.checks.append(_check_service(paths))
         report.checks.append(_check_secrets(paths))
