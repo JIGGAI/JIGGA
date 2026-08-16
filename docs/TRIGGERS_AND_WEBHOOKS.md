@@ -24,9 +24,22 @@ Three steps. The listener will not start until all three are done.
 
 **1. Store an API key.**
 
+`jigga secrets set` takes only the **name** and prompts for the value, so the
+key never lands in your shell history:
+
 ```bash
-jigga secrets set webhook_api_key "$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+jigga secrets set webhook_api_key
+# Value for webhook_api_key: <paste it here>
 ```
+
+Generate one first if you need to:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+There is no non-interactive flag by design. For an unattended install, set the
+backend to `env` and export `JIGGA_SECRET_WEBHOOK_API_KEY` instead.
 
 **2. Enable the listener** in `~/.jigga/config.yaml`:
 

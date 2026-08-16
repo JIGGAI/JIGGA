@@ -194,8 +194,9 @@ def build_server(paths: JiggaPaths) -> ThreadingHTTPServer:
     key = api_key(paths)
     if not key:
         raise WebhookNotConfigured(
-            f"no webhook API key stored — run `jigga secrets set {SECRET_NAME} <value>`. "
-            "The listener will not start unauthenticated.")
+            f"no webhook API key stored — run `jigga secrets set {SECRET_NAME}` and paste the "
+            "value at the prompt (it takes the name only, so the key stays out of shell "
+            "history). The listener will not start unauthenticated.")
 
     bind = str(settings(paths.home).get("bind", DEFAULT_BIND))
     port = _int_setting(paths.home, "port", DEFAULT_PORT)
