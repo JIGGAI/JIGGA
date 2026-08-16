@@ -159,7 +159,9 @@ def test_the_kind_comes_from_the_path(listener) -> None:
     _path, record = next(iter(claim(paths, 1)))
     assert record["kind"] == "publish_result"
     assert record["payload"] == {"status": "published"}
-    assert record["source"] == "webhook"
+    # `source` is the authenticated caller. This fixture uses the legacy single
+    # shared key, which reports as "shared" rather than naming a third party.
+    assert record["source"] == "shared"
 
 
 def test_a_retried_delivery_is_deduplicated(listener) -> None:
@@ -278,3 +280,259 @@ def test_a_webhook_runs_only_an_opted_in_workflow(listener, tmp_path: Path) -> N
 
     assert len(ran) == 1, "only the opted-in workflow should have run"
     assert stats(paths)["failed"] == 1, "the non-opted-in event should be parked, not run"
+
+
+# --- per-caller keys: JIGGA is the provider issuing credentials -----------------
+
+
+@pytest.fixture
+def multi_caller(tmp_path: Path):
+    """Two third parties, each issued its own key — no shared key at all."""
+    paths = init_runtime(tmp_path)
+    _configure(tmp_path)
+    set_secret(tmp_path, "webhook_key@postiz", "postiz-key-111")
+    set_secret(tmp_path, "webhook_key@multitel", "multitel-key-222")
+    server = build_server(paths)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    try:
+        yield paths, f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_issued_keys_start_the_listener_without_any_shared_key(multi_caller) -> None:
+    """A provider issues per-caller credentials; requiring a shared key as well
+    would defeat the point."""
+    paths, base = multi_caller
+    status, _ = _post(f"{base}/hooks/publish_result", {"ok": True}, key="postiz-key-111")
+    assert status == 202
+
+
+def test_the_authenticated_caller_is_recorded_not_the_word_webhook(multi_caller) -> None:
+    """Attribution: the audit trail and the queue record must say WHICH third
+    party called. With one shared key that question had no answer."""
+    from jigga.runtime.event_queue import claim
+
+    paths, base = multi_caller
+    _post(f"{base}/hooks/publish_result", {"ok": True}, key="multitel-key-222")
+
+    _path, record = next(iter(claim(paths, 1)))
+    assert record["source"] == "multitel"
+
+
+def test_each_caller_is_distinguished(multi_caller) -> None:
+    from jigga.runtime.event_queue import claim
+
+    paths, base = multi_caller
+    _post(f"{base}/hooks/a", {"n": 1}, key="postiz-key-111")
+    _post(f"{base}/hooks/b", {"n": 2}, key="multitel-key-222")
+
+    sources = sorted(record["source"] for _p, record in claim(paths, 10))
+    assert sources == ["multitel", "postiz"]
+
+
+def test_revoking_one_caller_leaves_the_others_working(tmp_path: Path) -> None:
+    """The reason per-caller keys exist: one integration's leak must not force
+    a rotation that breaks every other integration."""
+    from jigga.runtime.secrets_broker import delete_secret
+    from jigga.runtime.webhook import identify_caller, issued_keys
+
+    paths = init_runtime(tmp_path)
+    set_secret(tmp_path, "webhook_key@postiz", "postiz-key-111")
+    set_secret(tmp_path, "webhook_key@multitel", "multitel-key-222")
+
+    delete_secret(tmp_path, "webhook_key@postiz")
+
+    keys = issued_keys(paths)
+    assert identify_caller(keys, "postiz-key-111") is None
+    assert identify_caller(keys, "multitel-key-222") == "multitel"
+
+
+def test_an_unknown_key_identifies_nobody(tmp_path: Path) -> None:
+    from jigga.runtime.webhook import identify_caller
+
+    assert identify_caller({"postiz": "abc"}, "xyz") is None
+
+
+def test_the_listener_reports_which_callers_it_will_accept(tmp_path: Path) -> None:
+    """Operationally: after a restart you want to know which integrations are
+    live without reading the secrets directory.
+
+    Goes through `serve_in_background` rather than the fixture, because that is
+    the path the supervisor actually uses and the one that emits the event.
+    """
+    import json
+
+    paths = init_runtime(tmp_path)
+    _configure(tmp_path)
+    set_secret(tmp_path, "webhook_key@postiz", "postiz-key-111")
+    set_secret(tmp_path, "webhook_key@multitel", "multitel-key-222")
+
+    started = serve_in_background(paths)
+    assert started is not None
+    server, _thread = started
+    try:
+        rows = [json.loads(line) for line in (paths.logs / "events.jsonl").read_text().splitlines()
+                if line.strip()]
+        listening = [r for r in rows if r["type"] == "webhook.listening"]
+        assert listening and listening[-1]["details"]["callers"] == ["multitel", "postiz"]
+        assert listening[-1]["details"]["shared_key"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# --- a workflow can require a specific caller -----------------------------------
+
+
+def test_a_workflow_can_accept_events_from_only_one_caller(multi_caller) -> None:
+    """Least privilege between third parties: a key issued to one integration
+    must not be able to start another integration's workflow."""
+    from jigga.core.config import load_workflows
+    from jigga.runtime.event_queue import list_failed
+    from jigga.runtime.supervisor import _drain_event_queue
+
+    paths, base = multi_caller
+    write_yaml(paths.agents / "worker.yaml",
+               {"id": "worker", "name": "worker", "role": "r", "tools": ["summarize"],
+                "permissions": {"memory": {"scope": "task_only"}}, "memory_scope": "task_only"})
+    write_yaml(paths.workflows / "postiz_only.yaml", {
+        "id": "postiz_only", "name": "postiz_only",
+        "trigger": {"webhook": "postiz_only", "source": "postiz"},
+        "steps": [{"id": "s1", "agent": "worker", "action": "summarize"}]})
+
+    # The wrong third party's key, for a workflow that names another.
+    _post(f"{base}/hooks/postiz_only", {"workflow": "postiz_only"}, key="multitel-key-222")
+    ran = _drain_event_queue(paths, load_workflows(paths.workflows))
+
+    assert ran == []
+    assert "authenticated as 'multitel'" in list_failed(paths)[0]["error"]
+
+
+def test_the_named_caller_is_allowed_through(multi_caller) -> None:
+    from jigga.core.config import load_workflows
+    from jigga.runtime.supervisor import _drain_event_queue
+
+    paths, base = multi_caller
+    write_yaml(paths.agents / "worker.yaml",
+               {"id": "worker", "name": "worker", "role": "r", "tools": ["summarize"],
+                "permissions": {"memory": {"scope": "task_only"}}, "memory_scope": "task_only"})
+    write_yaml(paths.workflows / "postiz_only.yaml", {
+        "id": "postiz_only", "name": "postiz_only",
+        "trigger": {"webhook": "postiz_only", "source": "postiz"},
+        "steps": [{"id": "s1", "agent": "worker", "action": "summarize"}]})
+
+    _post(f"{base}/hooks/postiz_only", {"workflow": "postiz_only"}, key="postiz-key-111")
+
+    assert len(_drain_event_queue(paths, load_workflows(paths.workflows))) == 1
+
+
+def test_a_workflow_without_a_source_accepts_any_authenticated_caller(multi_caller) -> None:
+    """`source:` is opt-in tightening, not a new requirement — omitting it must
+    not break an existing hook."""
+    from jigga.core.config import load_workflows
+    from jigga.runtime.supervisor import _drain_event_queue
+
+    paths, base = multi_caller
+    write_yaml(paths.agents / "worker.yaml",
+               {"id": "worker", "name": "worker", "role": "r", "tools": ["summarize"],
+                "permissions": {"memory": {"scope": "task_only"}}, "memory_scope": "task_only"})
+    write_yaml(paths.workflows / "open_hook.yaml", {
+        "id": "open_hook", "name": "open_hook", "trigger": {"webhook": "open_hook"},
+        "steps": [{"id": "s1", "agent": "worker", "action": "summarize"}]})
+
+    _post(f"{base}/hooks/open_hook", {"workflow": "open_hook"}, key="multitel-key-222")
+
+    assert len(_drain_event_queue(paths, load_workflows(paths.workflows))) == 1
+
+
+# --- the provider surface: issuing and revoking keys -----------------------------
+
+
+def _cli(tmp_path: Path, *args) -> tuple[int, str]:
+    import contextlib
+    import io
+
+    from jigga.cli import main
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = main(["--home", str(tmp_path), *args])
+    return code, buf.getvalue()
+
+
+def test_issuing_prints_the_key_once_and_stores_it(tmp_path: Path) -> None:
+    from jigga.runtime.webhook import issued_keys
+
+    paths = init_runtime(tmp_path)
+    code, output = _cli(tmp_path, "webhook", "issue", "postiz")
+
+    assert code == 0
+    keys = issued_keys(paths)
+    assert list(keys) == ["postiz"]
+    assert keys["postiz"] in output, "the caller has to be told the key at least once"
+
+
+def test_the_key_is_never_printed_again(tmp_path: Path) -> None:
+    """A stored credential re-printed on demand turns every shell history and
+    terminal scrollback into a copy of it."""
+    from jigga.runtime.webhook import issued_keys
+
+    paths = init_runtime(tmp_path)
+    _cli(tmp_path, "webhook", "issue", "postiz")
+    secret = issued_keys(paths)["postiz"]
+
+    for command in (("webhook", "list"), ("webhook", "status")):
+        _code, output = _cli(tmp_path, *command)
+        assert secret not in output, f"{command} leaked the stored key"
+
+
+def test_revoking_removes_only_that_caller(tmp_path: Path) -> None:
+    from jigga.runtime.webhook import issued_keys
+
+    paths = init_runtime(tmp_path)
+    _cli(tmp_path, "webhook", "issue", "postiz")
+    _cli(tmp_path, "webhook", "issue", "multitel")
+
+    code, _ = _cli(tmp_path, "webhook", "revoke", "postiz")
+
+    assert code == 0
+    assert list(issued_keys(paths)) == ["multitel"]
+
+
+def test_revoking_an_unknown_caller_is_reported(tmp_path: Path) -> None:
+    init_runtime(tmp_path)
+    code, output = _cli(tmp_path, "webhook", "revoke", "nobody")
+    assert code == 1 and "No key issued" in output
+
+
+def test_a_caller_name_cannot_smuggle_a_scope_separator(tmp_path: Path) -> None:
+    """`@` separates the name from the caller in storage; allowing it in the
+    caller would let one issue collide with another."""
+    init_runtime(tmp_path)
+    code, _ = _cli(tmp_path, "webhook", "issue", "postiz@evil")
+    assert code == 1
+
+
+def test_status_flags_enabled_with_no_keys(tmp_path: Path) -> None:
+    """The exact misconfiguration that leaves the listener refusing to start."""
+    init_runtime(tmp_path)
+    _configure(tmp_path)
+
+    code, output = _cli(tmp_path, "webhook", "status")
+
+    assert code == 1
+    assert "refuses to start unauthenticated" in output
+
+
+def test_status_warns_that_a_shared_key_loses_attribution(tmp_path: Path) -> None:
+    init_runtime(tmp_path)
+    set_secret(tmp_path, SECRET_NAME, "legacy")
+    _cli(tmp_path, "webhook", "issue", "postiz")
+
+    _code, output = _cli(tmp_path, "webhook", "list")
+
+    assert "legacy shared key" in output and "attribution" in output

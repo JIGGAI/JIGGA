@@ -150,11 +150,9 @@ def _drain_event_queue(paths: Any, workflows: dict[str, Any]) -> list[str]:
         if workflow is None:
             event_queue.fail(paths, path, f"no workflow named {workflow_id!r}")
             continue
-        if not _accepts_pushed_events(workflow, record):
-            event_queue.fail(
-                paths, path,
-                f"workflow {workflow_id!r} does not declare a `webhook:` trigger for "
-                f"{record.get('kind')!r} — a pushed event may only run a workflow that opted in")
+        refusal = _accepts_pushed_events(workflow, record)
+        if refusal is not None:
+            event_queue.fail(paths, path, refusal)
             continue
         try:
             run_workflow(paths, workflow_id, trigger=record.get("payload") or {})
@@ -165,10 +163,29 @@ def _drain_event_queue(paths: Any, workflows: dict[str, Any]) -> list[str]:
     return ran
 
 
-def _accepts_pushed_events(workflow: Any, record: dict[str, Any]) -> bool:
-    """Opt-in check: the workflow's `trigger.webhook` must name this event kind."""
-    declared = (getattr(workflow, "trigger", None) or {}).get("webhook")
-    return bool(declared) and str(declared) == str(record.get("kind"))
+def _accepts_pushed_events(workflow: Any, record: dict[str, Any]) -> str | None:
+    """Why this pushed event may not run this workflow, or None if it may.
+
+    Two independent gates:
+
+    - the workflow must declare `trigger.webhook` naming this event *kind*
+    - if it also declares `source:`, the *authenticated caller* must match
+
+    The second is least privilege between third parties: JIGGA issues one key
+    per caller, so a key handed to one integration should not be able to start
+    another integration's workflow. `source` is the identity the listener
+    authenticated, never anything the request claimed about itself.
+    """
+    trigger = getattr(workflow, "trigger", None) or {}
+    declared = trigger.get("webhook")
+    if not declared or str(declared) != str(record.get("kind")):
+        return (f"workflow {getattr(workflow, 'id', '?')!r} does not declare a `webhook:` trigger "
+                f"for {record.get('kind')!r} — a pushed event may only run a workflow that opted in")
+    required = trigger.get("source")
+    if required and str(required) != str(record.get("source")):
+        return (f"workflow {getattr(workflow, 'id', '?')!r} accepts webhook events only from "
+                f"{required!r}, but this one authenticated as {record.get('source')!r}")
+    return None
 
 
 def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:

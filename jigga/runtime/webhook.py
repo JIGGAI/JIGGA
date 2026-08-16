@@ -50,6 +50,14 @@ DEFAULT_BIND = "127.0.0.1"
 # hostile sender cannot exhaust memory.
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
 SECRET_NAME = "webhook_api_key"
+# Per-caller keys live at `webhook_key@<source>`. JIGGA is the provider: it
+# issues one credential per third party, so a caller can be named in the audit
+# log and revoked without touching the others.
+ISSUED_KEY_PREFIX = "webhook_key"
+# The identity recorded when a request authenticates with the legacy single
+# shared key. Named, rather than blank, so "we don't know which caller" is
+# visible in the audit log instead of looking like an ordinary source.
+SHARED_CALLER = "shared"
 
 
 class WebhookNotConfigured(RuntimeError):
@@ -72,12 +80,56 @@ def _int_setting(home: Any, key: str, default: int) -> int:
 
 
 def api_key(paths: JiggaPaths) -> str | None:
-    """The configured bearer key, read outside any capability context so the
-    listener is not subject to an agent's secret grants."""
+    """The shared bearer key, if one is stored.
+
+    Retained as a fallback so an install predating per-source keys keeps
+    working. New installs should issue one key per caller — see `issued_keys`.
+    """
     from jigga.runtime.secrets_broker import get_secret
 
     value = get_secret(paths.home, SECRET_NAME)
     return value.strip() if value else None
+
+
+def issued_keys(paths: JiggaPaths) -> dict[str, str]:
+    """Every per-caller key, as `{source: key}`.
+
+    JIGGA is the *provider* here: it issues a credential to each third party
+    that wants to invoke a hook. Issuing one credential to everybody would mean
+    no way to say which caller authenticated, no way to revoke one without
+    breaking the rest, and a leak anywhere compromising every integration — so
+    keys are stored per source, `webhook_key@<source>`, reusing the `@`
+    convention team-scoped secrets already established.
+    """
+    from jigga.runtime.secrets_broker import get_secret, list_secrets
+
+    prefix = f"{ISSUED_KEY_PREFIX}@"
+    keys: dict[str, str] = {}
+    for name in list_secrets(paths.home):
+        if not name.startswith(prefix):
+            continue
+        source = name[len(prefix):]
+        value = get_secret(paths.home, name)
+        if source and value and value.strip():
+            keys[source] = value.strip()
+    return keys
+
+
+def identify_caller(paths_or_keys: Any, presented: str, shared: str | None = None) -> str | None:
+    """Which caller this bearer token belongs to, or None if it matches nothing.
+
+    Every comparison is constant-time, and *all* of them run — returning early
+    on the first match would leak, through timing, roughly where in the list a
+    given key sits.
+    """
+    keys = paths_or_keys if isinstance(paths_or_keys, dict) else issued_keys(paths_or_keys)
+    matched: str | None = None
+    for source, key in sorted(keys.items()):
+        if hmac.compare_digest(presented, key):
+            matched = source
+    if shared and hmac.compare_digest(presented, shared):
+        matched = matched or SHARED_CALLER
+    return matched
 
 
 def _idempotency_key(headers: Any, body: bytes) -> str:
@@ -99,7 +151,8 @@ class _Handler(BaseHTTPRequestHandler):
     sys_version = ""          # don't advertise the Python version
 
     paths: JiggaPaths
-    expected_key: str
+    expected_key: str | None       # legacy shared key, if one is stored
+    issued: dict[str, str]         # per-caller keys, {source: key}
     max_body: int
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -116,13 +169,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _authorized(self) -> bool:
+    def _caller(self) -> str | None:
+        """The authenticated caller's name, or None.
+
+        Returns *who*, not merely whether: a provider issuing credentials needs
+        to be able to say which third party made a call, revoke one without
+        breaking the others, and let a workflow accept only its own sender.
+        """
         header = self.headers.get("Authorization") or ""
         prefix = "Bearer "
         if not header.startswith(prefix):
-            return False
-        # Constant-time: a plain == leaks the key prefix through timing.
-        return hmac.compare_digest(header[len(prefix):].strip(), self.expected_key)
+            return None
+        return identify_caller(self.issued, header[len(prefix):].strip(), self.expected_key)
 
     def do_POST(self) -> None:  # noqa: N802 — stdlib naming
         kind = self.path.strip("/").split("/")[-1] if self.path.startswith("/hooks/") else ""
@@ -130,7 +188,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(404, {"error": "not found"})
             return
 
-        if not self._authorized():
+        caller = self._caller()
+        if caller is None:
             # Audited without the presented value: recording a guessed key would
             # write someone's near-miss credential into the log.
             append_event(self.paths.logs, "webhook.unauthorized", status="denied",
@@ -162,7 +221,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            result = enqueue(self.paths, source="webhook", kind=kind, payload=payload,
+            # `source` is the AUTHENTICATED caller, never anything the request
+            # claimed about itself — it is what the drain checks a workflow's
+            # `source:` against.
+            result = enqueue(self.paths, source=caller, kind=kind, payload=payload,
                              idempotency_key=_idempotency_key(self.headers, body))
         except QueueFull:
             # Retryable, explicitly: the sender must be told to come back rather
@@ -170,7 +232,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(503, {"error": "queue full, retry later"}, {"Retry-After": "60"})
             return
         except Exception as exc:  # noqa: BLE001 — never leak an internal error to the network
-            append_event(self.paths.logs, "webhook.error", status="error", kind=kind, error=str(exc))
+            append_event(self.paths.logs, "webhook.error", status="error", kind=kind,
+                         source=caller, error=str(exc))
             self._reply(500, {"error": "internal error"})
             return
 
@@ -191,18 +254,20 @@ def build_server(paths: JiggaPaths) -> ThreadingHTTPServer:
     """
     if not is_enabled(paths.home):
         raise WebhookNotConfigured("webhook listener is disabled (set `webhook.enabled: true`)")
-    key = api_key(paths)
-    if not key:
+    shared = api_key(paths)
+    issued = issued_keys(paths)
+    if not shared and not issued:
         raise WebhookNotConfigured(
-            f"no webhook API key stored — run `jigga secrets set {SECRET_NAME}` and paste the "
-            "value at the prompt (it takes the name only, so the key stays out of shell "
-            "history). The listener will not start unauthenticated.")
+            f"no webhook keys issued — run `jigga webhook issue <caller>` to mint one per third "
+            f"party (or `jigga secrets set {SECRET_NAME}` for a single shared key). "
+            "The listener will not start unauthenticated.")
 
     bind = str(settings(paths.home).get("bind", DEFAULT_BIND))
     port = _int_setting(paths.home, "port", DEFAULT_PORT)
     handler = type("_BoundHandler", (_Handler,), {
         "paths": paths,
-        "expected_key": key,
+        "expected_key": shared,
+        "issued": issued,
         "max_body": _int_setting(paths.home, "max_body_bytes", DEFAULT_MAX_BODY_BYTES),
     })
     server = ThreadingHTTPServer((bind, port), handler)
@@ -230,5 +295,7 @@ def serve_in_background(paths: JiggaPaths) -> tuple[ThreadingHTTPServer, threadi
     thread = threading.Thread(target=server.serve_forever, name="jigga-webhook", daemon=True)
     thread.start()
     host, port = server.server_address[:2]
-    append_event(paths.logs, "webhook.listening", bind=str(host), port=port)
+    append_event(paths.logs, "webhook.listening", bind=str(host), port=port,
+                 callers=sorted(issued_keys(paths)),
+                 shared_key=bool(api_key(paths)))
     return server, thread
