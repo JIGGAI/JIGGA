@@ -209,7 +209,7 @@ def install_service(
     python: str | None = None,
     dry_run: bool = False,
     system: bool = False,
-    run_fn: RunFn = _default_run,
+    run_fn: RunFn | None = None,
 ) -> dict:
     """Write the supervisor service unit and register it so it starts now and on
     boot/login. `system=True` installs a system-level unit (systemd
@@ -222,6 +222,7 @@ def install_service(
     unsupported case. Never raises on a control-tool failure — surfaces it in
     the result so the caller can show the unit path for manual loading.
     """
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     py = python or sys.executable
     argv = service_argv(py, interval_seconds)
@@ -302,11 +303,12 @@ def _run_control(commands: list, run_fn: RunFn, *, optional_first: bool = False)
     return entries, ok_all
 
 
-def start_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
+def start_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn | None = None) -> dict:
     """Start an INSTALLED-but-stopped service without rewriting its unit — so a
     custom interval is preserved (unlike `install_service`, which re-renders).
     Used by `doctor --fix` and `jigga service start`. On launchd a bootstrap is
     attempted first so a previously `stop`ped (booted-out) agent re-loads."""
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
@@ -326,11 +328,12 @@ def start_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _d
     return result
 
 
-def stop_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
+def stop_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn | None = None) -> dict:
     """Stop the running service WITHOUT removing its unit — it still starts on
     the next login/boot (use `uninstall_service` to remove it). On launchd this
     boots the agent out (a plain kill would respawn under KeepAlive); the plist
     stays so `start_service` / login re-loads it."""
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
@@ -349,10 +352,11 @@ def uninstall_service(
     *,
     dry_run: bool = False,
     system: bool = False,
-    run_fn: RunFn = _default_run,
+    run_fn: RunFn | None = None,
 ) -> dict:
     """Stop and remove the service (no-op-safe if it was never installed).
     `system=True` targets the system-level unit (needs root)."""
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "dry_run": dry_run, "system": system, "commands": []}
     if backend == "launchd":
@@ -385,9 +389,10 @@ def uninstall_service(
     return result
 
 
-def status_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn = _default_run) -> dict:
+def status_service(paths: JiggaPaths, *, system: bool = False, run_fn: RunFn | None = None) -> dict:
     """Report whether the service is installed (unit file present) and what the
     OS reports for its run state. `system=True` inspects the system-level unit."""
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "system": system}
     if backend == "launchd":
@@ -499,9 +504,10 @@ WantedBy=default.target
 
 def install_app_service(name: str, argv: list[str], *, cwd: Path, env: dict[str, str],
                         logs_dir: Path, dry_run: bool = False,
-                        run_fn: RunFn = _default_run) -> dict:
+                        run_fn: RunFn | None = None) -> dict:
     """Register a plugin as an always-on user service (same contract/result
     shape as the supervisor's install_service)."""
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "argv": argv, "dry_run": dry_run, "commands": []}
     if backend == "unsupported":
@@ -554,7 +560,8 @@ def install_app_service(name: str, argv: list[str], *, cwd: Path, env: dict[str,
     return result
 
 
-def uninstall_app_service(name: str, *, dry_run: bool = False, run_fn: RunFn = _default_run) -> dict:
+def uninstall_app_service(name: str, *, dry_run: bool = False, run_fn: RunFn | None = None) -> dict:
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "dry_run": dry_run, "commands": []}
     if backend == "launchd":
@@ -585,7 +592,8 @@ def uninstall_app_service(name: str, *, dry_run: bool = False, run_fn: RunFn = _
     return result
 
 
-def status_app_service(name: str, *, run_fn: RunFn = _default_run) -> dict:
+def status_app_service(name: str, *, run_fn: RunFn | None = None) -> dict:
+    run_fn = run_fn or _default_run
     backend = detect_backend()
     result: dict = {"backend": backend, "name": name}
     if backend == "launchd":

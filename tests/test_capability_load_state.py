@@ -195,10 +195,20 @@ def test_doctor_is_green_on_a_clean_runtime(tmp_path: Path) -> None:
     assert "none pending or broken" in check.detail
 
 
-def test_the_capabilities_check_runs_as_part_of_the_report(tmp_path: Path) -> None:
+def test_the_capabilities_check_runs_as_part_of_the_report(tmp_path: Path, monkeypatch) -> None:
     paths = init_runtime(tmp_path)
     (paths.capabilities / "broken").mkdir(parents=True, exist_ok=True)
     (paths.capabilities / "broken" / "manifest.yaml").write_text("[\n")
+
+    # The full report includes the service check, which asks the OS whether the
+    # supervisor unit is active. Answer for it: otherwise this assertion depends
+    # on whether the machine running the tests happens to have JIGGA installed.
+    import subprocess
+
+    from jigga.runtime import service
+
+    monkeypatch.setattr(service, "_default_run", lambda argv: subprocess.CompletedProcess(
+        args=argv, returncode=1, stdout="inactive\n", stderr=""))
 
     report = doctor.run_checks(paths, probe=False)
 
