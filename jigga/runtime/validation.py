@@ -117,6 +117,25 @@ def validate_team(team: TeamConfig) -> list[str]:
     return problems
 
 
+def _validate_agent_team(agent: AgentConfig, teams: dict[str, TeamConfig]) -> list[str]:
+    """An agent's `team:` is descriptive — the roster decides membership — so a
+    disagreement is a warning, not an error. It still needs saying: the field is
+    read by humans and by the UI, and a stale one names a team the agent left.
+    """
+    declared = (getattr(agent, "team", None) or "").strip()
+    if not declared:
+        return []
+    team = teams.get(declared)
+    if team is None:
+        return [f"warning: agent {agent.id}: declares team {declared!r}, which does not exist"]
+    from jigga.runtime.workspaces import members
+
+    if agent.id not in members(team):
+        return [f"warning: agent {agent.id}: declares team {declared!r} but is not on its roster "
+                "(the roster decides — this field is descriptive)"]
+    return []
+
+
 def validate_configs(
     agents: dict[str, AgentConfig],
     teams: dict[str, TeamConfig],
@@ -128,6 +147,7 @@ def validate_configs(
     problems: list[str] = []
     for agent in agents.values():
         problems.extend(validate_agent(agent))
+        problems.extend(_validate_agent_team(agent, teams))
     for team in teams.values():
         problems.extend(validate_team(team))
     for workflow in (workflows or {}).values():

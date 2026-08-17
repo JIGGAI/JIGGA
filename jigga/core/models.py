@@ -35,6 +35,13 @@ class AgentConfig:
     role: str
     description: str | None = None
     model: str | None = None
+    # The team this agent was installed onto. DESCRIPTIVE, not authoritative:
+    # membership is the team roster (`find_agent_teams` scans team yamls), and
+    # nothing about scheduling or workspace resolution reads this field. It is
+    # here so an agent's own file says who it works for — `jigga agents get`
+    # used to answer `team: null` for an agent that was plainly on a team.
+    # `jigga validate` warns when this disagrees with the roster.
+    team: str | None = None
     memory_scope: str | None = None
     permission_mode: str | None = None
     tools: list[str] = field(default_factory=list)
