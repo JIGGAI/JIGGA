@@ -37,6 +37,15 @@ jigga = "jigga.cli:main"
 line-length = 110
 target-version = "py311"
 
+# State the rule set instead of inheriting whatever the installed ruff defaults
+# to. These four are what the project has always enforced (ruff's classic
+# default) — but the default is a moving target: 0.16 turned on isort, pyupgrade,
+# flake8-datetimez, tryceratops and more, which took a clean tree to 289
+# findings without a line of code changing. Lint results should change when we
+# decide they change. Widening this list is a deliberate PR with the fixes in it.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

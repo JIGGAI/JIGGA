@@ -39,6 +39,13 @@ Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
   Maintainers can bypass it with the `no-tests-ok` label for docs-only
   refactors, pure renames, and reverts
 
+`ruff` is pinned to one version in both CI and `make dev`, and the enabled
+rules are listed in `pyproject.toml` under `[tool.ruff.lint]`. An unpinned
+linter changes the build's verdict when a new version ships with no commit to
+blame — ruff 0.16 turned on isort, pyupgrade, and flake8-datetimez by default,
+which took a clean tree to 289 findings. Adopting more rules is welcome, as its
+own PR with the fixes in it.
+
 ## Design Rules
 
 1. Prefer local-first behavior.
