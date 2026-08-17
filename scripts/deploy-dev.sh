@@ -198,6 +198,31 @@ deploy_core() {
   # Restarting it is the deploy; #205 made that safe to do from a script.
   log "core: restarting the supervisor"
   run systemctl --user restart jigga-supervisor.service
+  verify_supervisor_source
+}
+
+# Does the supervisor actually run the code we just deployed?
+#
+# The unit pins an interpreter, and an interpreter pins a checkout — a venv
+# installed editable from a DIFFERENT tree keeps loading that tree no matter
+# what this script pulls. Found live: the unit pointed at a dev checkout's
+# venv, so every "core deployed, supervisor restarted" line was true and
+# meaningless. A deploy that cannot fail loudly is worse than no deploy.
+verify_supervisor_source() {
+  local unit="$UNIT_DIR/jigga-supervisor.service"
+  [[ -f "$unit" ]] || return 0
+  local interpreter loaded
+  interpreter=$(sed -n 's/^ExecStart=//p' "$unit" | head -1 | awk '{print $1}')
+  [[ -x "$interpreter" ]] || return 0
+  # From `/`, because a python invoked inside a checkout puts that checkout on
+  # sys.path and reports it regardless of what the venv installed.
+  loaded=$(cd / && "$interpreter" -c \
+    'import jigga, os; print(os.path.dirname(os.path.dirname(jigga.__file__)))' 2>/dev/null) || return 0
+  if [[ "$(readlink -f "$loaded")" != "$(readlink -f "$CORE_REPO")" ]]; then
+    log "core: WARNING — the supervisor loads jigga from $loaded, not $CORE_REPO."
+    log "core:   Restarting it deploys nothing. Fix once with:"
+    log "core:   $CORE_REPO/.venv/bin/jigga service install --interval-seconds 60"
+  fi
 }
 
 deploy_view() {
