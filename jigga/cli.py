@@ -928,6 +928,27 @@ def build_parser() -> argparse.ArgumentParser:
     team_lanes = team_sub.add_parser("lanes", help="Show a team's ticket-board lane vocabulary")
     team_lanes.add_argument("team_id")
     team_lanes.add_argument("--json", action="store_true", dest="json_output")
+    team_memory = team_sub.add_parser(
+        "memory", help="Read and write a team's durable knowledge (shared-context/memory/)")
+    team_memory_sub = team_memory.add_subparsers(dest="team_memory_command", required=True)
+    team_memory_list = team_memory_sub.add_parser("list", help="Entries in a team's memory, oldest first")
+    team_memory_list.add_argument("team_id")
+    team_memory_list.add_argument("--pinned", action="store_true", help="Only the pinned (high-signal) subset")
+    team_memory_list.add_argument("--limit", type=int, help="Keep only the most recent N")
+    team_memory_list.add_argument("--json", action="store_true", dest="json_output")
+    team_memory_add = team_memory_sub.add_parser("add", help="Append a durable entry to team memory")
+    team_memory_add.add_argument("team_id")
+    team_memory_add.add_argument("--text", required=True)
+    team_memory_add.add_argument("--type", dest="memory_type", default="fact",
+                                 help="fact | decision | preference | runbook | … (free-form)")
+    team_memory_add.add_argument("--tag", dest="tags", action="append", default=[],
+                                 help="Repeatable")
+    team_memory_add.add_argument("--json", action="store_true", dest="json_output")
+    team_memory_pin = team_memory_sub.add_parser(
+        "pin", help="Escalate an entry into the pinned subset (id or id prefix)")
+    team_memory_pin.add_argument("team_id")
+    team_memory_pin.add_argument("entry_id")
+    team_memory_pin.add_argument("--json", action="store_true", dest="json_output")
     team_init = team_sub.add_parser("init", help="Scaffold a team's shared workspace (notes/ + shared-context/ + roles/)")
     team_init.add_argument("team_id")
     team_init.add_argument("--json", action="store_true", dest="json_output")
@@ -1765,6 +1786,80 @@ def _workspace_listing(root: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _team_memory_cmd(paths: Any, args: argparse.Namespace) -> int:
+    """`team memory list|add|pin` — the durable knowledge in a team's workspace.
+
+    Agents already write here through `memory.remember`; this is the same store
+    from the other side, so a human (or a UI shelling the CLI) can read what the
+    team knows and add to it without hand-editing a jsonl.
+    """
+    from jigga.runtime.audit import append_event
+    from jigga.runtime.team_memory import (
+        append_team_memory,
+        pin_entry,
+        read_pinned,
+        read_team_memory,
+    )
+    from jigga.runtime.workspaces import workspace_dir
+
+    team_id = args.team_id
+    root = workspace_dir(paths.home, team_id)
+    if not root.exists():
+        # Never scaffold a workspace as a side effect: a typo'd team id would
+        # otherwise leave a ghost team behind with the memory written into it.
+        message = f"No workspace for {team_id!r}. Run: jigga team init {team_id}"
+        print_json({"team": team_id, "error": message}) if args.json_output else print(message)
+        return 1
+
+    if args.team_memory_command == "list":
+        entries = (read_pinned(paths.home, team_id) if args.pinned
+                   else read_team_memory(paths.home, team_id))
+        if args.limit is not None and args.limit >= 0:
+            entries = entries[-args.limit:] if args.limit else []
+        if args.json_output:
+            print_json(entries)
+        elif not entries:
+            print(f"No {'pinned ' if args.pinned else ''}memory for {team_id!r}.")
+        else:
+            for entry in entries:
+                tags = f"  [{', '.join(entry.get('tags') or [])}]" if entry.get("tags") else ""
+                print(f"{entry.get('id', '?'):20} {str(entry.get('time', ''))[:19]}  "
+                      f"{entry.get('type', 'fact'):10} {entry.get('text', '')}{tags}")
+        return 0
+
+    if args.team_memory_command == "add":
+        text = args.text.strip()
+        if not text:
+            print("! Nothing to remember: --text is empty")
+            return 1
+        entry = append_team_memory(paths.home, team_id, text=text, type=args.memory_type,
+                                   tags=args.tags, source={"actor": "user", "via": "cli"})
+        append_event(paths.logs, "team.memory_added", team=team_id, entry=entry["id"],
+                     memory_type=args.memory_type)
+        if args.json_output:
+            print_json(entry)
+        else:
+            print(f"✓ remembered {entry['id']} for {team_id!r}")
+        return 0
+
+    if args.team_memory_command == "pin":
+        already = any(str(e.get("id", "")).startswith(args.entry_id)
+                      for e in read_pinned(paths.home, team_id))
+        entry = pin_entry(paths.home, team_id, args.entry_id)
+        if entry is None:
+            message = f"No memory entry matching {args.entry_id!r} in {team_id!r}."
+            print_json({"team": team_id, "error": message}) if args.json_output else print(message)
+            return 1
+        if not already:
+            append_event(paths.logs, "team.memory_pinned", team=team_id, entry=entry["id"])
+        if args.json_output:
+            print_json({**entry, "already_pinned": already})
+        else:
+            print(f"{'• already pinned' if already else '✓ pinned'} {entry['id']}")
+        return 0
+    return 0
+
+
 def _cmd_workflow(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.workflow_command == "plan":
@@ -2544,6 +2639,8 @@ def _cmd_team(args: argparse.Namespace) -> int:
             print(f"Members: {', '.join(summary['members']) or '(none)'}")
             print(f"Created: {', '.join(summary['created']) or '(already scaffolded)'}")
         return 0
+    if args.team_command == "memory":
+        return _team_memory_cmd(paths, args)
     if args.team_command == "workspace":
         root = workspace_dir(paths.home, args.team_id)
         if not root.exists():
