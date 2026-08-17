@@ -264,6 +264,7 @@ jigga service install|status|stop|start|uninstall [--system]  # supervisor as a 
 jigga model setup|login|status     # configure / authenticate the model provider
 jigga channels setup|status        # connect a chat channel (Telegram)
 jigga memory search <query>        # search scoped memory
+jigga team memory list|add|pin <team>   # read/curate a team's durable knowledge
 jigga cost [--since 7d]            # per-agent model spend + budgets
 jigga trace <id> | audit | logs    # observability
 jigga approvals list|approve <code># human-in-the-loop

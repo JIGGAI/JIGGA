@@ -55,11 +55,18 @@ def read_pinned(home: Path, team_id: str) -> list[dict[str, Any]]:
 
 def pin_entry(home: Path, team_id: str, entry_id: str) -> dict[str, Any] | None:
     """Escalate an entry from team.jsonl into pinned.jsonl (high-signal). Matches
-    by exact id or id prefix."""
+    by exact id or id prefix.
+
+    Idempotent: pinning something already pinned returns it without appending a
+    second copy. `pinned.jsonl` is the curated high-signal subset an agent's
+    context pack reads, so a duplicate there is the same fact twice in a prompt.
+    """
+    already = {str(entry.get("id", "")) for entry in read_pinned(home, team_id)}
     for entry in read_team_memory(home, team_id):
         eid = str(entry.get("id", ""))
         if eid == entry_id or eid.startswith(entry_id):
-            append_jsonl(pinned_path(home, team_id), {**entry, "pinned_at": now_iso()})
+            if eid not in already:
+                append_jsonl(pinned_path(home, team_id), {**entry, "pinned_at": now_iso()})
             return entry
     return None
 
