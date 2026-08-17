@@ -140,6 +140,9 @@ def _ingest_once(
             continue
         adapter = ADAPTERS[name]
         polled.append(name)
+        # The poll is a network WAIT (Telegram long-polls for 30s), not
+        # execution — deliberately outside the lock, or the runtime would look
+        # busy to everyone else for the whole time it sat listening.
         result = adapter.poll(home, long_poll_seconds=long_poll_seconds)
         if result.get("status") and result["status"] != "ok":
             append_event(logs_dir, "channel.poll_skipped", status="ask", channel=name,
@@ -246,16 +249,29 @@ def _ingest_once(
                     affected_agents.add(assignee)
 
     runs: list[dict[str, Any]] = []
-    if process_agents:
+    if process_agents and affected_agents:
         from jigga.runtime.disabled import disabled_agent_ids
+        from jigga.runtime.execution_lock import execution_lock
 
-        disabled = disabled_agent_ids(home, home / "teams")
-        for agent_id in sorted(affected_agents):
-            if agent_id in disabled:
-                append_event(logs_dir, "channel.agent_disabled", status="ask", agent=agent_id)
-                continue
-            runs.append(run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id))
-        _notify_failed_channel_tasks(home, logs_dir, tasks_dir, created)
+        # Running agents is the part that must not overlap another process:
+        # claiming a task is a read-modify-write, so two runners would both
+        # take it. Non-blocking, and skipping loses nothing — the messages are
+        # already durable TASKS by this point, so whoever holds the lock (or
+        # the next tick) runs them. Blocking here would instead let one wedged
+        # holder stall the supervisor indefinitely.
+        with execution_lock(home) as acquired:
+            if not acquired:
+                append_event(logs_dir, "channel.run_deferred", status="ask",
+                             agents=sorted(affected_agents),
+                             reason="another process is running agents for this home")
+                return {"polled": polled, "created": created, "runs": runs}
+            disabled = disabled_agent_ids(home, home / "teams")
+            for agent_id in sorted(affected_agents):
+                if agent_id in disabled:
+                    append_event(logs_dir, "channel.agent_disabled", status="ask", agent=agent_id)
+                    continue
+                runs.append(run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id))
+            _notify_failed_channel_tasks(home, logs_dir, tasks_dir, created)
 
     return {"polled": polled, "created": created, "runs": runs}
 
