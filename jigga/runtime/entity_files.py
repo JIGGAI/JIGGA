@@ -21,19 +21,29 @@ from typing import Any
 from jigga.runtime.audit import append_event
 from jigga.runtime.workspaces import workspace_dir
 
-AGENT_FILES: list[tuple[str, bool]] = [
-    ("SOUL.md", True),      # persona — who the agent is
-    ("AGENTS.md", True),    # charter + guardrails
-    ("MEMORY.md", True),    # the agent's own curated notes
-    ("TOOLS.md", False),    # optional usage notes (grants stay in yaml)
-    ("USER.md", False),     # optional per-agent principal override
+# (name, required, generated). `generated` files are rendered into the context
+# pack at run time from live state — AGENTS.md from the current team roster,
+# TOOLS.md from the agent's current grants — so scaffolding deliberately does
+# NOT write them (`workspaces.py`: an authored starter would freeze a copy that
+# stops being true). A file on disk OVERRIDES the generated layer, which is how
+# you give one agent a hand-written charter.
+#
+# They used to be listed as required, so `jigga agents files` reported AGENTS.md
+# "missing and required" on every team agent — the checklist contradicting the
+# design and crying wolf on a runtime that was working exactly as intended.
+AGENT_FILES: list[tuple[str, bool, bool]] = [
+    ("SOUL.md", True, False),      # persona — who the agent is
+    ("AGENTS.md", False, True),    # charter + roster — generated unless authored
+    ("MEMORY.md", True, False),    # the agent's own curated notes
+    ("TOOLS.md", False, True),     # usage policy — generated unless authored
+    ("USER.md", False, False),     # optional per-agent principal override
 ]
 
-TEAM_FILES: list[tuple[str, bool]] = [
-    ("TEAM.md", True),
-    ("notes/plan.md", True),
-    ("notes/status.md", True),
-    ("shared-context/priorities.md", True),
+TEAM_FILES: list[tuple[str, bool, bool]] = [
+    ("TEAM.md", True, False),
+    ("notes/plan.md", True, False),
+    ("notes/status.md", True, False),
+    ("shared-context/priorities.md", True, False),
 ]
 
 
@@ -45,10 +55,11 @@ def _confined(root: Path, name: str) -> Path:
     return target
 
 
-def _listing(root: Path, manifest: list[tuple[str, bool]]) -> list[dict[str, Any]]:
+def _listing(root: Path, manifest: list[tuple[str, bool, bool]]) -> list[dict[str, Any]]:
     return [
-        {"name": name, "required": required, "missing": not (root / name).exists()}
-        for name, required in manifest
+        {"name": name, "required": required, "generated": generated,
+         "missing": not (root / name).exists()}
+        for name, required, generated in manifest
     ]
 
 

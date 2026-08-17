@@ -85,6 +85,7 @@ runtime picks it up, and the workspace is created on first run (see §4).
 id: acme-lead
 name: Acme Lead
 role: Distills the product into a sharp launch message.   # the system prompt
+team: acme-team                   # where it was installed (see below)
 memory_scope: task_only
 model: profile:default            # profile:default | gpt-5.5 | profile:<name>
 permission_mode: ask              # plan_only | ask | accept_edits | autonomous | locked_down
@@ -98,6 +99,13 @@ wake:                             # optional scheduled work-loops (see §5)
       event: triage
       message: "Triage loop: review plan/priorities, update notes/status.md."
 ```
+
+`team:` is written when the agent is installed onto a team, and is
+**descriptive**: the team's roster decides membership. Nothing about
+scheduling, routing, or workspace resolution reads this field — it is there so
+an agent's own file says who it works for, instead of you scanning every team
+yaml to find out. `jigga validate` warns if the two disagree. An agent with no
+team leaves it unset; it still gets a workspace of its own, named after it.
 
 ### Team (`~/.jigga/teams/<id>.yaml`)
 ```yaml

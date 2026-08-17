@@ -224,13 +224,20 @@ def defines_agent(spec: dict[str, Any]) -> bool:
 
 
 def _finalize_agent_doc(agent_id: str, definition: dict[str, Any],
-                        ctx: dict[str, str]) -> dict[str, Any]:
+                        ctx: dict[str, str], *, team_id: str | None = None) -> dict[str, Any]:
     """Template the `agent:` definition (full agent-yaml passthrough — every
     AgentConfig field), apply scaffold defaults, and fold `cronJobs` sugar into
     `wake.schedules` (merged with any `wake:` the definition already carries —
     events, accepts_agent_requests, explicit schedules)."""
     doc: dict[str, Any] = {"id": agent_id}
     doc.update(_template({k: v for k, v in definition.items() if k != "cronJobs"}, ctx))
+    if team_id:
+        # Where it actually landed wins over anything the recipe declared: the
+        # same recipe scaffolds under `--id other_team`, and a `team:` frozen
+        # into the recipe would then name a team this agent is not on.
+        # Not passed on the solo-agent path, whose ctx sets teamId to the agent
+        # id — a team-less agent has no team, it has a workspace of its own.
+        doc["team"] = team_id
     doc.setdefault("memory_scope", "task_only")
     doc.setdefault("model", "profile:default")
     doc.setdefault("tools", [])
@@ -594,7 +601,7 @@ def scaffold_team(
         definition = dict(spec["agent"])
         definition.setdefault("name", role.title())
         definition.setdefault("role", role)
-        agent_doc = _finalize_agent_doc(agent_id, definition, ctx)
+        agent_doc = _finalize_agent_doc(agent_id, definition, ctx, team_id=team_id)
         path = agents_dir / f"{agent_id}.yaml"
         outcome = _sync_write(path, _yaml_text(agent_doc), rel=f"agents/{agent_id}.yaml",
                               recorded=recorded, overwrite=overwrite)
