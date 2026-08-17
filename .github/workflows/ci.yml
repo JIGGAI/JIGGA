@@ -1,0 +1,119 @@
+name: CI
+
+# Every PR runs the suite on each Python JIGGA claims to support, and proves
+# the built wheel still installs and finds its bundled recipes. Before this,
+# `publish.yml` was the only workflow — so packaging broke at release time and
+# nothing ran the tests on a pull request at all.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  require-tests:
+    # Runtime change without a test change is the thing this catches. Bypass
+    # for a maintainer with the `no-tests-ok` label (see the script).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the gate diffs base..head
+
+      - name: Require tests when jigga/ changes
+        env:
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels) }}
+        run: ./scripts/ci/require-tests-for-runtime-changes.sh
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # "fails only on 3.11" is the useful signal, not noise
+      matrix:
+        # Every version pyproject advertises (requires-python >= 3.11 and the
+        # classifiers). 3.11 is the floor a fresh `pipx install jigga` may get.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (editable) + dev toolchain
+        # ruff is pinned: an unpinned linter changes the build's verdict when a
+        # new version ships, with no commit to blame. The rule set is also
+        # stated in pyproject, so a bump is a visible, deliberate decision.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest pytest-cov "ruff==0.16.3"
+
+      - name: Test with coverage
+        # 88% at the time this landed. The floor is a collapse detector — it is
+        # not a target to grind upward, and the uncovered remainder is mostly
+        # optional connectors (personal_lora, calendar, imap).
+        run: pytest -q --cov=jigga --cov-report=term-missing --cov-report=xml --cov-fail-under=85
+
+      - name: Lint
+        # After the tests, and `always()`, so one red run shows everything that
+        # is wrong rather than hiding the suite behind a style finding.
+        if: always()
+        run: ruff check .
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  package:
+    # `publish.yml` only builds on a published release, so until now a broken
+    # wheel was discovered while cutting one.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: A pip-installed JIGGA still finds its bundled recipes
+        # `examples/` is force-included into the wheel as `jigga/examples` and
+        # read at runtime via examples_dir(). If that mapping ever breaks, the
+        # package installs fine and then ships with no recipes at all — which
+        # is invisible until someone runs `jigga init --examples`.
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/jigga --home /tmp/smoke-home init --examples
+          /tmp/smoke/bin/jigga --home /tmp/smoke-home recipes list --json > /tmp/recipes.json
+          python - <<'PY'
+          import json, pathlib
+          recipes = json.loads(pathlib.Path("/tmp/recipes.json").read_text())
+          bundled = [r for r in recipes if r.get("bundled")]
+          assert bundled, "the installed wheel shipped no bundled recipes"
+          assert all("site-packages" in r["source"] for r in bundled), \
+              f"bundled recipes resolved outside the installed package: {bundled[0]['source']}"
+          print(f"ok — {len(bundled)} bundled recipes ship inside the wheel")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
