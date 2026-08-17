@@ -23,6 +23,12 @@ procedure, planned and permission-gated like the rest of JIGGA (agents-as-code).
 | **Propose** | `jigga workflow suggest` | JIGGA reads your audit log and **suggests workflows from recurring patterns**. |
 | **Apply** | `jigga workflow apply <suggestion-id> --approve` | Materializes a suggestion into a real workflow file. |
 
+A workflow is a file, so it is also readable and writable in place:
+`jigga workflow cat <id>` prints its yaml and `jigga workflow save <id>` writes
+it back. A save is validated first — the same checks `jigga validate` runs — and
+rejected rather than written, because the supervisor picks a workflow up on its
+next tick and a broken file is a broken runtime.
+
 ---
 
 ## 2. Authoring a workflow
@@ -239,6 +245,9 @@ for authoring details and semantics.
 ## 7. Command reference
 
 ```bash
+jigga workflow list                          # installed workflows (id, name, status)
+jigga workflow cat  <id>                     # print its raw yaml
+jigga workflow save <id> [--content ...]     # write it back (validated, audited; stdin when omitted)
 jigga workflow plan <id>                     # review steps + per-step policy
 jigga workflow run  <id> [--json]            # execute now
 jigga workflow runs [--active] [<id>]        # v2 runs + node-state counts

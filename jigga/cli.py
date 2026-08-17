@@ -568,6 +568,13 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_suggestions.add_argument("--json", action="store_true", dest="json_output")
     workflow_list = workflow_sub.add_parser("list", help="List installed workflows")
     workflow_list.add_argument("--json", action="store_true", dest="json_output")
+    workflow_cat = workflow_sub.add_parser("cat", help="Print a workflow's raw yaml")
+    workflow_cat.add_argument("workflow_id")
+    workflow_save = workflow_sub.add_parser(
+        "save", help="Write a workflow's yaml (validated + audited; rolls back on invalid)")
+    workflow_save.add_argument("workflow_id")
+    workflow_save.add_argument("--content", help="New yaml (set); reads stdin when omitted")
+    workflow_save.add_argument("--json", action="store_true", dest="json_output")
     workflow_apply = workflow_sub.add_parser("apply")
     workflow_apply.add_argument("suggestion_id")
     workflow_apply.add_argument("--approve", action="store_true")
@@ -1650,6 +1657,87 @@ def _cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _workflow_file(paths: Any, workflow_id: str) -> Path | None:
+    """The yaml a workflow was loaded from, or None.
+
+    Prefers `<id>.yaml` on disk, then falls back to whatever file actually
+    declares that `id:` — a workflow is keyed by its document id, which need
+    not match its filename (recipes write `<id>.yaml`, hand-made files may not).
+    """
+    for suffix in (".yaml", ".yml"):
+        candidate = paths.workflows / f"{workflow_id}{suffix}"
+        if candidate.exists():
+            return candidate
+    workflow = load_workflows(paths.workflows).get(workflow_id)
+    return Path(workflow.source) if workflow and workflow.source else None
+
+
+def _workflow_problems(workflow_id: str, content: str) -> list[str]:
+    """Why this yaml would not load/run as `workflow_id` (empty = fine).
+
+    Runs the SAME checks `jigga validate` runs — one validation path, so the
+    editor cannot save something the runtime would later reject.
+    """
+    import yaml
+
+    from jigga.core.models import WorkflowConfig
+    from jigga.runtime.validation import is_error, validate_configs
+
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        return [f"not valid yaml: {exc}"]
+    if not isinstance(data, dict):
+        return ["a workflow must be a yaml mapping"]
+    declared = str(data.get("id") or "").strip()
+    if not declared:
+        return ["missing `id:`"]
+    if declared != workflow_id:
+        # Saving a doc whose id disagrees with its filename orphans it: the
+        # loader keys by the id inside, so `workflow cat <filename>` and the
+        # runtime would disagree about which workflow this is.
+        return [f"`id: {declared}` does not match {workflow_id!r} — rename one or the other"]
+    try:
+        workflow = WorkflowConfig.from_dict(data)
+    except (TypeError, ValueError) as exc:
+        return [f"not a valid workflow: {exc}"]
+    return [p for p in validate_configs({}, {}, {workflow.id: workflow}) if is_error(p)]
+
+
+def _workflow_save(paths: Any, args: argparse.Namespace) -> int:
+    """Write a workflow's yaml, validated and audited, rolling back on invalid."""
+    import sys as _sys
+
+    from jigga.runtime.audit import append_event
+
+    workflow_id = args.workflow_id
+    if not workflow_id or "/" in workflow_id or workflow_id.startswith("."):
+        print(f"! Invalid workflow id: {workflow_id!r}")
+        return 1
+    content = args.content if args.content is not None else _sys.stdin.read()
+
+    problems = _workflow_problems(workflow_id, content)
+    if problems:
+        # Validated BEFORE the write: unlike a recipe (an inert template), a
+        # broken workflow file is picked up by the supervisor on its next tick.
+        print(f"! Not saved — {problems[0]}")
+        for extra in problems[1:]:
+            print(f"  {extra}")
+        return 1
+
+    target = _workflow_file(paths, workflow_id) or (paths.workflows / f"{workflow_id}.yaml")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    created = not target.exists()
+    target.write_text(content, encoding="utf-8")
+    append_event(paths.logs, "workflow.saved", workflow=workflow_id, path=str(target),
+                 created=created)
+    if args.json_output:
+        print_json({"workflow": workflow_id, "path": str(target), "created": created})
+    else:
+        print(f"✓ {'created' if created else 'saved'} {target}")
+    return 0
+
+
 def _cmd_workflow(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.workflow_command == "plan":
@@ -1705,6 +1793,14 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
         workflows = [{"id": wf.id, "name": wf.name, "status": getattr(wf, "status", None)}
                      for wf in load_workflows(paths.workflows).values()]
         print_json(workflows)
+    elif args.workflow_command == "cat":
+        path = _workflow_file(paths, args.workflow_id)
+        if path is None:
+            print(f"Workflow not found: {args.workflow_id!r}.")
+            return 1
+        print(path.read_text(encoding="utf-8"), end="")
+    elif args.workflow_command == "save":
+        return _workflow_save(paths, args)
     elif args.workflow_command == "apply":
         from jigga.core.config import resolve_default_agent
 
