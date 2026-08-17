@@ -253,6 +253,29 @@ def test_cli_service_stop_start(tmp_path, monkeypatch):
     assert main(["--home", str(tmp_path), "service", "start"]) == 0
 
 
+def test_the_runner_is_resolved_at_call_time(tmp_path, monkeypatch):
+    """Patching `_default_run` must actually replace the runner.
+
+    It did not: `run_fn: RunFn = _default_run` bound the module function into
+    the signature at import time, so every caller that omitted `run_fn` — the
+    whole CLI — reached the ORIGINAL no matter what a test patched. The test
+    above looked isolated and was really running `systemctl --user stop
+    jigga-supervisor.service` against the developer's own machine, passing
+    because the live service genuinely stopped.
+    """
+    paths = get_paths(tmp_path / "home")
+    monkeypatch.setattr(service, "detect_backend", lambda: "systemd")
+    seen = []
+
+    def fake(argv):
+        seen.append(argv)
+        return _proc(argv, 0)
+
+    monkeypatch.setattr(service, "_default_run", fake)
+    service.stop_service(paths)      # no run_fn — the CLI's exact call shape
+    assert seen == [["systemctl", "--user", "stop", service.SYSTEMD_UNIT]]
+
+
 # ---- --system (system-level units) -----------------------------------------
 
 def test_systemd_system_unit_runs_as_user_and_multi_user_target(tmp_path):
