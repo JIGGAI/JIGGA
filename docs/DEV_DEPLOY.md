@@ -1,13 +1,45 @@
 # Dev auto-deploy
 
-On the dev box, whatever is on `main` is what runs. Merging is the deploy.
+On the dev box, whatever ref a target is pinned to is what runs. Unpinned means
+`main`, so merging is the deploy.
 
 ```bash
 ./scripts/deploy-dev.sh --install-timer   # every 2 minutes from now on
+./scripts/deploy-dev.sh status            # what is running, from which ref
 ./scripts/deploy-dev.sh --dry-run         # what would happen, changing nothing
 ./scripts/deploy-dev.sh                   # deploy now
 tail -f ~/.jigga/logs/deploy.log
 ```
+
+## Running a feature branch here
+
+```bash
+./scripts/deploy-dev.sh pin view feat/workflows-tab   # deploys it immediately
+./scripts/deploy-dev.sh status
+./scripts/deploy-dev.sh unpin view                    # back to main
+```
+
+A pin is per target, so the dashboard can run a branch while the runtime stays
+on `main`, or the reverse. Once pinned, the timer keeps that branch fresh: push
+to it and the box has it within a couple of minutes, same as `main`.
+
+Pins live in `~/.jigga/state/deploy-pins` — a file rather than a flag, because
+the timer runs unattended and "which branch is this box on" has to survive
+between invocations and be answerable by reading one thing.
+
+**When a pinned branch is merged and deleted, the pin releases itself.** The
+deploy notices the ref is gone from origin, logs it, unpins, and returns to
+`main` on the next tick. That is the normal end of a pin's life, so it should
+not require remembering to clean up.
+
+A branch with no open PR has no CI, which reads as `unknown` and deploys
+anyway — you usually want to *see* a branch before it is vetted. A branch whose
+CI is red is still refused; use `--skip-ci-check` when you mean it.
+
+Deploy targets are checked out **detached** at `origin/<ref>`. They track a ref;
+they are not workspaces. That makes switching branches and following a
+force-push the same operation as a fast-forward, with no local branch to
+diverge.
 
 ## Why it pulls instead of being pushed to
 
@@ -20,8 +52,8 @@ port. It exits in well under a second when the answer is no.
 
 | Target | Source | Deploy step |
 |---|---|---|
-| the `jigga` on PATH | `~/jigga-stable` | `git merge --ff-only`, reinstall **only if `pyproject.toml` changed**, restart the supervisor |
-| the dashboard | `~/jiggaview-stable` (cloned on first run) | rsync into `~/.jigga/plugins/jiggaview`, `npm ci` **only if the lockfile changed**, `npm run build`, restart the plugin service |
+| `core` — the `jigga` on PATH | `~/jigga-stable` | checkout the ref, reinstall **only if `pyproject.toml` changed**, restart the supervisor |
+| `view` — the dashboard | `~/jiggaview-stable` (cloned on first run) | rsync into `~/.jigga/plugins/jiggaview`, `npm ci` **only if the lockfile changed**, `npm run build`, restart the plugin service |
 
 The dashboard is mirrored into the plugin directory rather than reinstalled:
 `jigga plugins` has `install` but no `update`, and a reinstall would discard
@@ -46,8 +78,8 @@ Override with `--skip-ci-check` when you need a commit out regardless.
   never eat someone's work in progress.
 - **Run twice at once.** A `flock` means a build outlasting the timer interval
   cannot have a second run rsyncing underneath it.
-- **Fast-forward past a divergence.** The merge is `--ff-only`, so a rewritten
-  history stops the deploy instead of silently resolving it.
+- **Deploy a ref that no longer exists.** A pinned branch deleted from origin
+  releases its pin and falls back to `main` rather than serving a dead ref.
 
 ## Restarts
 
