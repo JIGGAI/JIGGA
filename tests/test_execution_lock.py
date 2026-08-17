@@ -125,34 +125,88 @@ def test_run_if_free_reports_whether_it_ran(tmp_path: Path) -> None:
 # --- the supervisor honours it ----------------------------------------------
 
 
-def test_a_tick_skips_when_another_process_is_running_agents(tmp_path: Path) -> None:
+def _agent_with_a_pending_task(tmp_path: Path) -> None:
+    from jigga.core.io import write_yaml
+    from jigga.runtime.tasks import create_task
+
+    write_yaml(tmp_path / "agents" / "worker.yaml",
+               {"id": "worker", "name": "Worker", "role": "x", "memory_scope": "task_only",
+                "tools": [], "permissions": {}})
+    create_task(tmp_path / "tasks", "do a thing", None, "worker", None)
+
+
+def test_a_contended_tick_defers_the_agents_but_still_ticks(tmp_path: Path) -> None:
+    # It used to skip the WHOLE tick. Log rotation, recovery sweeps and channel
+    # polling are not execution and have no reason to stop because something
+    # else is running an agent.
     from jigga.runtime.supervisor import supervisor_tick
+    from jigga.runtime.tasks import list_tasks
 
     init_runtime(tmp_path)
+    _agent_with_a_pending_task(tmp_path)
     with foreign_holder(tmp_path):
         result = supervisor_tick(tmp_path)
-    assert result == {"status": "skipped", "reason": "locked"}
+    assert result.get("status") != "skipped"
+    assert result.get("runs") in (None, [])
+    # Nothing is lost: the task is still pending for whoever holds the lock.
+    assert [t.state for t in list_tasks(tmp_path / "tasks")] == ["pending"]
 
 
-def test_a_skipped_tick_is_audited(tmp_path: Path, capsys) -> None:
+def test_deferred_wakes_are_audited(tmp_path: Path, capsys) -> None:
     from jigga.runtime.supervisor import supervisor_tick
 
     init_runtime(tmp_path)
+    _agent_with_a_pending_task(tmp_path)
     with foreign_holder(tmp_path):
         supervisor_tick(tmp_path)
     capsys.readouterr()
-    assert main(["--home", str(tmp_path), "audit", "--type", "supervisor.tick_skipped",
+    assert main(["--home", str(tmp_path), "audit", "--type", "supervisor.wake_deferred",
                  "--json"]) == 0
-    assert len(json.loads(capsys.readouterr().out)) == 1
+    events = json.loads(capsys.readouterr().out)
+    assert len(events) == 1 and events[0]["details"]["agents"] == ["worker"]
 
 
-def test_a_tick_runs_normally_when_nothing_holds_the_lock(tmp_path: Path) -> None:
+def test_an_uncontended_tick_runs_its_agents(tmp_path: Path) -> None:
     from jigga.runtime.supervisor import supervisor_tick
 
     init_runtime(tmp_path)
-    assert supervisor_tick(tmp_path).get("status") != "skipped"
+    _agent_with_a_pending_task(tmp_path)
+    assert supervisor_tick(tmp_path)["runs"], "an idle runtime should run the pending task"
     # …and it does not leave the lock held for the next caller.
     assert is_locked(tmp_path) is False
+
+
+def test_the_lock_is_not_held_across_a_channel_poll(tmp_path: Path, monkeypatch) -> None:
+    """The regression that made every first chat message wait a full tick.
+
+    With a channel enabled the tick spends ~30s inside a long-poll. Holding the
+    execution lock across that made the runtime look permanently busy: a
+    browser send found the lock taken every time and queued for the next tick,
+    so an instant reply became a 60-second one. The poll is a network WAIT, not
+    execution, and must happen outside the lock.
+    """
+    from jigga.runtime import channel_listener
+
+    init_runtime(tmp_path)
+    seen: list[bool] = []
+
+    class SlowAdapter:
+        long_polls = True
+
+        def poll(self, home, long_poll_seconds=0):
+            # What a concurrent `webchat send --wait` would observe right now.
+            seen.append(is_locked(home))
+            return {"status": "ok", "events": []}
+
+        def send(self, home, **kwargs):
+            return {"ok": True}
+
+    monkeypatch.setitem(channel_listener.ADAPTERS, "webchat", SlowAdapter())
+    monkeypatch.setattr(channel_listener, "enabled_channels",
+                        lambda home: [("webchat", {"activation": "always", "enabled": True})])
+    channel_listener.ingest_once(tmp_path, tmp_path / "logs", tmp_path / "tasks",
+                                 tmp_path / "agents", long_poll_seconds=30)
+    assert seen == [False], "the runtime must look idle while it is only listening"
 
 
 # --- webchat defers instead of racing ----------------------------------------

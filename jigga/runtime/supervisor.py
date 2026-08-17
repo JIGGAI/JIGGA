@@ -122,22 +122,8 @@ def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds
     # The heartbeat acts on no one's direct instruction — anything it does
     # unattended is attributed to it, unless an agent or workflow inside
     # takes over (innermost actor wins).
-    from jigga.core.paths import get_paths
-    from jigga.runtime.execution_lock import execution_lock
-
-    paths = get_paths(home)
     with trace_context(), actor_context(ACTOR_SUPERVISOR):
-        # One executor per home. A tick that overlaps another — its own
-        # predecessor running long, an inline `webchat send --wait`, a manual
-        # `supervisor tick` — would re-run tasks the other already claimed,
-        # because claiming is not atomic. Skipping is safe: pending work stays
-        # pending and the next tick takes it.
-        with execution_lock(paths.home) as acquired:
-            if not acquired:
-                append_event(paths.logs, "supervisor.tick_skipped", status="ask",
-                             reason="another process is running agents for this home")
-                return {"status": "skipped", "reason": "locked"}
-            return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
+        return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
 
 
 DEFAULT_MAX_EVENTS_PER_TICK = 20
@@ -204,6 +190,14 @@ def _accepts_pushed_events(workflow: Any, record: dict[str, Any]) -> str | None:
 
 def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds: int = 0) -> dict[str, Any]:
     paths = get_paths(home)
+    # NOTE: the execution lock is NOT held across this whole function. With a
+    # channel enabled, the tick spends most of its time inside a 30-second
+    # long-poll — a network wait, not execution — and holding the lock through
+    # it made the runtime look permanently busy: a browser chat send found the
+    # lock taken every time and queued for the next tick, turning an instant
+    # reply into a 60-second one. The lock belongs around the parts that claim
+    # tasks and run agents, which is where it now sits (`_ingest_once` for
+    # channel messages, `_run_due_agents` for the waking loop).
     # Roll the audit log over (by day / size) and prune old archives on the
     # heartbeat, so the write path stays free of this. Emits an event when it
     # actually rotates or prunes.
@@ -414,6 +408,14 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
 
     runs = []
     throttled: list[str] = []
+    # The waking loop runs agents, so it takes the execution lock — held here,
+    # and NOT across the channel long-poll above, so an idle runtime stays
+    # visibly idle to a browser chat send. Non-blocking: deferred agents keep
+    # their pending tasks, so a contended tick loses a cycle and nothing else.
+    from contextlib import ExitStack
+
+    from jigga.runtime.execution_lock import execution_lock
+
     # Tick deadline: the supervisor is one sequential process, so an agent that
     # blocks (a handler with no timeout, a wedged subprocess) delays every agent
     # behind it — and the next tick stacks on top. This can't reclaim a run
@@ -423,28 +425,35 @@ def _supervisor_tick(home: str | Path | None = None, *, channel_long_poll_second
     budget = max_tick_seconds(paths.home)
     started = time.monotonic()
     deferred: list[str] = []
-    for agent_id in targets:
-        if budget and (time.monotonic() - started) >= budget:
-            deferred.append(agent_id)
-            continue
-        if agent_id not in agents:
-            append_event(paths.logs, "supervisor.target_missing", status="failed", agent=agent_id)
-            continue
-        if agent_id in disabled:
-            append_event(paths.logs, "supervisor.agent_disabled", status="ask", agent=agent_id)
-            continue
-        if should_skip_wake(loop_state, agent_id, wake_limit, now):
-            throttled.append(agent_id)
-            append_event(
-                paths.logs,
-                "supervisor.wake_throttled",
-                status="ask",
-                agent=agent_id,
-                limit_per_hour=wake_limit,
-            )
-            continue
-        record_wake(loop_state, agent_id, now)
-        runs.append(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, agent_id))
+    with ExitStack() as stack:
+        if targets and not stack.enter_context(execution_lock(paths.home)):
+            append_event(paths.logs, "supervisor.wake_deferred", status="ask",
+                         agents=list(targets),
+                         reason="another process is running agents for this home")
+            targets = []
+        for agent_id in targets:
+            if budget and (time.monotonic() - started) >= budget:
+                deferred.append(agent_id)
+                continue
+            if agent_id not in agents:
+                append_event(paths.logs, "supervisor.target_missing", status="failed", agent=agent_id)
+                continue
+            if agent_id in disabled:
+                append_event(paths.logs, "supervisor.agent_disabled", status="ask", agent=agent_id)
+                continue
+            if should_skip_wake(loop_state, agent_id, wake_limit, now):
+                throttled.append(agent_id)
+                append_event(
+                    paths.logs,
+                    "supervisor.wake_throttled",
+                    status="ask",
+                    agent=agent_id,
+                    limit_per_hour=wake_limit,
+                )
+                continue
+            record_wake(loop_state, agent_id, now)
+            runs.append(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, agent_id))
+
 
     if deferred:
         # Loud, not silent: a tick that keeps running out of time is evidence
