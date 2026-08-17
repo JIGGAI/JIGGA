@@ -43,7 +43,11 @@ SKIP_CI=0
 
 log() {
   local line="[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
-  echo "$line"
+  # stderr, not stdout: functions like resolve_target return a value through
+  # stdout, and a log line landing in a command substitution silently corrupts
+  # it — which it did, producing `git checkout --detach 'origin/<ref>\n[log
+  # line]'`. The terminal and the journal see this either way.
+  echo "$line" >&2
   mkdir -p "$(dirname "$LOG_FILE")"
   echo "$line" >> "$LOG_FILE"
 }
