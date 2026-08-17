@@ -122,8 +122,22 @@ def supervisor_tick(home: str | Path | None = None, *, channel_long_poll_seconds
     # The heartbeat acts on no one's direct instruction — anything it does
     # unattended is attributed to it, unless an agent or workflow inside
     # takes over (innermost actor wins).
+    from jigga.core.paths import get_paths
+    from jigga.runtime.execution_lock import execution_lock
+
+    paths = get_paths(home)
     with trace_context(), actor_context(ACTOR_SUPERVISOR):
-        return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
+        # One executor per home. A tick that overlaps another — its own
+        # predecessor running long, an inline `webchat send --wait`, a manual
+        # `supervisor tick` — would re-run tasks the other already claimed,
+        # because claiming is not atomic. Skipping is safe: pending work stays
+        # pending and the next tick takes it.
+        with execution_lock(paths.home) as acquired:
+            if not acquired:
+                append_event(paths.logs, "supervisor.tick_skipped", status="ask",
+                             reason="another process is running agents for this home")
+                return {"status": "skipped", "reason": "locked"}
+            return _supervisor_tick(home, channel_long_poll_seconds=channel_long_poll_seconds)
 
 
 DEFAULT_MAX_EVENTS_PER_TICK = 20

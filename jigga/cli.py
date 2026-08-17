@@ -2306,18 +2306,35 @@ def _cmd_webchat(args: argparse.Namespace) -> int:
                                        conversation_id=conversation, sender=args.sender,
                                        target_agent=target_agent)
         replies: list[dict[str, Any]] = []
+        delivery = "queued"
         if args.wait:
-            # Webchat-only ingest: synchronous send must never block behind
-            # another channel's long-poll. The offset advances here, so the
-            # supervisor's backstop poll won't double-process this message.
-            ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
-                        long_poll_seconds=0, process_agents=True, only_channel="webchat")
-            replies = [e for e in webchat.history(paths.home, conversation_id=conversation, limit=1000)
-                       if e.get("sender") == "agent" and e.get("id") not in seen]
+            from jigga.runtime.execution_lock import execution_lock
+
+            # A nudge, not a demand. The message is already durable in the
+            # inbox, so if something else is running agents we simply leave it
+            # for them — running it here anyway would double-claim the task the
+            # other process is about to take. Idle runtime (the common case)
+            # still answers in this invocation.
+            with execution_lock(paths.home) as acquired:
+                if acquired:
+                    # Webchat-only ingest: a synchronous send must never block
+                    # behind another channel's long-poll. The offset advances
+                    # here, so the supervisor's backstop poll won't
+                    # double-process this message.
+                    ingest_once(paths.home, paths.logs, paths.tasks, paths.agents,
+                                long_poll_seconds=0, process_agents=True, only_channel="webchat")
+                    replies = [e for e in webchat.history(paths.home, conversation_id=conversation,
+                                                          limit=1000)
+                               if e.get("sender") == "agent" and e.get("id") not in seen]
+                    delivery = "answered"
         result = {
             "status": "ok",
             "message": entry,
             "replies": replies,
+            # "answered": this invocation ran the agent. "queued": it is on disk
+            # and the supervisor takes it on its next tick — what a UI should
+            # render as pending rather than as a failure.
+            "delivery": delivery,
             "channel_enabled_now": setup["enabled_now"],
         }
         if args.json_output:
