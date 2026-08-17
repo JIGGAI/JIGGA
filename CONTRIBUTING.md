@@ -18,10 +18,26 @@ Useful contributions right now:
 - improve docs where they've drifted from behavior
 - identify safety and sandboxing risks
 
-Run the suite with `make test`; lint with `ruff`. Tests must never touch the
-real system (stub side-effecting calls — see `tests/conftest.py`). Keep the
-core dependency-free beyond PyYAML; opt-in capabilities and the UI may bring
-their own.
+Run the suite with `make test`; lint with `ruff`; `make check` does both, and
+`make coverage` runs what CI enforces. Tests must never touch the real system
+(stub side-effecting calls — see `tests/conftest.py`). Keep the core
+dependency-free beyond PyYAML; opt-in capabilities and the UI may bring their
+own.
+
+## CI
+
+Every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+- the suite + `ruff` on **Python 3.11, 3.12, and 3.13** — every version
+  `pyproject.toml` advertises, since 3.11 is the floor a fresh install may get
+- **coverage with an 85% floor.** It is a collapse detector, not a target to
+  grind upward
+- **a packaging smoke test** — build the wheel, install it into a clean venv,
+  and assert `jigga init --examples` still finds the bundled recipes. The
+  `examples/` → `jigga/examples` force-include is easy to break invisibly
+- **a tests-required gate**: a PR touching `jigga/` must also touch `tests/`.
+  Maintainers can bypass it with the `no-tests-ok` label for docs-only
+  refactors, pure renames, and reverts
 
 ## Design Rules
 
