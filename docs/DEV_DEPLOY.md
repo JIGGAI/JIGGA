@@ -84,7 +84,22 @@ Override with `--skip-ci-check` when you need a commit out regardless.
 ## Restarts
 
 A pull replaces code under a running daemon that already holds the old version
-in memory, so the supervisor is restarted whenever core moves. `jigga service`
+in memory, so the supervisor is restarted whenever core moves.
+
+**The unit has to point at the deployed checkout.** A systemd unit pins an
+interpreter, and an interpreter pins a checkout: a venv installed editable from
+a different tree keeps loading that tree no matter what this script pulls.
+Found live — the unit pointed at a dev checkout's venv, so every "core
+deployed, supervisor restarted" line in the log was true and meaningless. The
+deploy now checks after each restart and says so loudly. Fix it once with:
+
+```bash
+~/jigga-stable/.venv/bin/jigga service install --interval-seconds 60
+```
+
+The interpreter that runs `service install` is the one written into the unit,
+so it has to be the deployed venv's.
+ `jigga service`
 control from a script is safe as of JIGGA #205 — before it, injected runners
 were ignored and the CLI drove the real service manager unconditionally.
 
