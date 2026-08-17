@@ -933,6 +933,7 @@ def build_parser() -> argparse.ArgumentParser:
     team_init.add_argument("--json", action="store_true", dest="json_output")
     team_ws = team_sub.add_parser("workspace", help="Show a team's workspace path and files")
     team_ws.add_argument("team_id")
+    team_ws.add_argument("--json", action="store_true", dest="json_output")
     team_run.add_argument("team_id")
 
     workspace = sub.add_parser("workspace", help="Manage shared workspaces (housekeeping)")
@@ -1738,6 +1739,32 @@ def _workflow_save(paths: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def _workspace_listing(root: Path) -> list[dict[str, Any]]:
+    """Every readable file in a workspace, workspace-relative, with size + mtime.
+
+    Skips anything resolving outside the workspace: `team file get/set` confine
+    to the root, so listing an escaping symlink would advertise a file that then
+    refuses to open.
+    """
+    from datetime import timezone
+
+    resolved_root = root.resolve()
+    entries: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        target = path.resolve()
+        if target != resolved_root and resolved_root not in target.parents:
+            continue
+        stat = path.stat()
+        entries.append({
+            "name": path.relative_to(root).as_posix(),
+            "bytes": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return entries
+
+
 def _cmd_workflow(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.workflow_command == "plan":
@@ -2520,12 +2547,19 @@ def _cmd_team(args: argparse.Namespace) -> int:
     if args.team_command == "workspace":
         root = workspace_dir(paths.home, args.team_id)
         if not root.exists():
-            print(f"No workspace for {args.team_id!r}. Run: jigga team init {args.team_id}")
+            message = f"No workspace for {args.team_id!r}. Run: jigga team init {args.team_id}"
+            # Still JSON under --json: a caller that asked for JSON gets JSON on
+            # the failure path too, rather than a parse error on top of an error.
+            print_json({"team": args.team_id, "path": str(root), "files": [],
+                        "error": message}) if args.json_output else print(message)
             return 1
-        print(str(root))
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                print(f"  {path.relative_to(root)}")
+        files = _workspace_listing(root)
+        if args.json_output:
+            print_json({"team": args.team_id, "path": str(root), "files": files})
+        else:
+            print(str(root))
+            for entry in files:
+                print(f"  {entry['name']}")
         return 0
     return 0
 
