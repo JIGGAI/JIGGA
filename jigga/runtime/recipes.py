@@ -489,7 +489,13 @@ def lint_recipe(recipe: Recipe) -> list[dict[str, str]]:
     if lead and lead not in roles:
         add("warn", "routing.lead_unknown", f"routing.lead {lead!r} is not a declared role")
 
-    names = set(ids) | set(roles)
+    # A member with no explicit `id:` is scaffolded as `<teamId>-<role>`, and a
+    # recipe cannot know its own teamId (the same recipe scaffolds under
+    # `--id acme-eng`). So `{{teamId}}-dev` in a handoff is the CORRECT way to
+    # name that member, and the linter has to resolve it the same way scaffold
+    # does — otherwise it pushes authors toward hardcoded ids, which is exactly
+    # what breaks `--id`.
+    names = set(ids) | set(roles) | {f"{{{{teamId}}}}-{role}" for role in roles}
     for handoff in recipe.routing.get("handoffs") or []:
         if isinstance(handoff, dict):
             for key in ("from", "to"):
@@ -594,7 +600,12 @@ def scaffold_team(
     skipped: list[str] = []
     for spec in recipe.agents:
         role = str(spec.get("role") or spec.get("id"))
-        agent_id = str(spec.get("id") or f"{team_id}-{role}")
+        # Templated like every other recipe field: an explicit
+        # `id: "{{teamId}}-dev"` used to survive into the team roster verbatim,
+        # so `--id acme-eng` produced a team called acme-eng whose members were
+        # still named after the recipe's default id — with handoffs (which ARE
+        # templated) pointing at agents that did not exist.
+        agent_id = _template(str(spec.get("id") or f"{team_id}-{role}"), ctx)
         members.append({"id": agent_id, "role": role, "required": bool(spec.get("required", True))})
         if not defines_agent(spec):
             continue  # membership-only: on the roster, staffed later

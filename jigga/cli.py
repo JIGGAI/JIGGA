@@ -1022,6 +1022,8 @@ def build_parser() -> argparse.ArgumentParser:
     task_create.add_argument("--description")
     task_create.add_argument("--assignee")
     task_create.add_argument("--workflow", dest="workflow_id")
+    task_create.add_argument("--team", help="File this as a ticket on a team's board")
+    task_create.add_argument("--lane", help="Starting lane (default: the team's first lane)")
     task_list = task_sub.add_parser("list")
     task_list.add_argument("--lane", help="Only tasks in this ticket lane")
     task_list.add_argument("--json", action="store_true", dest="json_output")
@@ -3322,7 +3324,34 @@ def _cmd_service(args: argparse.Namespace) -> int:
 def _cmd_task(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.task_command == "create":
-        task = create_task(paths.tasks, args.title, args.description, args.assignee, args.workflow_id)
+        # A ticket belongs to a board; a task does not. Without `--team` there
+        # was no way for a PERSON to file work onto a team's lanes — only
+        # `team run`, a handoff, or an agent's `task.assign` produced tickets,
+        # so a human-created task sat outside the board its team lives on.
+        lane = None
+        metadata = None
+        if getattr(args, "team", None):
+            from jigga.core.config import load_teams
+            from jigga.runtime.lanes import default_lane, team_lanes
+
+            team = load_teams(paths.teams).get(args.team)
+            if team is None:
+                print(f"No such team: {args.team!r}")
+                return 1
+            lanes = [lane.id for lane in team_lanes(team)]
+            if not lanes:
+                print(f"Team {args.team!r} has no ticket board (set `lanes:` on the team).")
+                return 1
+            lane = args.lane or default_lane(team)
+            if lane not in lanes:
+                print(f"No lane {lane!r} on {args.team!r}. Lanes: {', '.join(lanes)}")
+                return 1
+            metadata = {"team_id": args.team}
+        elif getattr(args, "lane", None):
+            print("--lane needs --team: a lane only means something on a team's board.")
+            return 1
+        task = create_task(paths.tasks, args.title, args.description, args.assignee,
+                           args.workflow_id, lane=lane, metadata=metadata)
         print_json(task.to_dict())
     elif args.task_command == "list":
         tasks = [task.to_dict() for task in list_tasks(paths.tasks)]
