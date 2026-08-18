@@ -55,9 +55,48 @@ def capability_secret_context(agent: Any, logs_dir: Path):
         _capability_ctx.reset(token)
 
 
+def _explicitly_denied(permissions: dict, name: str) -> bool:
+    """Whether a secrets block names this secret in its `deny` list.
+
+    Absence from `allow` is not a refusal — it is usually a block written for
+    one other secret. Being NAMED in `deny` is.
+    """
+    block = permissions.get("secrets")
+    if not isinstance(block, dict):
+        return False
+    deny = block.get("deny")
+    return isinstance(deny, list) and name in [str(item) for item in deny]
+
+
+def default_model_secret(home: Path) -> str | None:
+    """The credential the CONFIGURED DEFAULT model provider authenticates with.
+
+    An agent's ability to think is not a privilege it has to be granted
+    separately from existing: `model:` already says which model it uses, and the
+    credential is an implementation detail of that choice. Requiring a grant on
+    top made an agent that could not call its own LLM — which is not an agent.
+    """
+    # The router's own accessor, so "the default provider" means one thing in
+    # this runtime rather than two that drift.
+    from jigga.runtime.model_router import load_model_config
+
+    config = load_model_config(home)
+    provider = str((config.get("defaults") or {}).get("provider") or "").strip()
+    kind = str(((config.get("providers") or {}).get(provider) or {}).get("kind") or provider)
+    if kind == "chatgpt_oauth" or provider == "chatgpt":
+        from jigga.runtime.chatgpt_auth import STORE_FILENAME
+
+        return STORE_FILENAME
+    return None
+
+
 def _enforce_grant(home: Path, name: str, agent: Any, logs_dir: Path) -> None:
     """Release policy for a secret read inside a capability invocation.
 
+    - The DEFAULT model provider's credential is implicitly available: using the
+      model an agent is configured to use is what the agent is for. Overriding
+      to another provider still needs that provider's secret granted, which is
+      the escalation worth asking about.
     - Agent declares a `permissions.secrets` block → it is evaluated; a name
       outside the grant is DENIED (audited).
     - No block declared → legacy-allow with an audited `granted: false`, so
@@ -70,6 +109,21 @@ def _enforce_grant(home: Path, name: str, agent: Any, logs_dir: Path) -> None:
 
     permissions = getattr(agent, "permissions", None) or {}
     has_block = isinstance(permissions, dict) and permissions.get("secrets") is not None
+
+    if name == default_model_secret(home):
+        # The asymmetry this closes: an agent's OWN model call never passed
+        # through here, so the same credential for the same purpose was
+        # unchecked in a chat turn and denied in a workflow step. Two answers
+        # for one question is worse than either answer.
+        #
+        # An explicit `deny` still wins — saying so is a deliberate act, unlike
+        # the silence of never having written a secrets block.
+        denied = (evaluate_resource_permission(agent, "secrets", name) if has_block else None)
+        if denied is None or denied.status == "allow" or not _explicitly_denied(permissions, name):
+            append_event(logs_dir, "secret.released", agent=getattr(agent, "id", None),
+                         name=name, granted=True, reason="default model provider")
+            return
+
     strict = bool((load_runtime_config(home).get("secrets") or {}).get("enforce_grants"))
     if not has_block and not strict:
         append_event(logs_dir, "secret.released", agent=getattr(agent, "id", None),
