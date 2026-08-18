@@ -27,6 +27,7 @@ running, and otherwise does nothing at all.
 from __future__ import annotations
 
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -48,13 +49,23 @@ def lock_path(home: Path) -> Path:
 # lock, inner ones ride along.
 _HELD: dict[str, int] = {}
 
+# How often a timed wait re-tries. Short enough to feel immediate to a person.
+_POLL_SECONDS = 0.25
+
 
 @contextmanager
-def execution_lock(home: Path, *, blocking: bool = False) -> Iterator[bool]:
+def execution_lock(home: Path, *, blocking: bool = False,
+                   timeout: float | None = None) -> Iterator[bool]:
     """Yield True if this process holds the execution lock, False if another does.
 
     Callers decide what "someone else is running" means for them; nobody gets an
     exception, because contention is the normal case, not an error.
+
+    `timeout` waits that many seconds for the lock before giving up — the right
+    behaviour for a command a PERSON typed, where "something else is running,
+    try later" is a worse answer than a short wait. Background callers stay
+    non-blocking: their work is already queued and they lose nothing by
+    yielding this cycle.
     """
     path = lock_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,11 +88,16 @@ def execution_lock(home: Path, *, blocking: bool = False) -> Iterator[bool]:
     handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-        try:
-            fcntl.flock(handle, flags)
-        except OSError:
-            yield False
-            return
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(handle, flags)
+                break
+            except OSError:
+                if deadline is None or time.monotonic() >= deadline:
+                    yield False
+                    return
+                time.sleep(_POLL_SECONDS)
         # Who holds it, for `jigga doctor` and for a human reading the file.
         os.ftruncate(handle, 0)
         os.write(handle, f"{os.getpid()}\n".encode())
