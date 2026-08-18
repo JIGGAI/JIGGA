@@ -582,7 +582,13 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_runs = workflow_sub.add_parser("runs", help="List v2 (DAG) workflow runs and their node states")
     workflow_runs.add_argument("workflow_id", nargs="?")
     workflow_runs.add_argument("--active", action="store_true", help="Only running / awaiting-approval runs")
+    workflow_runs.add_argument("--engine", choices=["v1", "v2"],
+                               help="Only runs from one engine (default: both)")
     workflow_runs.add_argument("--json", action="store_true", dest="json_output")
+    workflow_artifact = workflow_sub.add_parser(
+        "artifact", help="Print a file a run produced (see `workflow runs`)")
+    workflow_artifact.add_argument("run_id")
+    workflow_artifact.add_argument("name", help="Artifact file name, e.g. day_summary.md")
     workflow_resume = workflow_sub.add_parser(
         "resume", help="Advance a v2 run now (e.g. right after `jigga approvals approve <code>`)")
     workflow_resume.add_argument("run_id")
@@ -1937,7 +1943,8 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
     elif args.workflow_command == "runs":
         from jigga.runtime.workflow_engine import list_runs
 
-        records = list_runs(paths, args.workflow_id, active_only=args.active)
+        records = list_runs(paths, args.workflow_id, active_only=args.active,
+                            engine=getattr(args, "engine", None))
         if args.json_output:
             print_json(records)
         else:
@@ -1956,6 +1963,18 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
                               f"— approve locally with `jigga approve {state.get('approval_code')}`")
             if not records:
                 print("No v2 workflow runs.")
+    elif args.workflow_command == "artifact":
+        from jigga.runtime.workflow_engine import read_run_artifact
+
+        try:
+            content = read_run_artifact(paths, args.run_id, args.name)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if content is None:
+            print(f"No artifact {args.name!r} in run {args.run_id!r}.")
+            return 1
+        print(content, end="")
     elif args.workflow_command == "resume":
         from jigga.runtime.workflow_engine import advance_run, load_run
 

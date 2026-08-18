@@ -169,7 +169,16 @@ def load_run(paths: JiggaPaths, run_id: str) -> dict[str, Any] | None:
     return None
 
 
-def list_runs(paths: JiggaPaths, workflow_id: str | None = None, *, active_only: bool = False) -> list[dict[str, Any]]:
+def list_runs(paths: JiggaPaths, workflow_id: str | None = None, *, active_only: bool = False,
+              engine: str | None = None) -> list[dict[str, Any]]:
+    """Workflow runs, newest last, with the files each one produced.
+
+    This used to drop everything that was not `engine: v2`, so eleven completed
+    v1 runs sat on disk while `jigga workflow runs` reported none — the history
+    existed and nothing could see it. Both engines write a run.json in the same
+    place; `engine` distinguishes them (absent means v1, which predates the
+    field) and can still be filtered on explicitly.
+    """
     root = paths.runs / "workflows"
     pattern = f"{workflow_id}/*/run.json" if workflow_id else "*/*/run.json"
     records: list[dict[str, Any]] = []
@@ -178,12 +187,49 @@ def list_runs(paths: JiggaPaths, workflow_id: str | None = None, *, active_only:
             record = read_json(path)
         except (OSError, ValueError):
             continue  # a half-written or corrupt run file must not hide the rest
-        if record.get("engine") != "v2":
+        record.setdefault("engine", "v1")
+        if engine and record["engine"] != engine:
             continue
         if active_only and record.get("status") not in {"running", "awaiting_approval"}:
             continue
+        record["artifacts"] = run_artifacts(path.parent)
         records.append(record)
     return records
+
+
+def run_artifacts(run_dir: Path) -> list[dict[str, Any]]:
+    """What a run left behind: every file in its directory except its own record.
+
+    A step's `output:` name becomes a file here (`day_summary.md`,
+    `calendar_events`), which is the closest thing JIGGA has to a deliverable —
+    so it is worth listing rather than making someone find the directory.
+    """
+    from datetime import datetime, timezone
+
+    entries: list[dict[str, Any]] = []
+    for path in sorted(run_dir.glob("*")) if run_dir.exists() else []:
+        if not path.is_file() or path.name == "run.json":
+            continue
+        stat = path.stat()
+        entries.append({
+            "name": path.name,
+            "bytes": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return entries
+
+
+def read_run_artifact(paths: JiggaPaths, run_id: str, name: str) -> str | None:
+    """One artifact's text, or None. Confined to the run directory: an artifact
+    name is data from a workflow definition, so `../../secrets` is a path worth
+    refusing rather than resolving."""
+    for run_json in (paths.runs / "workflows").glob(f"*/{run_id}/run.json"):
+        run_dir = run_json.parent.resolve()
+        target = (run_dir / name).resolve()
+        if target != run_dir and run_dir not in target.parents:
+            raise ValueError(f"Artifact {name!r} escapes the run directory")
+        return target.read_text(encoding="utf-8") if target.is_file() else None
+    return None
 
 
 def start_run(paths: JiggaPaths, workflow: WorkflowConfig, *, trigger: dict[str, Any] | None = None) -> dict[str, Any]:
