@@ -65,6 +65,44 @@ def _resolve_agent_actions(agent: AgentConfig, registry: CapabilityRegistry) -> 
             if registry.resolve_action(action) is not None]
 
 
+_TOOL_INPUT_LOG_CHARS = 300
+
+
+def _summarize_tool_input(arguments: Any) -> str:
+    """A short, loggable rendering of a tool call's arguments."""
+    try:
+        rendered = json.dumps(arguments, default=str, sort_keys=True)
+    except (TypeError, ValueError):
+        rendered = str(arguments)
+    if len(rendered) <= _TOOL_INPUT_LOG_CHARS:
+        return rendered
+    return rendered[:_TOOL_INPUT_LOG_CHARS] + f"… (+{len(rendered) - _TOOL_INPUT_LOG_CHARS} chars)"
+
+
+def _parameters_for(action: str, capability: Any) -> dict[str, Any]:
+    """The JSON-Schema `parameters` block for one action.
+
+    An open object is the honest answer when a capability declares no shape —
+    the handler still validates — but it tells the model nothing, so anything
+    declared is worth passing through.
+    """
+    declared = (getattr(capability, "action_inputs", None) or {}).get(action)
+    if not declared:
+        return {"type": "object", "properties": {}, "additionalProperties": True}
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, spec in declared.items():
+        spec = dict(spec or {})
+        if spec.pop("required", False):
+            required.append(name)
+        properties[name] = {"type": spec.pop("type", "string"), **spec}
+    schema: dict[str, Any] = {"type": "object", "properties": properties,
+                              "additionalProperties": True}
+    if required:
+        schema["required"] = required
+    return schema
+
+
 def _build_tool_schemas(actions: list[str], registry: CapabilityRegistry) -> list[dict[str, Any]]:
     schemas: list[dict[str, Any]] = []
     for action in actions:
@@ -82,9 +120,13 @@ def _build_tool_schemas(actions: list[str], registry: CapabilityRegistry) -> lis
                     "description": (f"{capability.summary} (capability: {capability.name})"
                                     + (f" When to use: {capability.when_to_use}"
                                        if capability.when_to_use else "")),
-                    # We don't ship per-action parameter schemas yet; accept an
-                    # open object and let the capability handler validate input.
-                    "parameters": {"type": "object", "properties": {}, "additionalProperties": True},
+                    # The declared input shape when the capability ships one.
+                    # Without it every tool was advertised as "takes anything",
+                    # so the model inferred arguments from a one-line summary
+                    # and probed — burning a round trip per guess. Capabilities
+                    # that declare nothing keep the open object, so this is
+                    # additive rather than a flag day.
+                    "parameters": _parameters_for(action, capability),
                 },
             }
         )
@@ -251,8 +293,15 @@ def _run_task_loop(
 
         for call in result.tool_calls:
             action = name_map.get(call.name, call.name)
+            # Record WHAT was asked for, not just which tool. Without the
+            # arguments, a run that called list_directory four times in one
+            # second is indistinguishable from a run that called it four times
+            # usefully — which is exactly the question worth answering when a
+            # reply takes 45 seconds. Details are redacted by append_event and
+            # truncated here, since an argument can carry a whole file.
             append_event(logs_dir, "agent.tool_call.requested", agent=agent.id, run_id=run_id,
-                         task_id=task.id, action=action, tool_call_id=call.id)
+                         task_id=task.id, action=action, tool_call_id=call.id,
+                         input=_summarize_tool_input(call.arguments))
 
             def _tool_result(content: dict[str, Any]) -> None:
                 items.append(ModelCallItem(role="tool", content=json.dumps(content, default=str), tool_call_id=call.id))
