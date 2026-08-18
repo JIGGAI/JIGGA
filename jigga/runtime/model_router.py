@@ -456,6 +456,12 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
     content_parts: list[str] = []
     tool_calls: list[ModelToolCall] = []
     input_tokens = output_tokens = 0
+    # A reasoning model can end a turn having emitted ONLY reasoning items, and
+    # a truncated response says why in `incomplete_details`. Neither produces
+    # content or a tool call, and without recording them "the response included
+    # neither" is a dead end for whoever reads the audit log.
+    item_types: list[str] = []
+    incomplete_reason: str | None = None
     for raw in lines:
         line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else raw
         line = line.strip()
@@ -473,6 +479,7 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
             item = event.get("item")
             if not isinstance(item, dict):
                 continue
+            item_types.append(str(item.get("type") or "?"))
             if item.get("type") == "message":
                 content = item.get("content")
                 for part in content if isinstance(content, list) else []:
@@ -486,14 +493,18 @@ def parse_responses_stream(lines: Any) -> dict[str, Any]:
                 tool_calls.append(ModelToolCall(
                     id=str(item.get("call_id") or item.get("id") or item.get("name")),
                     name=str(item.get("name")), arguments=arguments))
-        elif etype in ("response.completed", "response.done"):
+        elif etype in ("response.completed", "response.done", "response.incomplete"):
             response = event.get("response")
             usage = response.get("usage") if isinstance(response, dict) else None
             usage = usage if isinstance(usage, dict) else {}
             input_tokens = _int_or_zero(usage.get("input_tokens"))
             output_tokens = _int_or_zero(usage.get("output_tokens"))
+            details = response.get("incomplete_details") if isinstance(response, dict) else None
+            if isinstance(details, dict) and details.get("reason"):
+                incomplete_reason = str(details["reason"])
     return {"content": "".join(content_parts), "tool_calls": tool_calls,
-            "input_tokens": input_tokens, "output_tokens": output_tokens}
+            "input_tokens": input_tokens, "output_tokens": output_tokens,
+            "item_types": item_types, "incomplete_reason": incomplete_reason}
 
 
 # How many times to retry a 429 (rate-limit) within a single call before giving
@@ -519,7 +530,8 @@ def _retry_after_seconds(exc: urllib.error.HTTPError, attempt: int, *, rand: Any
     return base + rand() * base * 0.25  # up to +25% jitter
 
 
-def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str, home: Path) -> ModelCallResult:
+def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest, model: str,
+                        home: Path, *, empty_retry: bool = False) -> ModelCallResult:
     """Call the ChatGPT/Codex backend on a subscription OAuth token (no API key)."""
     from jigga.runtime.chatgpt_auth import ChatGptAuthError, load_credentials  # local import: optional dependency path
 
@@ -590,8 +602,30 @@ def _call_chatgpt_oauth(provider: ModelProviderConfig, request: ModelCallRequest
     with response:
         parsed = parse_responses_stream(response)
     if not parsed["content"] and not parsed["tool_calls"]:
-        raise ModelResponseError("ChatGPT response included neither content nor tool_calls",
-                                 provider=provider.id, model=model)
+        # An empty turn is not the same as a failed one. A reasoning model can
+        # finish having emitted only `reasoning` items — nothing to say, nothing
+        # to call — and the run does not deserve to die for that: the agent had
+        # already spent six model calls and a minute of the user's time, and the
+        # reply they got was an apology.
+        #
+        # Retry once with the same conversation (idempotent from our side; the
+        # model usually produces a message on the second ask). Only a genuinely
+        # empty second turn is an error, and then it says WHAT arrived so the
+        # audit log is diagnosable instead of a shrug.
+        saw = ", ".join(parsed.get("item_types") or []) or "nothing"
+        reason = parsed.get("incomplete_reason")
+        if reason:
+            # Truncation is not transient — retrying just truncates again.
+            raise ModelResponseError(
+                f"ChatGPT returned an incomplete response ({reason}); it emitted {saw}",
+                provider=provider.id, model=model)
+        if not empty_retry:
+            append_event(home / "logs", "model.empty_turn", status="ask", provider=provider.id,
+                         model=model, emitted=saw)
+            return _call_chatgpt_oauth(provider, request, model, home, empty_retry=True)
+        raise ModelResponseError(
+            f"ChatGPT returned no content and no tool calls twice; it emitted {saw}",
+            provider=provider.id, model=model)
     return ModelCallResult(
         status="ok", provider=provider.id, model=model, content=parsed["content"], dry_run=False,
         tool_calls=parsed["tool_calls"],

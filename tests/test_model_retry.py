@@ -18,6 +18,7 @@ from jigga.runtime.model_router import (
     ModelCallItem,
     ModelCallRequest,
     ModelProviderConfig,
+    ModelResponseError,
     _call_chatgpt_oauth,
     _retry_after_seconds,
 )
@@ -131,3 +132,90 @@ def test_chatgpt_429_exhausts_retries_and_raises(tmp_path: Path, monkeypatch):
     with pytest.raises(RuntimeError, match="429"):
         _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
     assert len(slept) == model_router._CHATGPT_MAX_RETRIES  # retried the max, then gave up
+
+
+# --- an empty turn retries once instead of killing the run --------------------
+
+
+def _reasoning_only_stream() -> _FakeSSE:
+    """What broke chat: a turn with reasoning and nothing else."""
+    item = {"type": "response.output_item.done", "item": {"type": "reasoning", "summary": []}}
+    done = {"type": "response.completed", "response": {"usage": {"input_tokens": 9, "output_tokens": 0}}}
+    return _FakeSSE([f"data: {json.dumps(item)}".encode(), f"data: {json.dumps(done)}".encode()])
+
+
+def _incomplete_stream(reason: str = "max_output_tokens") -> _FakeSSE:
+    item = {"type": "response.output_item.done", "item": {"type": "reasoning"}}
+    done = {"type": "response.incomplete",
+            "response": {"incomplete_details": {"reason": reason}, "usage": {}}}
+    return _FakeSSE([f"data: {json.dumps(item)}".encode(), f"data: {json.dumps(done)}".encode()])
+
+
+def test_an_empty_turn_is_retried_once_and_succeeds(tmp_path: Path, monkeypatch):
+    # The user had already waited through six model calls; failing the run for a
+    # turn the model simply had nothing to say in is the wrong trade.
+    _patch_creds(monkeypatch)
+    attempts = {"n": 0}
+
+    def fake_urlopen(_req, timeout=None):
+        attempts["n"] += 1
+        return _reasoning_only_stream() if attempts["n"] == 1 else _ok_stream()
+
+    monkeypatch.setattr("jigga.runtime.model_router.urllib.request.urlopen", fake_urlopen)
+    provider = ModelProviderConfig(id="chatgpt", kind="chatgpt_oauth", default_model="gpt-5")
+
+    result = _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
+
+    assert result.status == "ok" and result.content == "hi"
+    assert attempts["n"] == 2
+
+
+def test_the_retry_is_audited_with_what_arrived(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    _patch_creds(monkeypatch)
+    attempts = {"n": 0}
+
+    def fake_urlopen(_req, timeout=None):
+        attempts["n"] += 1
+        return _reasoning_only_stream() if attempts["n"] == 1 else _ok_stream()
+
+    monkeypatch.setattr("jigga.runtime.model_router.urllib.request.urlopen", fake_urlopen)
+    provider = ModelProviderConfig(id="chatgpt", kind="chatgpt_oauth", default_model="gpt-5")
+    _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
+
+    events = [_json.loads(line) for line in
+              (tmp_path / "logs" / "events.jsonl").read_text().splitlines() if line.strip()]
+    empty = [e for e in events if e["type"] == "model.empty_turn"]
+    assert len(empty) == 1
+    assert empty[0]["details"]["emitted"] == "reasoning"
+
+
+def test_two_empty_turns_in_a_row_is_an_error_that_says_what_arrived(tmp_path: Path, monkeypatch):
+    _patch_creds(monkeypatch)
+    monkeypatch.setattr("jigga.runtime.model_router.urllib.request.urlopen",
+                        lambda _req, timeout=None: _reasoning_only_stream())
+    provider = ModelProviderConfig(id="chatgpt", kind="chatgpt_oauth", default_model="gpt-5")
+
+    with pytest.raises(ModelResponseError) as exc:
+        _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
+    assert "twice" in str(exc.value) and "reasoning" in str(exc.value)
+
+
+def test_a_truncated_response_is_not_retried(tmp_path: Path, monkeypatch):
+    # Retrying a response that hit the output cap just truncates again; the
+    # reason is the actionable part.
+    _patch_creds(monkeypatch)
+    attempts = {"n": 0}
+
+    def fake_urlopen(_req, timeout=None):
+        attempts["n"] += 1
+        return _incomplete_stream()
+
+    monkeypatch.setattr("jigga.runtime.model_router.urllib.request.urlopen", fake_urlopen)
+    provider = ModelProviderConfig(id="chatgpt", kind="chatgpt_oauth", default_model="gpt-5")
+
+    with pytest.raises(ModelResponseError) as exc:
+        _call_chatgpt_oauth(provider, _request(), "gpt-5", tmp_path)
+    assert "max_output_tokens" in str(exc.value)
+    assert attempts["n"] == 1

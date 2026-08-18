@@ -263,7 +263,10 @@ def test_parse_responses_stream_tolerates_malformed_items() -> None:
         'data: {"type":"response.completed","response":{"usage":"not-a-dict"}}',
     ]
     out = parse_responses_stream(lines)
-    assert out == {"content": "", "tool_calls": [], "input_tokens": 0, "output_tokens": 0}
+    assert out == {"content": "", "tool_calls": [], "input_tokens": 0, "output_tokens": 0,
+                   # What the stream DID contain, so an empty turn can be
+                   # explained rather than just reported.
+                   "item_types": ["message"], "incomplete_reason": None}
 
 
 def test_parse_tool_calls_tolerates_malformed_entries() -> None:
@@ -271,3 +274,51 @@ def test_parse_tool_calls_tolerates_malformed_entries() -> None:
     calls = _parse_tool_calls(["junk", {"function": "not-a-dict"}, 5,
                                {"function": {"name": "a.b", "arguments": "{}"}}])
     assert [c.name for c in calls] == ["a.b"]   # only the valid one survives, no crash
+
+
+# --- an empty turn is not a failed one ---------------------------------------
+
+
+def test_parser_reports_a_reasoning_only_turn() -> None:
+    """A reasoning model can finish having emitted only `reasoning` items.
+
+    That produced "ChatGPT response included neither content nor tool_calls" —
+    true, useless, and fatal to a run that had already spent six model calls.
+    The parser now says what it saw so the next one is diagnosable.
+    """
+    from jigga.runtime.model_router import parse_responses_stream
+
+    out = parse_responses_stream([
+        'data: {"type":"response.output_item.done","item":{"type":"reasoning","summary":[]}}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":0}}}',
+    ])
+    assert out["content"] == "" and out["tool_calls"] == []
+    assert out["item_types"] == ["reasoning"]
+    assert out["incomplete_reason"] is None
+
+
+def test_parser_surfaces_why_a_response_was_truncated() -> None:
+    # Truncation is NOT transient — retrying just truncates again, so the
+    # reason has to reach the caller to be actionable.
+    from jigga.runtime.model_router import parse_responses_stream
+
+    out = parse_responses_stream([
+        'data: {"type":"response.output_item.done","item":{"type":"reasoning"}}',
+        'data: {"type":"response.incomplete","response":'
+        '{"incomplete_details":{"reason":"max_output_tokens"},'
+        '"usage":{"input_tokens":5,"output_tokens":9}}}',
+    ])
+    assert out["incomplete_reason"] == "max_output_tokens"
+    assert out["output_tokens"] == 9
+
+
+def test_a_normal_turn_is_unaffected() -> None:
+    from jigga.runtime.model_router import parse_responses_stream
+
+    out = parse_responses_stream([
+        'data: {"type":"response.output_item.done","item":{"type":"message",'
+        '"content":[{"type":"output_text","text":"hello"}]}}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":1}}}',
+    ])
+    assert out["content"] == "hello"
+    assert out["item_types"] == ["message"]
