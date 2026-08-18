@@ -589,6 +589,12 @@ def build_parser() -> argparse.ArgumentParser:
         "artifact", help="Print a file a run produced (see `workflow runs`)")
     workflow_artifact.add_argument("run_id")
     workflow_artifact.add_argument("name", help="Artifact file name, e.g. day_summary.md")
+    workflow_artifact_save = workflow_sub.add_parser(
+        "artifact-save", help="Replace a file a run produced (e.g. fix a draft before approving)")
+    workflow_artifact_save.add_argument("run_id")
+    workflow_artifact_save.add_argument("name", help="Artifact file name, e.g. day_summary.md")
+    workflow_artifact_save.add_argument("--content", help="New content; reads stdin when omitted")
+    workflow_artifact_save.add_argument("--json", action="store_true", dest="json_output")
     workflow_resume = workflow_sub.add_parser(
         "resume", help="Advance a v2 run now (e.g. right after `jigga approvals approve <code>`)")
     workflow_resume.add_argument("run_id")
@@ -1975,6 +1981,21 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
             print(f"No artifact {args.name!r} in run {args.run_id!r}.")
             return 1
         print(content, end="")
+    elif args.workflow_command == "artifact-save":
+        import sys as _sys
+
+        from jigga.runtime.workflow_engine import write_run_artifact
+
+        content = args.content if args.content is not None else _sys.stdin.read()
+        try:
+            result = write_run_artifact(paths, args.run_id, args.name, content)
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
+        if args.json_output:
+            print_json(result)
+        else:
+            print(f"✓ {'created' if result['created'] else 'saved'} {result['path']}")
     elif args.workflow_command == "resume":
         from jigga.runtime.workflow_engine import advance_run, load_run
 

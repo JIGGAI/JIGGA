@@ -219,17 +219,68 @@ def run_artifacts(run_dir: Path) -> list[dict[str, Any]]:
     return entries
 
 
-def read_run_artifact(paths: JiggaPaths, run_id: str, name: str) -> str | None:
-    """One artifact's text, or None. Confined to the run directory: an artifact
-    name is data from a workflow definition, so `../../secrets` is a path worth
-    refusing rather than resolving."""
+def _artifact_path(run_dir: Path, name: str) -> Path:
+    """`run_dir/name`, refused if it escapes.
+
+    An artifact name is data from a workflow definition, so `../../secrets` is a
+    path worth refusing rather than resolving. Resolved, not just string-checked,
+    so a symlink planted in the run directory cannot point out of it either.
+    """
+    run_dir = run_dir.resolve()
+    target = (run_dir / name).resolve()
+    if target != run_dir and run_dir not in target.parents:
+        raise ValueError(f"Artifact {name!r} escapes the run directory")
+    return target
+
+
+def _run_dir_for(paths: JiggaPaths, run_id: str) -> Path | None:
     for run_json in (paths.runs / "workflows").glob(f"*/{run_id}/run.json"):
-        run_dir = run_json.parent.resolve()
-        target = (run_dir / name).resolve()
-        if target != run_dir and run_dir not in target.parents:
-            raise ValueError(f"Artifact {name!r} escapes the run directory")
-        return target.read_text(encoding="utf-8") if target.is_file() else None
+        return run_json.parent
     return None
+
+
+def read_run_artifact(paths: JiggaPaths, run_id: str, name: str) -> str | None:
+    """One artifact's text, or None if there is no such run or file."""
+    run_dir = _run_dir_for(paths, run_id)
+    if run_dir is None:
+        return None
+    target = _artifact_path(run_dir, name)
+    return target.read_text(encoding="utf-8") if target.is_file() else None
+
+
+def write_run_artifact(paths: JiggaPaths, run_id: str, name: str, content: str) -> dict[str, Any]:
+    """Replace one of a run's files, so a human can correct a draft in place.
+
+    This is the point of parking a run on `human_approval`: you read what the
+    model produced, fix the two sentences that are wrong, and approve — rather
+    than denying and re-running the whole graph to change a headline.
+
+    A `running` run is refused. Its nodes write their outputs as they finish, so
+    an edit made mid-execution is a race with nothing to arbitrate it: the node
+    would overwrite the human, or the human would overwrite a node, depending on
+    which won by milliseconds. Parked, completed and failed runs are all fine —
+    nothing is going to touch the file behind you.
+    """
+    run_dir = _run_dir_for(paths, run_id)
+    if run_dir is None:
+        raise ValueError(f"Run not found: {run_id}")
+    record = load_run(paths, run_id) or {}
+    status = record.get("status")
+    if status == "running":
+        raise ValueError(
+            f"Run {run_id} is running — a node may be writing this file right now. "
+            "Edit it once the run finishes or parks for approval.")
+
+    target = _artifact_path(run_dir, name)
+    created = not target.exists()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    append_event(paths.logs, "workflow.artifact.written",
+                 workflow=record.get("workflow_id"), run_id=run_id, artifact=name,
+                 created=created, bytes=len(content.encode("utf-8")),
+                 run_status=status)
+    return {"run_id": run_id, "artifact": name, "path": str(target), "created": created,
+            "bytes": len(content.encode("utf-8"))}
 
 
 def start_run(paths: JiggaPaths, workflow: WorkflowConfig, *, trigger: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -252,9 +252,21 @@ jigga workflow plan <id>                     # review steps + per-step policy
 jigga workflow run  <id> [--json]            # execute now
 jigga workflow runs [--active] [<id>]        # v2 runs + node-state counts
 jigga workflow resume <run-id>               # advance a parked v2 run now
+jigga workflow artifact <run-id> <name>      # print a file the run produced
+jigga workflow artifact-save <run-id> <name> [--content ...]   # replace one (stdin when omitted)
 jigga workflow suggest [--min-count N]       # inferred workflow proposals
 jigga workflow apply <suggestion-id> [--approve]   # materialize a proposal
 ```
+
+A step's `output:` name is a real file in the run directory, and
+`artifact` / `artifact-save` are how you read and correct one. Correcting is the
+point of parking a run on `human_approval`: read what the model produced, fix
+the two sentences that are wrong, then approve — rather than denying and
+re-running the whole graph to change a headline. A `running` run refuses the
+edit, because its nodes are still writing their outputs and there is nothing to
+arbitrate a race between a node and a human. Every edit is audited as
+`workflow.artifact.written` with the actor, so an artifact a human rewrote stays
+distinguishable from what the model wrote.
 
 Workflows are files — version them, diff them, and roll them out with
 `jigga plan` / `jigga apply` alongside the rest of your agents-as-code.
