@@ -71,14 +71,14 @@ def test_context_pack_injects_summary_and_trigger_matched_instructions(tmp_path:
     registry = _registry(paths)
     agent = _agent(["release_notes.run"])
 
-    text, layers = assemble_agent_context(
+    text, layers, _ = assemble_agent_context(
         paths.home, agent, "writer", registry=registry, task_text="please draft the changelog for v2")
     assert "skills" in layers and "skills-active" in layers
     assert "release-notes — Draft release notes" in text
     assert "Group PRs by theme" in text
 
     # No trigger match → summary only, instructions stay out of context.
-    text, layers = assemble_agent_context(
+    text, layers, _ = assemble_agent_context(
         paths.home, agent, "writer", registry=registry, task_text="water the plants")
     assert "skills" in layers and "skills-active" not in layers
     assert "Group PRs by theme" not in text

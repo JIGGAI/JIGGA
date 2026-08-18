@@ -475,13 +475,17 @@ def _run_agent(
         # Group/channel messages run with restricted memory (no private USER /
         # MEMORY layers) — the leak/injection guard set on the task at ingest.
         restricted = bool((task.metadata or {}).get("restricted_memory"))
-        system_context, layers = assemble_agent_context(
+        system_context, layers, context_stats = assemble_agent_context(
             home, agent, ws_team_id, registry=registry,
             memory_context=memory_context, restricted=restricted,
             task_text=f"{task.title or ''} {task.description or ''}".strip(),
         )
+        # The sizes ride along with the layer list: "which layers loaded" cannot
+        # tell you how much of the agent's memory the caps dropped, and that
+        # number is what decides whether retrieval needs to get smarter.
         append_event(logs_dir, "agent.context.assembled", agent=agent_id, task_id=task.id,
-                     run_id=run_id, layers=layers, restricted=restricted)
+                     run_id=run_id, layers=layers, team=ws_team_id,
+                     **context_stats.to_dict())  # carries `restricted` itself
         loop = _run_task_loop(
             home=home, logs_dir=logs_dir, run_dir=run_dir, run_id=run_id, agent=agent, task=task,
             effective_mode=effective_mode, registry=registry, memory_context=memory_context,

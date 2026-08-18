@@ -199,12 +199,43 @@ Each step ships independently; each step is reversible; nothing forces existing 
 - Locking JIGGA to any single graph DB, vector store, or embedding provider.
 - Silent behavior changes for existing installs — every new backend is opt-in.
 
+## Baseline: what we inject today (J-001)
+
+The JIGGA side of ClawRecipes ticket 0272, shipped as instrumentation rather
+than a spike: `assemble_agent_context()` records what each layer contributed and
+what the caps took away, on the existing `agent.context.assembled` audit event.
+`jigga memory injection-report [--days N] [--json]` summarises a window.
+
+Measured per invocation: estimated tokens injected, per-layer available vs
+included characters, which layers were clipped by their own cap and which were
+dropped entirely once the 9,000-char total ran out, the stable/volatile split
+(the prefix-cache-eligible share), and how many pinned facts and team learnings
+existed versus how many the `_RECENT_FACTS` window let through.
+
+**First reading (2026-08-18, seven agents on the maintainer's live config):**
+
+```
+tokens injected   p50 780   p95 1001   max 1001
+hit the 9k total cap   0 runs (0.0%)
+prefix-cacheable       75.7% of injected chars
+team facts seen        learnings 3/3 · pinned 0/0
+```
+
+This changes the case for graph memory rather than supporting it. The caps are
+**not** binding — runs land around a third of the budget, nothing is dropped,
+and the recency window is returning every fact that exists. So the argument for
+a graph here cannot be "the prompt is starving"; it has to be recall quality on
+a memory corpus large enough to matter, which this install does not yet have.
+Re-read the report once memory has grown before committing to the build. The
+one number already worth acting on is the 24% of injected characters that sit
+below the volatile boundary and are re-billed at full price on every call.
+
 ## Open questions
 
 1. **Ontology governance.** Who owns the base entity/edge types? Recommendation: JIGGA core owns a minimal set; skills extend via a documented plugin protocol.
 2. **Local embedding model default.** `bge-small-en-v1.5` (400MB) vs `all-MiniLM-L6-v2` (80MB) — trade-off between quality and install size.
 3. **Vector store engine.** `sqlite-vec` (matches existing FTS5 pattern) vs LanceDB (better at scale). Default `vector: local` uses `sqlite-vec`; `vector: lancedb` for heavier installs.
-4. **Graphiti extraction cost on our real Codex bill.** Requires a spike to measure — same spike as ClawRecipes ticket 0273, adapted for JIGGA episodes.
+4. **Graphiti extraction cost on our real Codex bill.** Requires a spike to measure — same spike as ClawRecipes ticket 0273, adapted for JIGGA episodes. Not yet run: it needs 500 real extractions against a paid model and a local Kuzu/Neo4j install, both of which are decisions rather than code.
 
 ## Referenced work
 

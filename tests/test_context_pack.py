@@ -36,6 +36,14 @@ def _registry(paths) -> CapabilityRegistry:
 
 
 def _assemble(paths, member="writer", **kw):
+    """(text, layers) — the stats third element is exercised separately below."""
+    agent = load_agents(paths.agents)[member]
+    text, layers, _stats = assemble_agent_context(
+        paths.home, agent, "mt", registry=_registry(paths), **kw)
+    return text, layers
+
+
+def _assemble_full(paths, member="writer", **kw):
     agent = load_agents(paths.agents)[member]
     return assemble_agent_context(paths.home, agent, "mt", registry=_registry(paths), **kw)
 
