@@ -42,6 +42,15 @@ class CapabilityManifest:
     # skill_pack-specific field: filename inside the pack dir holding the
     # instructions/system-prompt the model is given on dispatch.
     instructions: str = "instructions.md"
+    # Per-action input shapes: {action: {param: {type, description, required?}}}.
+    # Optional and additive — an action without one is still offered with an
+    # open object, exactly as before.
+    #
+    # Every action used to be advertised as `{"properties": {}}`, i.e. "takes
+    # anything", so the model had to infer what a tool wanted from its one-line
+    # summary. Declaring the shape is the difference between calling a tool and
+    # guessing at it.
+    action_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
     # app-specific fields (plugins — out-of-process supervised sidecars):
     # `run` is the long-running argv (service ExecStart, cwd = plugin dir);
     # `setup` is a list of one-shot argvs run at install (npm ci, build...);
@@ -145,6 +154,8 @@ class CapabilityManifest:
             args=[str(item) for item in args],
             transport=str(data.get("transport", "stdio")),
             instructions=str(data.get("instructions", "instructions.md")),
+            action_inputs={str(k): dict(v) for k, v in (data.get("action_inputs") or {}).items()
+                           if isinstance(v, dict)},
             source=source,
             manifest_hash=manifest_hash,
             bundled=bundled,
@@ -270,6 +281,36 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         # what makes the bundle safe to ship at risk_level: low — the per-path
         # gating is the security boundary, not the declaration.
         "permissions": {"filesystem": {"read": [], "write": []}},
+        # Declared shapes: without them every filesystem action was advertised
+        # as taking an open object, so the model had to infer that read_file
+        # wants `path` and search_files wants `pattern` from a shared one-line
+        # summary — and probe when it guessed wrong.
+        "action_inputs": {
+            "filesystem.read_file": {
+                "path": {"type": "string", "required": True,
+                         "description": "Absolute or ~-relative path of the file to read."},
+            },
+            "filesystem.write_file": {
+                "path": {"type": "string", "required": True,
+                         "description": "Absolute or ~-relative path to write."},
+                "content": {"type": "string", "required": True, "description": "Full new file content."},
+                "overwrite": {"type": "boolean", "description": "Replace an existing file (default false)."},
+                "create_parents": {"type": "boolean",
+                                   "description": "Create missing parent directories (default false)."},
+            },
+            "filesystem.list_directory": {
+                "path": {"type": "string", "required": True, "description": "Directory to list."},
+                "recursive": {"type": "boolean", "description": "Walk subdirectories (default false)."},
+                "glob": {"type": "string", "description": "Only entries matching this glob, e.g. '*.md'."},
+            },
+            "filesystem.search_files": {
+                "path": {"type": "string", "required": True, "description": "Directory to search under."},
+                "pattern": {"type": "string", "required": True,
+                            "description": "Text or regex to find inside files."},
+                "case_sensitive": {"type": "boolean", "description": "Default false."},
+                "max_matches": {"type": "integer", "description": "Cap on returned matches."},
+            },
+        },
         "risk_level": "low",
         "handler": "runtime.filesystem",
     },
@@ -303,6 +344,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "version": "0.1.0",
         "summary": "Persist a durable fact to the team's memory (team.jsonl) for later reuse/retrieval.",
         "actions": ["memory.remember"],
+        "action_inputs": {
+            "memory.remember": {
+                "text": {"type": "string", "required": True,
+                         "description": "The durable fact, decision or runbook to remember."},
+                "type": {"type": "string",
+                         "description": "fact | decision | preference | learning | runbook."},
+                "tags": {"type": "array", "description": "Optional tags for retrieval."},
+            },
+        },
         "risk_level": "low",
         "handler": "runtime.remember",
     },
@@ -312,6 +362,12 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "summary": "Search memory (raw entries + structured/summaries) by keyword, scope-aware. "
                    "Returns ranked snippets; backed by a sqlite FTS5 index that scales as memory grows.",
         "actions": ["memory.search"],
+        "action_inputs": {
+            "memory.search": {
+                "query": {"type": "string", "required": True, "description": "Keywords to search for."},
+                "limit": {"type": "integer", "description": "Maximum results (default 10)."},
+            },
+        },
         "risk_level": "low",
         "handler": "runtime.search_memory",
     },
