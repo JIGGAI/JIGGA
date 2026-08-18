@@ -728,7 +728,7 @@ def build_parser() -> argparse.ArgumentParser:
     webchat_send = webchat_sub.add_parser(
         "send", help="Send a message into webchat (first use enables the channel + grants the reply tool)"
     )
-    webchat_send.add_argument("--text", required=True, help="Message text")
+    webchat_send.add_argument("--text", help="Message text; reads stdin when omitted")
     webchat_send.add_argument(
         "--agent", default=None,
         help="Address a specific agent instead of the channel default (its thread = its id unless --conversation)",
@@ -951,7 +951,7 @@ def build_parser() -> argparse.ArgumentParser:
     team_memory_list.add_argument("--json", action="store_true", dest="json_output")
     team_memory_add = team_memory_sub.add_parser("add", help="Append a durable entry to team memory")
     team_memory_add.add_argument("team_id")
-    team_memory_add.add_argument("--text", required=True)
+    team_memory_add.add_argument("--text", help="Entry text; reads stdin when omitted")
     team_memory_add.add_argument("--type", dest="memory_type", default="fact",
                                  help="fact | decision | preference | runbook | … (free-form)")
     team_memory_add.add_argument("--tag", dest="tags", action="append", default=[],
@@ -1741,6 +1741,26 @@ def _workflow_problems(workflow_id: str, content: str) -> list[str]:
     return [p for p in validate_configs({}, {}, {workflow.id: workflow}) if is_error(p)]
 
 
+def _text_or_stdin(value: str | None, flag: str) -> str:
+    """A message body from `--flag` or, when it is omitted, from stdin.
+
+    Passing a body as an argv value publishes it: argv is world-readable through
+    /proc, so every other account on the machine can read a chat message or a
+    memory entry out of `ps` while the command runs. Callers that have the text
+    in hand (jiggaview, a script) should pipe it instead.
+
+    Reading stdin from an interactive terminal would just hang looking like a
+    crash, so that case is an error with the fix in it rather than a wait.
+    """
+    import sys as _sys
+
+    if value is not None:
+        return value
+    if _sys.stdin.isatty():
+        raise ValueError(f"No {flag} given. Pass {flag} or pipe the text in on stdin.")
+    return _sys.stdin.read()
+
+
 def _workflow_save(paths: Any, args: argparse.Namespace) -> int:
     """Write a workflow's yaml, validated and audited, rolling back on invalid."""
     import sys as _sys
@@ -1843,7 +1863,11 @@ def _team_memory_cmd(paths: Any, args: argparse.Namespace) -> int:
         return 0
 
     if args.team_memory_command == "add":
-        text = args.text.strip()
+        try:
+            text = _text_or_stdin(args.text, "--text").strip()
+        except ValueError as exc:
+            print(f"! {exc}")
+            return 1
         if not text:
             print("! Nothing to remember: --text is empty")
             return 1
@@ -2348,7 +2372,12 @@ def _cmd_webchat(args: argparse.Namespace) -> int:
         # Snapshot before the send so --wait can return exactly the replies this
         # message produced (ids, not counts — robust to interleaved writers).
         seen = {e.get("id") for e in webchat.history(paths.home, conversation_id=conversation, limit=1000)}
-        entry = webchat.append_inbound(paths.home, args.text,
+        try:
+            text = _text_or_stdin(args.text, "--text")
+        except ValueError as exc:
+            print(f"! {exc}", file=sys.stderr)
+            return 1
+        entry = webchat.append_inbound(paths.home, text,
                                        conversation_id=conversation, sender=args.sender,
                                        target_agent=target_agent)
         replies: list[dict[str, Any]] = []
