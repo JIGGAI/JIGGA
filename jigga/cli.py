@@ -5,6 +5,7 @@ import json
 import re
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1895,15 +1896,18 @@ def _cmd_workflow(args: argparse.Namespace) -> int:
                 print(f"! {problem}")
             print("Plan: runnable" if plan["can_run"] else "Plan: blocked / approval needed")
     elif args.workflow_command == "run":
-        print_json(
-            run_workflow(
-                paths,
-                args.workflow_id,
-                project_capabilities=project_capabilities_dir(
-                    resolve_project_root(args.project)
-                ),
+        with _manual_execution_lock(paths, f"running workflow {args.workflow_id!r}") as acquired:
+            if not acquired:
+                return 1
+            print_json(
+                run_workflow(
+                    paths,
+                    args.workflow_id,
+                    project_capabilities=project_capabilities_dir(
+                        resolve_project_root(args.project)
+                    ),
+                )
             )
-        )
     elif args.workflow_command == "suggest":
         from jigga.core.config import resolve_default_agent
 
@@ -2593,7 +2597,10 @@ def _cmd_team(args: argparse.Namespace) -> int:
                 print(f"{team['id']:24} lead={team['lead'] or '-':20} members={len(team['members'])}  {team['name']}")
         return 0
     if args.team_command == "run":
-        print_json(run_team(paths, args.team_id))
+        with _manual_execution_lock(paths, f"running team {args.team_id!r}") as acquired:
+            if not acquired:
+                return 1
+            print_json(run_team(paths, args.team_id))
         return 0
     if args.team_command == "handoff":
         created = fire_handoffs(
@@ -3264,11 +3271,42 @@ def _cmd_model(args: argparse.Namespace) -> int:
     return 0
 
 
+# How long a manually-typed run waits for the runtime to be free before giving
+# up. A person asked for this, so a short wait beats "no"; an unbounded wait
+# would hang the terminal behind someone else's long agent run.
+MANUAL_RUN_LOCK_WAIT_SECONDS = 60.0
+
+
+@contextmanager
+def _manual_execution_lock(paths: Any, what: str) -> Any:
+    """Serialize a hand-typed run against the supervisor.
+
+    `run agent`, `team run` and `workflow run` all execute agents, and claiming
+    a task is a read-modify-write — two runners take the same one. The
+    supervisor has taken this lock since #210; these three never did, so a
+    command typed while a tick was running could double-run the work it found.
+    """
+    from jigga.runtime.execution_lock import execution_lock, holder_pid
+
+    with execution_lock(paths.home, timeout=MANUAL_RUN_LOCK_WAIT_SECONDS) as acquired:
+        if not acquired:
+            pid = holder_pid(paths.home)
+            print(f"! The runtime is busy running agents{f' (pid {pid})' if pid else ''}; "
+                  f"{what} would double-run work it is already doing. "
+                  f"Waited {MANUAL_RUN_LOCK_WAIT_SECONDS:.0f}s — try again shortly.",
+                  file=sys.stderr)
+        yield acquired
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     from jigga.runtime.agent import run_agent
 
-    print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id, dry_run_model=args.dry_run_model))
+    with _manual_execution_lock(paths, f"running {args.agent_id!r}") as acquired:
+        if not acquired:
+            return 1
+        print_json(run_agent(paths.home, paths.logs, paths.tasks, paths.agents, args.agent_id,
+                             dry_run_model=args.dry_run_model))
     return 0
 
 
