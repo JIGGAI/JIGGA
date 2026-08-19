@@ -291,9 +291,28 @@ def test_launchd_daemon_has_username(tmp_path):
     assert "<key>UserName</key>" in plist and "<string>bob</string>" in plist
 
 
-def test_system_paths():
+def test_system_paths(monkeypatch):
+    # With the test sandbox lifted, these are the real OS locations. The suite
+    # normally pins JIGGA_SERVICE_ROOT so nothing can write them (conftest), so
+    # this asserts what an actual install resolves to.
+    monkeypatch.delenv("JIGGA_SERVICE_ROOT", raising=False)
     assert service.systemd_unit_path(system=True) == Path("/etc/systemd/system") / service.SYSTEMD_UNIT
     assert service.launchd_plist_path(system=True) == Path("/Library/LaunchDaemons") / f"{service.LAUNCHD_LABEL}.plist"
+    assert service.systemd_unit_path() == Path.home() / ".config" / "systemd" / "user" / service.SYSTEMD_UNIT
+    assert service.launchd_plist_path() == (
+        Path.home() / "Library" / "LaunchAgents" / f"{service.LAUNCHD_LABEL}.plist")
+
+
+def test_the_sandbox_relocates_every_unit_path(tmp_path, monkeypatch):
+    """`JIGGA_SERVICE_ROOT` is the seam that keeps a test run from reconfiguring
+    the machine. It has to cover ALL of them — user and system, supervisor and
+    plugin — because the one it misses is the one something writes."""
+    monkeypatch.setenv("JIGGA_SERVICE_ROOT", str(tmp_path))
+    for path in (service.systemd_unit_path(), service.systemd_unit_path(system=True),
+                 service.launchd_plist_path(), service.launchd_plist_path(system=True),
+                 service.app_systemd_path("view"), service.app_launchd_path("view")):
+        assert tmp_path in path.parents, path
+    assert Path.home() not in service.systemd_unit_path().parents
 
 
 def test_install_system_uses_system_bus_and_path(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ tests never actually pop a desktop notification while exercising the
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,51 @@ def _isolate_from_real_system(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None
     paths or set these envs themselves, which still wins."""
     monkeypatch.setenv("JIGGA_PROJECT", str(tmp_path))
     monkeypatch.setenv("JIGGA_HOME", str(tmp_path / ".jigga-test-home"))
+
+
+@pytest.fixture(autouse=True)
+def _service_units_go_to_a_sandbox(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """No test writes the machine's real systemd/launchd units.
+
+    Found live: running the suite rewrote
+    `~/.config/systemd/user/jigga-supervisor.service` to point at the dev
+    checkout's interpreter, so the next restart would have moved production off
+    `jigga-stable` onto whatever branch was checked out. The test that did it
+    was not testing systemd at all — it ran `jigga update --apply` to check an
+    agent-yaml migration, and `update` legitimately refreshes the unit.
+
+    `--home` could not isolate it: unit paths come from the OS user's home
+    because that is the only place systemd reads them. So they get their own
+    override, pinned here for every test.
+    """
+    monkeypatch.setenv("JIGGA_SERVICE_ROOT", str(tmp_path / "service-root"))
+
+
+@pytest.fixture(autouse=True)
+def _real_service_dirs_are_write_protected(monkeypatch: pytest.MonkeyPatch, request) -> None:
+    """Belt to the sandbox's braces: a write to a REAL unit directory fails loudly.
+
+    The sandbox above depends on every unit path going through
+    `service.service_root()`. A future hardcoded path would quietly escape it,
+    which is exactly how this class of bug arrived the first time — the existing
+    guard blocked `systemctl` while `install_service` wrote the file first, one
+    layer below it. This one is positioned at the write itself, so it does not
+    care which code path got there.
+    """
+    real = Path.home()
+    protected = (real / ".config" / "systemd", real / "Library" / "LaunchAgents",
+                 Path("/etc/systemd/system"), Path("/Library/LaunchDaemons"))
+    original = Path.write_text
+
+    def guarded(self: Path, *args, **kwargs):
+        if any(directory == self or directory in self.parents for directory in protected):
+            raise AssertionError(
+                f"{request.node.nodeid} tried to write a real service unit: {self}. "
+                "Unit paths must go through service.service_root(), which tests pin "
+                "to a temp dir via JIGGA_SERVICE_ROOT.")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded)
 
 
 @pytest.fixture(autouse=True)
