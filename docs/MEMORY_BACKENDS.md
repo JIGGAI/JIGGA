@@ -145,6 +145,32 @@ shapes so `search_memory()` can fuse across all three.
 - BM25 ranking, graceful fallback to tokenized scan when FTS5 is missing.
 - **No changes required** — the existing implementation gets wrapped in the `KeywordIndex` protocol.
 
+### `memory-vector-local` (vector, opt-in) — the first pack built on the seam
+
+Lives in its own repo (`JIGGAI/memory-vector-local`), not in this one, which is
+the point: it owns its dependencies so core keeps none of them.
+
+```bash
+pip install -e .                          # into the same env as jigga
+python -m memory_vector_local.install     # copies the manifest into ~/.jigga
+jigga capabilities approve ~/.jigga/capabilities/memory-vector-local/manifest.yaml --approve
+```
+
+```yaml
+memory:
+  backends: {keyword: file, vector: memory-vector-local}
+```
+
+Two embedders. The default is stdlib feature hashing — no model download, runs
+anywhere, and captures overlap in **wording**, not meaning. `sentence-transformers`
+is an optional extra for actual semantic neighbourhoods. The distinction matters
+in practice: on the maintainer's install (20 memory documents) the hashing
+default fuses usefully with the keyword index on queries that share vocabulary
+with the corpus — the documents both backends agree on rank above keyword-only
+hits — and returns nothing for a natural-language question whose words do not
+appear in the documents. That is the honest boundary of a lexical embedder, and
+the reason the semantic extra exists.
+
 ### `vector_local` (vector, opt-in)
 
 - Local embedding via `sentence-transformers` (default: `bge-small-en-v1.5`).
