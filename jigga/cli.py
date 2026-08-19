@@ -773,6 +773,8 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--actor", help="Filter by who acted: 'human' / 'machine', a family "
                                        "('user', 'agent', 'workflow', 'supervisor'), or an exact "
                                        "actor like 'agent:chief'")
+    audit.add_argument("--contains", help="Free-text search: keep events whose type, status, "
+                                         "actor or details contain this text (case-insensitive)")
     audit.add_argument("-n", "--count", type=int, default=None, help="Keep only the most recent N matches")
     audit.add_argument("--json", action="store_true", dest="json_output")
 
@@ -2514,6 +2516,7 @@ def _cmd_audit(args: argparse.Namespace) -> int:
         since=args.since,
         status=args.status,
         actor=args.actor,
+        contains=args.contains,
         limit=args.count,
     )
     if args.json_output:
