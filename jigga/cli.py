@@ -45,7 +45,7 @@ from jigga.runtime.google_calendar import (
 )
 from jigga.runtime.inference import apply_suggestion, suggest_workflows
 from jigga.runtime.memory import inspect_memory
-from jigga.runtime.memory_index import rebuild_index, search_memory
+from jigga.runtime.memory_index import rebuild_index
 from jigga.runtime.compaction import compact_memory
 from jigga.runtime.memory_proposals import apply_proposal, list_proposals
 from jigga.runtime.model_router import build_task_model_request, call_model, load_model_config
@@ -1657,16 +1657,24 @@ def _cmd_memory(args: argparse.Namespace) -> int:
     if args.memory_command == "inspect":
         print_json(inspect_memory(paths.memory))
     elif args.memory_command == "search":
-        results = search_memory(paths.memory, args.query, scope=args.scope, team=args.team,
-                                limit=args.limit, rebuild=args.rebuild)
+        from jigga.runtime.memory_router import search as search_all
+
+        results, notes = search_all(paths.home, args.query, scope=args.scope, team=args.team,
+                                    limit=args.limit, rebuild=args.rebuild)
         if args.json_output:
-            print_json(results)
-        elif not results:
-            print("No matches.")
+            print_json({"results": results, "degraded": notes} if notes else results)
         else:
+            for note in notes:  # said before the results, not buried under them
+                print(f"! {note}")
+            if not results:
+                print("No matches.")
             for r in results:
-                print(f"[{r['layer']}] {r['path']}")
-                print(f"    {r['snippet']}")
+                # Tolerant access: a hit now may come from a third-party
+                # backend, which is not obliged to fill every field the
+                # keyword index does.
+                print(f"[{r.get('layer', '?')}] {r.get('path', '')}")
+                if r.get("snippet"):
+                    print(f"    {r['snippet']}")
     elif args.memory_command == "injection-report":
         from jigga.runtime.memory_injection import render, report
 
