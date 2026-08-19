@@ -530,6 +530,11 @@ def build_parser() -> argparse.ArgumentParser:
     memory_search.add_argument("--rebuild", action="store_true", help="Force a fresh index first")
     memory_search.add_argument("--json", action="store_true", dest="json_output")
     memory_sub.add_parser("reindex", help="Rebuild the memory search index")
+    memory_injection = memory_sub.add_parser(
+        "injection-report",
+        help="How much context agents actually get injected, and what the caps drop")
+    memory_injection.add_argument("--days", type=int, default=7)
+    memory_injection.add_argument("--json", action="store_true", dest="json_output")
     memory_compact = memory_sub.add_parser("compact", help="Compact memory now (archive old raw / stale facts / finished tasks)")
     memory_compact.add_argument("--dry-run", action="store_true", dest="dry_run")
     memory_compact.add_argument("--json", action="store_true", dest="json_output")
@@ -1662,6 +1667,14 @@ def _cmd_memory(args: argparse.Namespace) -> int:
             for r in results:
                 print(f"[{r['layer']}] {r['path']}")
                 print(f"    {r['snippet']}")
+    elif args.memory_command == "injection-report":
+        from jigga.runtime.memory_injection import render, report
+
+        data = report(paths.logs, days=args.days)
+        if args.json_output:
+            print_json(data)
+        else:
+            print(render(data))
     elif args.memory_command == "reindex":
         count = rebuild_index(paths.memory)
         print(f"Indexed {count} memory document(s).")

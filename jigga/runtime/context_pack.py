@@ -38,6 +38,7 @@ stripping, which would thrash the provider prompt cache.
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,64 @@ _RECENT_FACTS = 8
 # Everything above this marker is byte-stable across calls (provider prefix
 # caching covers it); everything below may change per day/run.
 VOLATILE_BOUNDARY = "<!-- context: stable layers above · volatile below -->"
+
+
+@dataclass
+class LayerStat:
+    """What one layer cost, and what it lost.
+
+    `available` vs `included` is the whole point: a layer clipped by its own cap
+    and a layer dropped by the total budget both read as "present" in the old
+    `layers` list, and neither says how much of the agent's memory never made it
+    into the prompt.
+    """
+
+    name: str
+    available: int          # characters the source actually had
+    included: int           # characters that reached the prompt (0 if dropped)
+    clipped: bool           # hit its own per-layer cap
+    dropped: bool           # the total budget ran out before it
+    volatile: bool
+    private: bool
+
+
+@dataclass
+class ContextStats:
+    """One assembly, measured. Recorded on `agent.context.assembled`.
+
+    JIGGA's answer to ClawRecipes ticket 0272: before deciding whether graph
+    memory is P0 or P2, measure what the current recency-cap + pinning strategy
+    actually injects, and how much relevance it is dropping on the floor.
+    """
+
+    chars: int = 0
+    tokens_est: int = 0
+    stable_chars: int = 0       # above the boundary — prefix-cache eligible
+    volatile_chars: int = 0     # below it — re-billed every call
+    hit_total_cap: bool = False
+    restricted: bool = False
+    layers: list[LayerStat] = field(default_factory=list)
+    pinned_available: int = 0
+    pinned_included: int = 0
+    facts_available: int = 0
+    facts_included: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chars": self.chars,
+            "tokens_est": self.tokens_est,
+            "stable_chars": self.stable_chars,
+            "volatile_chars": self.volatile_chars,
+            "hit_total_cap": self.hit_total_cap,
+            "restricted": self.restricted,
+            "pinned_available": self.pinned_available,
+            "pinned_included": self.pinned_included,
+            "facts_available": self.facts_available,
+            "facts_included": self.facts_included,
+            # Not "layers": the event already carries the loaded-layer NAMES
+            # under that key, and it is an existing contract worth not breaking.
+            "layer_detail": [asdict(layer) for layer in self.layers],
+        }
 
 
 def _clip(text: str, limit: int = _LAYER_LIMIT) -> str:
@@ -183,17 +242,28 @@ def _curated_memory(home: Path, team_id: str, member: str) -> str | None:
 
 
 def _recent_memory(home: Path, team_id: str, member: str, memory_context: dict[str, Any] | None,
-                   today: date) -> str:
+                   today: date, counts: dict[str, int] | None = None) -> str:
     """VOLATILE memory — changes per day/run, so it lives below the cache
-    boundary: dated daily logs, pinned/recent team facts, scoped includes."""
+    boundary: dated daily logs, pinned/recent team facts, scoped includes.
+
+    `counts`, when passed, records how many pinned facts and team learnings
+    EXISTED versus how many the `_RECENT_FACTS` window let through — the
+    "is recency starving relevance" question, answerable only from both numbers.
+    """
     parts: list[str] = []
     dated = _dated_memory(home, team_id, member, today)
     if dated:
         parts.append("### Recent daily log\n" + _clip(dated))
     pinned = read_pinned(home, team_id)
+    if counts is not None:
+        counts["pinned_available"] = len(pinned)
+        counts["pinned_included"] = len(pinned[-_RECENT_FACTS:])
     if pinned:
         parts.append("### Pinned team facts\n" + "\n".join(f"- {p.get('text', '')}" for p in pinned[-_RECENT_FACTS:]))
     facts = read_team_memory(home, team_id)
+    if counts is not None:
+        counts["facts_available"] = len(facts)
+        counts["facts_included"] = len(facts[-_RECENT_FACTS:])
     if facts:
         parts.append("### Recent team learnings\n" + "\n".join(f"- {f.get('text', '')}" for f in facts[-_RECENT_FACTS:]))
     for inc in (memory_context or {}).get("included", []):
@@ -245,14 +315,21 @@ def assemble_agent_context(
     restricted: bool = False,
     now: datetime | None = None,
     task_text: str | None = None,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], ContextStats]:
     """Build the agent's system-prompt body from the context-pack layers. Returns
-    (text, layers_loaded). `restricted=True` (group/shared session) omits the
-    private USER and MEMORY layers."""
+    (text, layers_loaded, stats). `restricted=True` (group/shared session) omits
+    the private USER and MEMORY layers.
+
+    The stats are measurement only — nothing here changes what gets injected.
+    They exist because "which layers loaded" cannot answer the question that
+    decides whether graph memory is worth building: how much of what the agent
+    knows is being dropped by the caps before it ever reaches the model.
+    """
     home = Path(home)
     member = agent.id
     today = (now or datetime.now(timezone.utc)).date()
     teams = load_teams(home / "teams")
+    counts: dict[str, int] = {}
 
     def authored(relpath: str) -> str | None:
         text = read_file(home, team_id, relpath)
@@ -276,28 +353,68 @@ def assemble_agent_context(
         ("Activated skill instructions", activated_skills_layer(registry, agent, task_text),
          "skills-active", False, True),
         ("Your inbox", _inbox_layer(home, team_id, member), "inbox", True, True),
-        ("What you've done recently", _recent_memory(home, team_id, member, memory_context, today), "recent", True, True),
+        ("What you've done recently", _recent_memory(home, team_id, member, memory_context, today, counts), "recent", True, True),
         ("Team shared context", _shared_context(home, team_id), "shared-context", False, True),
     ]
 
     sections: list[str] = []
     loaded: list[str] = []
+    stats = ContextStats(restricted=restricted)
     total = 0
     boundary_emitted = False
+    budget_spent = False
     for title, body, name, private, volatile in candidates:
         if private and restricted:
             continue
         if not body or not body.strip():
             continue
+        # The layer's full contribution INCLUDING its heading, so `included`
+        # (which is a rendered block) is comparable to it. Counting the heading
+        # on one side only made a report read "1510 of 1390 chars included".
+        raw = body.strip()
+        limit = _LAYER_LIMITS.get(name, _LAYER_LIMIT)
+        available = len(f"## {title}\n") + len(raw)
+        if budget_spent:
+            # Recorded, not silently absent. The layers that lose this race are
+            # the VOLATILE ones — today's log, pinned team facts, the lead's
+            # shared context — because they are deliberately last. A run where
+            # that happens is a run whose agent never saw what the team knows.
+            stats.layers.append(LayerStat(name=name, available=available, included=0,
+                                          clipped=False, dropped=True,
+                                          volatile=volatile, private=private))
+            continue
         if volatile and not boundary_emitted:
             sections.append(VOLATILE_BOUNDARY)
             boundary_emitted = True
-        block = f"## {title}\n{_clip(body, _LAYER_LIMITS.get(name, _LAYER_LIMIT))}"
-        if total + len(block) > _TOTAL_LIMIT:
+        block = f"## {title}\n{_clip(body, limit)}"
+        # A layer can be shortened twice: by its own cap, then by whatever is
+        # left of the total. Asked as a length comparison this reads wrong for a
+        # layer barely over its cap — `_clip` appends a "…(truncated)" marker,
+        # so the clipped block can be LONGER than the original and report as
+        # untouched. Ask the two questions directly instead.
+        budget_trimmed = total + len(block) > _TOTAL_LIMIT
+        if budget_trimmed:
             block = block[: max(0, _TOTAL_LIMIT - total)]
         sections.append(block)
         loaded.append(name)
         total += len(block)
+        stats.layers.append(LayerStat(
+            name=name, available=available, included=len(block),
+            clipped=len(raw) > limit or budget_trimmed, dropped=False,
+            volatile=volatile, private=private))
+        if volatile:
+            stats.volatile_chars += len(block)
+        else:
+            stats.stable_chars += len(block)
         if total >= _TOTAL_LIMIT:
-            break
-    return "\n\n".join(sections), loaded
+            # Do not break: the remaining layers are counted as dropped above,
+            # which is the number ticket 0272 exists to produce.
+            budget_spent = True
+            stats.hit_total_cap = True
+    stats.chars = total
+    stats.tokens_est = round(total / 4)  # the ~4 chars/token rule the caps assume
+    stats.pinned_available = counts.get("pinned_available", 0)
+    stats.pinned_included = counts.get("pinned_included", 0)
+    stats.facts_available = counts.get("facts_available", 0)
+    stats.facts_included = counts.get("facts_included", 0)
+    return "\n\n".join(sections), loaded, stats
