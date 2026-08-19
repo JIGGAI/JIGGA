@@ -69,16 +69,40 @@ def _fmt_interval(interval_seconds: float) -> str:
     return str(int(interval_seconds)) if float(interval_seconds).is_integer() else str(interval_seconds)
 
 
+def service_root(system: bool = False) -> Path:
+    """Where the OS looks for service units.
+
+    Every other piece of JIGGA state moves with `--home`; unit files cannot,
+    because systemd and launchd only read them from fixed locations under the
+    user's real home. That one exception was enough to let a TEST reconfigure
+    the machine's supervisor: `jigga update --apply` refreshes the unit (which
+    is right), the test ran it against `--home tmp_path` (also right), and the
+    unit path ignored `--home` because it is an OS path, so the run rewrote the
+    live `~/.config/systemd/user/jigga-supervisor.service` to point at whichever
+    interpreter ran the suite.
+
+    `JIGGA_SERVICE_ROOT` relocates the whole tree so tests have somewhere real
+    to write. It is a test seam, not a feature: nothing in the product sets it,
+    and pointing a real install at one would install units systemd never reads.
+    """
+    override = os.environ.get("JIGGA_SERVICE_ROOT")
+    if override:
+        # System units land under the same sandbox, in a subdirectory, so a
+        # suite running as root (CI containers do) cannot write /etc either.
+        return Path(override) / "system" if system else Path(override)
+    return Path("/") if system else Path.home()
+
+
 def launchd_plist_path(system: bool = False) -> Path:
     if system:
-        return Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+        return service_root(system=True) / "Library" / "LaunchDaemons" / f"{LAUNCHD_LABEL}.plist"
+    return service_root() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 
 
 def systemd_unit_path(system: bool = False) -> Path:
     if system:
-        return Path("/etc/systemd/system") / SYSTEMD_UNIT
-    return Path.home() / ".config" / "systemd" / "user" / SYSTEMD_UNIT
+        return service_root(system=True) / "etc" / "systemd" / "system" / SYSTEMD_UNIT
+    return service_root() / ".config" / "systemd" / "user" / SYSTEMD_UNIT
 
 
 def _systemctl(system: bool) -> list[str]:
@@ -431,11 +455,11 @@ def app_unit_name(name: str) -> str:
 
 
 def app_launchd_path(name: str) -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{app_label(name)}.plist"
+    return service_root() / "Library" / "LaunchAgents" / f"{app_label(name)}.plist"
 
 
 def app_systemd_path(name: str) -> Path:
-    return Path.home() / ".config" / "systemd" / "user" / app_unit_name(name)
+    return service_root() / ".config" / "systemd" / "user" / app_unit_name(name)
 
 
 def render_app_launchd(name: str, argv: list[str], *, cwd: Path, env: dict[str, str],
