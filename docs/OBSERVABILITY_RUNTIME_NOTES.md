@@ -20,6 +20,7 @@ jigga logs tail [-n N] [--json]              # most recent N events
 jigga audit [--agent X] [--type T] \         # filtered query
             [--since 30m|24h|7d|ISO] \
             [--status ok|error|deny|ask] \
+            [--contains TEXT] \           # free-text search over the whole event
             [-n N] [--json]
 jigga trace <id> [--json]                    # everything correlated to an id
 ```
@@ -110,6 +111,10 @@ jigga logs rotate            # force a rollover + prune now (otherwise automatic
 ```bash
 # what did this agent do in the last hour?
 jigga audit --agent daily_briefing_agent --since 1h
+
+# the fragment you actually remember — searched across type, status, actor and
+# details, because which key holds it differs per event type
+jigga audit --contains "getUpdates failed" --since 24h
 
 # everything that was denied or needs approval today
 jigga audit --status deny --since 24h

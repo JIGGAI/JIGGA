@@ -14,6 +14,7 @@ id when you want to follow a single run.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -103,6 +104,17 @@ def _matches_actor(event: dict[str, Any], actor: str) -> bool:
     return value == actor or value.startswith(f"{actor}:")
 
 
+def _matches_text(event: dict[str, Any], needle: str) -> bool:
+    """Case-insensitive substring match over the whole event.
+
+    Searching the serialised event rather than a chosen set of fields, because
+    the useful needle is usually in `details` — an error sentence, a file path,
+    a conversation id — and which key holds it differs per event type. A search
+    that only looked at `type` would miss every one of those.
+    """
+    return needle in json.dumps(event, default=str).lower()
+
+
 def query_events(
     logs_dir: Path,
     *,
@@ -111,6 +123,7 @@ def query_events(
     since: str | None = None,
     status: str | None = None,
     actor: str | None = None,
+    contains: str | None = None,
     limit: int | None = None,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -118,6 +131,7 @@ def query_events(
     recent N (the tail)."""
     events = read_events(logs_dir)
     cutoff = parse_since(since, now=now) if since else None
+    needle = (contains or "").strip().lower()
 
     selected: list[dict[str, Any]] = []
     for event in events:
@@ -132,6 +146,8 @@ def query_events(
         if status and str(event.get("status")) != status:
             continue
         if actor and not _matches_actor(event, actor):
+            continue
+        if needle and not _matches_text(event, needle):
             continue
         selected.append(event)
 
