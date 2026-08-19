@@ -51,6 +51,11 @@ class CapabilityManifest:
     # summary. Declaring the shape is the difference between calling a tool and
     # guessing at it.
     action_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Implementations this pack supplies to the RUNTIME rather than to an agent
+    # — {slot: "module.path:attr"}, e.g. {"memory.vector": "pack.backend:Index"}.
+    # An action is something an agent calls; a provider is something the runtime
+    # consults on its own (see runtime/providers.py).
+    provides: dict[str, str] = field(default_factory=dict)
     # app-specific fields (plugins — out-of-process supervised sidecars):
     # `run` is the long-running argv (service ExecStart, cwd = plugin dir);
     # `setup` is a list of one-shot argvs run at install (npm ci, build...);
@@ -85,17 +90,32 @@ class CapabilityManifest:
         manifest_hash: str | None = None,
     ) -> "CapabilityManifest":
         kind_early = str(data.get("type", "native"))
-        required = ("name", "version", "summary") if kind_early == "app" else ("name", "version", "summary", "actions")
+        # A pack earns its place by offering something. Usually that is actions
+        # (tools an agent calls); it can instead be `provides` (an implementation
+        # the runtime consults — a memory backend has no agent-facing tool at
+        # all). `app` offers a supervised process. Demanding actions from all
+        # three would force a backend pack to invent a tool nobody calls.
+        provides = data.get("provides") or {}
+        actions = data.get("actions") or []
+        offers_implementation = kind_early == "app" or bool(provides)
+        required = ("name", "version", "summary") if offers_implementation else (
+            "name", "version", "summary", "actions")
         missing = [key for key in required if not data.get(key)]
         if missing:
             raise ValueError(f"Capability manifest missing required fields: {', '.join(missing)}")
-        actions = data.get("actions") or []
         if kind_early == "app":
             if actions:
                 raise ValueError("type: app manifests declare no actions — apps are supervised "
                                  "processes, not dispatchable tools")
-        elif not isinstance(actions, list) or not actions or not all(isinstance(item, str) and item for item in actions):
-            raise ValueError("Capability manifest field 'actions' must be a non-empty list of strings")
+        elif actions or not provides:
+            if not isinstance(actions, list) or not actions or not all(
+                    isinstance(item, str) and item for item in actions):
+                raise ValueError(
+                    "Capability manifest field 'actions' must be a non-empty list of strings")
+        if provides and not (isinstance(provides, dict) and all(
+                isinstance(k, str) and isinstance(v, str) and k and v for k, v in provides.items())):
+            raise ValueError(
+                "Capability manifest field 'provides' must be a {slot: 'module:attr'} mapping")
         risk = str(data.get("risk_level", "low"))
         if risk not in VALID_RISK_LEVELS:
             raise ValueError(f"Invalid capability risk_level: {risk!r}")
@@ -156,6 +176,7 @@ class CapabilityManifest:
             instructions=str(data.get("instructions", "instructions.md")),
             action_inputs={str(k): dict(v) for k, v in (data.get("action_inputs") or {}).items()
                            if isinstance(v, dict)},
+            provides={str(k): str(v) for k, v in provides.items()},
             source=source,
             manifest_hash=manifest_hash,
             bundled=bundled,

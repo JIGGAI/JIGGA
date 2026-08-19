@@ -412,7 +412,7 @@ def _search_memory_handler(
     """Keyword search over the agent's memory (`memory.search`). Input is a query
     string, or `{query, scope?, limit?}`. With an explicit `scope`, searches that
     memory scope; otherwise searches global memory + the agent's own team memory."""
-    from jigga.runtime.memory_index import search_memory
+    from jigga.runtime.memory_router import search as search_memory_all
 
     if isinstance(resolved_input, dict):
         query = str(resolved_input.get("query") or resolved_input.get("q") or "")
@@ -421,8 +421,16 @@ def _search_memory_handler(
     else:
         query, scope, limit = str(resolved_input or ""), None, 10
     team = None if scope else _agent_team_id(runtime)
-    results = search_memory(runtime.home / "memory", query, scope=scope, team=team, limit=limit)
-    return {"source": "capability.memory_search", "query": query, "scope": scope, "team": team, "results": results}
+    results, notes = search_memory_all(runtime.home, query, scope=scope, team=team, limit=limit)
+    payload = {"source": "capability.memory_search", "query": query, "scope": scope,
+               "team": team, "results": results}
+    if notes:
+        # A backend that silently dropped out would have the agent read
+        # keyword-only results believing its graph answered.
+        payload["degraded"] = notes
+        append_event(runtime.logs_dir, "memory.search.degraded", status="warn",
+                     agent=getattr(runtime.agent, "id", None), notes=notes)
+    return payload
 
 
 def _remember_handler(

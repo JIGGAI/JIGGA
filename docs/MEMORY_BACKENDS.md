@@ -47,6 +47,58 @@ memory:
 
 **Backwards compatibility:** an install with no `memory.backends` block behaves as today — file backend, FTS5 keyword index, no vector, no graph.
 
+## How a backend gets in: the provider seam (shipped)
+
+A capability pack has always been able to add **actions** — tools an agent
+calls. That is the wrong shape for a memory backend, which the runtime consults
+on its own: written to when memory lands, read from when memory is searched.
+Neither is a tool call.
+
+So a manifest can also declare what it **provides**:
+
+```yaml
+name: memory-graphiti
+version: 0.1.0
+summary: Temporal knowledge-graph memory via Graphiti over embedded Kuzu.
+type: native
+provides:
+  memory.graph: memory_graphiti.backend:GraphitiIndex
+actions: [memory.query_graph, memory.subgraph, memory.facts_for_episode]
+setup:
+  - ["pip", "install", "graphiti-core", "kuzu"]
+```
+
+`runtime/providers.py` resolves `module:attr` exactly as `dispatcher.resolve_handler`
+resolves an action — same import mechanism, same trust boundary, same approval
+gate. Only **approved** capabilities are consulted: naming a pack in config is
+not enough to get its code imported.
+
+A manifest that provides an implementation no longer has to declare actions.
+A pure backend has no agent-facing tool, and requiring one would mean inventing
+a tool nobody calls.
+
+**This is what keeps core at stdlib + PyYAML.** Graphiti pulls in a graph
+database and an embedding model; the pack owns those and installs them in its
+own `setup:`, so an install that never enables graph memory never pays for them.
+
+### Retrieval fusion (shipped)
+
+`runtime/memory_router.search()` queries every configured backend and fuses the
+rankings with reciprocal rank fusion (`1/(k + rank)`, k=60). RRF needs no score
+calibration between backends — comparing a BM25 score to a cosine similarity is
+meaningless, and normalising them would invent a precision neither has. Each hit
+records which backends found it, because agreement is itself signal.
+
+With nothing configured the router returns the keyword backend's results
+**identically** — not equivalently. A router that re-scored a single backend's
+output would have changed behaviour for every existing install.
+
+An optional backend that is missing, un-approved, dependency-less or throwing
+degrades the search and says so: results still come back, the reason rides along
+as `degraded`, and the agent path audits `memory.search.degraded`. A backend that
+vanished quietly would have someone reading keyword-only results believing their
+graph answered.
+
 ## Backend protocols
 
 Defined in `jigga/runtime/memory/backends/base.py` (proposed). All backends are pure Python interfaces; drivers implement them.
@@ -183,7 +235,9 @@ Fusion strategy stays simple: reciprocal-rank fusion (RRF) as default; teams can
 
 ## Migration path
 
-1. **Extract today's FTS5 code into `backends/file.py`** implementing `KeywordIndex`. No behavior change.
+1. ✅ **Router + provider seam** (`runtime/memory_router.py`, `runtime/providers.py`).
+   Today's FTS5 path is the keyword backend, reached through the router; a pack
+   supplies any other. No behavior change with nothing configured.
 2. **Introduce `backends/base.py`** with the protocols.
 3. **Add `backends/vector_local.py`** behind the flag. Upsert on `raw/` write, delete on compaction.
 4. **Add `backends/graph_graphiti.py`** behind the flag. Extraction pipeline lands with verifier gate.
