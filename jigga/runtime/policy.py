@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +29,11 @@ class PolicyDecision:
         return {"status": self.status, "reason": self.reason, "permission": self.permission}
 
 
+# Kept as the fallback scan for a command line that cannot be lexed (unbalanced
+# quotes). Matching these as raw substrings is what `is_dangerous_command`
+# replaces: "dd " lives inside "git add ", and "rm " inside "terraform ", so the
+# substring form denied `git add .` for every agent in every mode — including
+# `allow` — and no configuration could grant around it.
 DANGEROUS_SHELL_PATTERNS = (
     "rm ",
     "rm -",
@@ -40,6 +47,119 @@ DANGEROUS_SHELL_PATTERNS = (
     "curl *|*sh",
     "wget *|*sh",
 )
+
+# Programs that are never safe to run, whatever the arguments. Compared against
+# the command NAME — argv[0]'s basename — never against the whole line.
+_DANGEROUS_PROGRAMS = frozenset({"rm", "sudo", "dd"})
+# `mkfs`, `mkfs.ext4`, `mkfs.xfs`, …
+_DANGEROUS_PROGRAM_PREFIXES = ("mkfs",)
+# Prefixes that run another program: look past them, so `xargs rm -rf /` and
+# `env FOO=1 rm -rf /` are still caught.
+_COMMAND_WRAPPERS = frozenset({
+    "env", "nohup", "nice", "ionice", "time", "timeout", "stdbuf",
+    "xargs", "command", "exec", "setsid", "builtin",
+})
+_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
+_DOWNLOADERS = frozenset({"curl", "wget"})
+# Character-only tokens the lexer emits for shell operators.
+_OPERATOR_CHARS = frozenset("|&;()<>")
+# Writing to these is routine; writing to any other /dev node is not.
+_SAFE_DEVICES = frozenset({
+    "null", "zero", "full", "tty", "stdin", "stdout", "stderr", "fd",
+    "random", "urandom",
+})
+_DEVICE_WRITE = re.compile(r">>?\s*/dev/([A-Za-z0-9_]+)")
+_FORK_BOMB = re.compile(r":\s*\(\s*\)\s*\{")
+
+
+def _command_segments(command: str) -> list[list[str]] | None:
+    """Split a command line into argv segments at shell operators. `None` when
+    the line cannot be lexed, so the caller falls back to the substring scan.
+
+    `safe_process` hands us `" ".join(argv)` from a list that is never run
+    through a shell, so in practice there is one segment. Splitting anyway keeps
+    the check honest for the free-form strings other callers pass.
+    """
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token and set(token) <= _OPERATOR_CHARS:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _program_of(argv: list[str]) -> tuple[str, list[str]]:
+    """The program a segment actually runs (basename, lowercased) and its
+    arguments, looking past wrapper commands and their `VAR=value` prefixes."""
+    index = 0
+    while index < len(argv):
+        name = os.path.basename(argv[index]).lower()
+        if name not in _COMMAND_WRAPPERS:
+            return name, argv[index + 1:]
+        index += 1
+        while index < len(argv) and (argv[index].startswith("-") or "=" in argv[index]):
+            index += 1
+    return "", []
+
+
+def _has_recursive_flag(args: list[str]) -> bool:
+    for arg in args:
+        if arg == "--recursive":
+            return True
+        if arg.startswith("-") and not arg.startswith("--") and "r" in arg.lower():
+            return True
+    return False
+
+
+def _segment_is_dangerous(argv: list[str]) -> bool:
+    program, args = _program_of(argv)
+    if not program:
+        return False
+    if program in _DANGEROUS_PROGRAMS or program.startswith(_DANGEROUS_PROGRAM_PREFIXES):
+        return True
+    if program == "chmod" and _has_recursive_flag(args) and any("777" in a for a in args):
+        return True
+    if program == "chown" and _has_recursive_flag(args):
+        return True
+    return False
+
+
+def is_dangerous_command(command: str) -> bool:
+    """Whether a command is refused outright, before any mode or allow-list is
+    consulted. Matched on program names and shell structure rather than raw
+    substrings, so `git add .`, `terraform apply` and `npm test > /dev/null`
+    are ordinary commands again while `rm -rf /` and `sudo …` stay refused."""
+    if _FORK_BOMB.search(command):
+        return True
+    for device in _DEVICE_WRITE.findall(command):
+        if device.lower() not in _SAFE_DEVICES:
+            return True
+    segments = _command_segments(command)
+    if segments is None:  # unlexable — fall back to the blunt scan
+        lowered = command.lower()
+        return any(fnmatch.fnmatch(lowered, p) or p in lowered for p in DANGEROUS_SHELL_PATTERNS)
+    downloaded = False
+    for argv in segments:
+        if _segment_is_dangerous(argv):
+            return True
+        program, _ = _program_of(argv)
+        if downloaded and program in _SHELL_PROGRAMS:
+            return True  # curl … | sh
+        if program in _DOWNLOADERS:
+            downloaded = True
+    return False
 
 
 def _mode(config: dict[str, Any] | None, default: str = "deny") -> str:
@@ -273,8 +393,7 @@ def evaluate_resource_permission(agent: AgentConfig, resource: str, required: st
 def evaluate_shell(agent: AgentConfig, command: str) -> PolicyDecision:
     shell = agent.permissions.get("shell") if isinstance(agent.permissions, dict) else {}
     mode = _mode(shell, default="deny")
-    lowered = command.lower()
-    if any(fnmatch.fnmatch(lowered, pattern) or pattern in lowered for pattern in DANGEROUS_SHELL_PATTERNS):
+    if is_dangerous_command(command):
         return PolicyDecision("deny", "Command matches a dangerous shell pattern.", "shell")
     if mode == "allow":
         return PolicyDecision("allow")
