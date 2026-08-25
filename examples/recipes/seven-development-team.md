@@ -114,6 +114,11 @@ agents:
             down what you observed, and hand it back to its author if it needs work.
       permissions:
         network: {mode: ask}
+        # Granting the tickets.* TOOLS is not enough: the capability declares
+        # `permissions: {tickets: move}`, and without it every ticket call is
+        # denied at the policy layer. `jigga doctor` reports the mismatch as
+        # "grant(s) can't work".
+        tickets: move
         # Every role works in real checkouts, so shell is granted but fenced: the
         # listed commands run, anything else asks rather than fails. The lead's list
         # is the widest — it is the role that stands a new project up from nothing.
@@ -190,6 +195,11 @@ agents:
             the ticket, move the ticket to `testing`, and assign QA.
       permissions:
         network: {mode: ask}
+        # Granting the tickets.* TOOLS is not enough: the capability declares
+        # `permissions: {tickets: move}`, and without it every ticket call is
+        # denied at the policy layer. `jigga doctor` reports the mismatch as
+        # "grant(s) can't work".
+        tickets: move
         shell:
           mode: restricted
           allow:
@@ -253,6 +263,11 @@ agents:
             down. Anything that deploys needs an approval — ask rather than assume.
       permissions:
         network: {mode: ask}
+        # Granting the tickets.* TOOLS is not enough: the capability declares
+        # `permissions: {tickets: move}`, and without it every ticket call is
+        # denied at the policy layer. `jigga doctor` reports the mismatch as
+        # "grant(s) can't work".
+        tickets: move
         shell:
           mode: restricted
           allow:
@@ -320,6 +335,11 @@ agents:
             worktree when you are done.
       permissions:
         network: {mode: ask}
+        # Granting the tickets.* TOOLS is not enough: the capability declares
+        # `permissions: {tickets: move}`, and without it every ticket call is
+        # denied at the policy layer. `jigga doctor` reports the mismatch as
+        # "grant(s) can't work".
+        tickets: move
         # QA runs the acceptance check but does not edit the tree it is judging:
         # `shell.run` without `filesystem.write_file`.
         shell:
