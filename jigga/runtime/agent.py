@@ -520,16 +520,20 @@ def _run_agent(
         return record
 
     registry = CapabilityRegistry.load(user_capabilities=home / "capabilities", approvals_dir=home / "policies")
-    runtime = RuntimeContext(agent=agent, home=home, logs_dir=logs_dir, sessions_dir=home / "sessions")
-    scope = agent.memory_scope or "task_only"
-    memory_context = build_context_package(home / "memory", scope)
-    max_tool_calls, max_iterations = _loop_limits(home)
 
     # Bind to the team/agent shared workspace (created on first use). The context
     # pack (identity / persona / role / tools / memory / team) is assembled per
     # task below and injected as the system prompt so the agent wakes grounded.
+    # Resolved before the RuntimeContext because that context is frozen and
+    # carries the workspace: relative filesystem paths resolve against it.
     ws_team_id = ensure_agent_workspace(home, home / "teams", agent)
     append_event(logs_dir, "workspace.ensured", agent=agent_id, run_id=run_id, workspace=ws_team_id)
+
+    runtime = RuntimeContext(agent=agent, home=home, logs_dir=logs_dir,
+                             sessions_dir=home / "sessions", workspace_id=ws_team_id)
+    scope = agent.memory_scope or "task_only"
+    memory_context = build_context_package(home / "memory", scope)
+    max_tool_calls, max_iterations = _loop_limits(home)
     # Inbox snapshot (W6/#62): these unread messages are surfaced in the context
     # pack below; mark them read only after a SUCCESSFUL run, so a failed run
     # re-sees them on the next wake.

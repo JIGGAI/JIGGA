@@ -440,3 +440,91 @@ def test_caps_are_pinned() -> None:
     assert MAX_READ_BYTES == 1_048_576
     assert MAX_LIST_ENTRIES == 1_000
     assert DEFAULT_SEARCH_MAX_MATCHES == 100
+
+
+# --- workspace-relative paths ----------------------------------------------
+#
+# Agents are told about their workspace in their own context ("read
+# shared-context/priorities.md") so they ask for exactly that. Those relative
+# paths used to resolve against whatever the supervisor's cwd happened to be
+# and were policy-checked as bare relative strings, which no absolute
+# allow-list could ever match — every such read and write was refused. The
+# whole engineering team shipped that way and produced nothing.
+
+
+@dataclass
+class _WorkspaceRuntime:
+    """Stand-in carrying the fields the workspace-aware handler reads."""
+
+    agent: AgentConfig | None
+    home: Path
+    workspace_id: str | None
+
+
+def _ws_agent(allow=None, deny=None) -> AgentConfig:
+    return AgentConfig(
+        id="ws_agent", name="WS", role="workspace test", memory_scope="task_only",
+        tools=["filesystem.read_file", "filesystem.write_file"],
+        permissions={"filesystem": {"allow": list(allow or []), "deny": list(deny or [])}},
+    )
+
+
+def _ws_runtime(tmp_path: Path, agent: AgentConfig) -> _WorkspaceRuntime:
+    ws = tmp_path / "workspaces" / "team-x" / "shared-context"
+    ws.mkdir(parents=True, exist_ok=True)
+    return _WorkspaceRuntime(agent=agent, home=tmp_path, workspace_id="team-x")
+
+
+def test_relative_path_resolves_into_the_workspace(tmp_path: Path) -> None:
+    agent = _ws_agent()                       # deliberately NO allow-list
+    runtime = _ws_runtime(tmp_path, agent)
+
+    ACTION_HANDLERS["filesystem.write_file"](
+        WorkflowStep(id="s", action="filesystem.write_file", input={}),
+        None, {"path": "shared-context/notes.md", "content": "hello"}, {}, runtime)
+
+    landed = tmp_path / "workspaces" / "team-x" / "shared-context" / "notes.md"
+    assert landed.read_text() == "hello"      # not the process cwd
+
+
+def test_own_workspace_is_writable_without_an_allow_list(tmp_path: Path) -> None:
+    """The runtime provisions the workspace for the agent; needing a separate
+    allow-list entry for it is the ceremony everyone forgot."""
+    agent = _ws_agent()
+    runtime = _ws_runtime(tmp_path, agent)
+    from jigga.runtime.policy import evaluate_filesystem
+
+    target = str(tmp_path / "workspaces" / "team-x" / "shared-context" / "x.md")
+    root = tmp_path / "workspaces" / "team-x"
+    assert evaluate_filesystem(agent, target, "write").status != "allow"
+    assert evaluate_filesystem(agent, target, "write", workspace_root=root).status == "allow"
+
+
+def test_deny_rules_still_win_inside_the_workspace(tmp_path: Path) -> None:
+    """Widening the working area must not widen what is protected."""
+    from jigga.runtime.policy import evaluate_filesystem
+
+    root = tmp_path / "workspaces" / "team-x"
+    secret = str(root / "secrets" / "token")
+    agent = _ws_agent(deny=[str(root / "secrets") + "*"])
+    assert evaluate_filesystem(agent, secret, "read", workspace_root=root).status == "deny"
+
+
+def test_absolute_paths_are_unaffected(tmp_path: Path) -> None:
+    """Outside the workspace the allow-list is still the only thing that grants."""
+    from jigga.runtime.policy import evaluate_filesystem
+
+    root = tmp_path / "workspaces" / "team-x"
+    outside = str(tmp_path / "elsewhere" / "f.txt")
+    assert evaluate_filesystem(_ws_agent(), outside, "read", workspace_root=root).status != "allow"
+    allowed = _ws_agent(allow=[str(tmp_path / "elsewhere")])
+    assert evaluate_filesystem(allowed, outside, "read", workspace_root=root).status == "allow"
+
+
+def test_no_workspace_keeps_the_old_behaviour(tmp_path: Path) -> None:
+    """Workflows and triggers pass no workspace; they must not change."""
+    from jigga.runtime.policy import evaluate_filesystem
+
+    agent = _ws_agent(allow=[str(tmp_path)])
+    assert evaluate_filesystem(agent, str(tmp_path / "f.txt"), "read").status == "allow"
+    assert evaluate_filesystem(_ws_agent(), str(tmp_path / "f.txt"), "read").status == "deny"
