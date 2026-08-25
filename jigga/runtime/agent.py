@@ -36,8 +36,8 @@ from jigga.runtime.workspaces import (
     ensure_agent_workspace,
 )
 
-DEFAULT_MAX_TOOL_CALLS_PER_RUN = 10
-DEFAULT_MAX_ITERATIONS = 8
+DEFAULT_MAX_TOOL_CALLS_PER_RUN = 50
+DEFAULT_MAX_ITERATIONS = 25
 RISKY_RISK_LEVELS = {"medium", "high"}
 
 
@@ -416,11 +416,21 @@ def _run_task_loop(
         append_event(logs_dir, "agent.loop.halted", status="deny", agent=agent.id,
                      run_id=run_id, task_id=task.id, reason=halted["reason"])
 
-    state = "needs_approval" if halted and "action" in halted else ("completed" if last_result and last_result.status == "ok" else "failed")
-    # Bound exhaustion without a final answer still completes the run, but the
-    # halted marker and audit event make the stop reason explicit.
-    if halted and "action" not in halted:
+    if halted and "action" in halted:
+        state = "needs_approval"        # parked for a human; the work may still land
+    elif halted:
+        # Bound exhaustion. The model call that preceded it usually succeeded,
+        # so the old rule ("ok last result" → completed) recorded these as
+        # finished work — an agent that spent every iteration orienting and
+        # produced nothing reported success on the board. The halted marker was
+        # there, but only inside the run artifact; the task state, which is what
+        # anyone actually looks at, said completed. Ran out of room is a
+        # failure, and the reason is on the run record and the audit event.
+        state = "failed"
+    elif last_result and last_result.status == "ok":
         state = "completed"
+    else:
+        state = "failed"
     return {
         "state": state,
         "final_text": final_text,
