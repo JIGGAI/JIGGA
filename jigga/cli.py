@@ -1044,6 +1044,19 @@ def build_parser() -> argparse.ArgumentParser:
     task_create.add_argument("--workflow", dest="workflow_id")
     task_create.add_argument("--team", help="File this as a ticket on a team's board")
     task_create.add_argument("--lane", help="Starting lane (default: the team's first lane)")
+    task_create.add_argument("--as", dest="as_member",
+                             help="Record this member/role as the author in the audit log")
+    task_create.add_argument("--json", action="store_true", dest="json_output")
+    task_update = task_sub.add_parser(
+        "update", help="Edit a task's title, description or assignee")
+    task_update.add_argument("task_id")
+    task_update.add_argument("--title")
+    task_update.add_argument("--description")
+    task_update.add_argument("--assignee",
+                             help="Reassign; pass an empty string to clear the assignee")
+    task_update.add_argument("--as", dest="as_member",
+                             help="Record this member/role as the editor in the audit log")
+    task_update.add_argument("--json", action="store_true", dest="json_output")
     task_list = task_sub.add_parser("list")
     task_list.add_argument("--lane", help="Only tasks in this ticket lane")
     task_list.add_argument("--json", action="store_true", dest="json_output")
@@ -3452,6 +3465,20 @@ def _cmd_service(args: argparse.Namespace) -> int:
     return 0
 
 
+def _audit_task(logs_dir, actor: str | None, event_type: str, **details) -> None:
+    """Record a hand-filed/hand-edited ticket. `--as` binds the audit actor
+    through `actor_context`, so attribution lands in the event's top-level
+    `actor` field where `jigga audit --actor` can filter on it, rather than
+    inside the details bag."""
+    from jigga.runtime.audit import actor_context, append_event
+
+    if actor:
+        with actor_context(actor):
+            append_event(logs_dir, event_type, **details)
+    else:
+        append_event(logs_dir, event_type, **details)
+
+
 def _cmd_task(args: argparse.Namespace) -> int:
     paths = get_paths(args.home)
     if args.task_command == "create":
@@ -3483,6 +3510,33 @@ def _cmd_task(args: argparse.Namespace) -> int:
             return 1
         task = create_task(paths.tasks, args.title, args.description, args.assignee,
                            args.workflow_id, lane=lane, metadata=metadata)
+        # Audited here rather than inside `create_task`: that function has ~70
+        # call sites (supervisor, handoffs, reminders, channel listener) and no
+        # logs_dir, and those are agent-internal bookkeeping. This is the path a
+        # PERSON files a ticket through, which is the one worth attributing.
+        _audit_task(paths.logs, getattr(args, "as_member", None), "task.created",
+                    task=task.id, title=task.title, team=getattr(args, "team", None),
+                    lane=lane, assignee=task.assignee)
+        print_json(task.to_dict())
+    elif args.task_command == "update":
+        from jigga.runtime.tasks import update_task
+
+        fields = {}
+        for name in ("title", "description", "assignee"):
+            value = getattr(args, name, None)
+            if value is not None:
+                fields[name] = value
+        if not fields:
+            print("Nothing to update. Pass at least one of --title, --description, --assignee.")
+            return 1
+        try:
+            task = update_task(paths.tasks, args.task_id, **fields)
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+        _audit_task(paths.logs, getattr(args, "as_member", None), "task.updated",
+                    task=task.id, fields=sorted(fields), title=task.title,
+                    assignee=task.assignee)
         print_json(task.to_dict())
     elif args.task_command == "list":
         tasks = [task.to_dict() for task in list_tasks(paths.tasks)]

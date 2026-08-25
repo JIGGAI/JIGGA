@@ -95,6 +95,45 @@ def set_task_state(tasks_dir: Path, task_id: str, state: str) -> Task:
     return task
 
 
+# Sentinel for "this field was not passed". `None` is a real value here — it is
+# how you clear a description or unassign a ticket — so it cannot double as
+# "leave unchanged".
+_UNSET = object()
+
+
+def update_task(
+    tasks_dir: Path,
+    task_id: str,
+    *,
+    title: str | object = _UNSET,
+    description: str | None | object = _UNSET,
+    assignee: str | None | object = _UNSET,
+) -> Task:
+    """Edit a task's descriptive fields. Only the fields you pass change.
+
+    `state` and `lane` are deliberately not editable here: they have their own
+    entry points (`set_task_state`, `move_task_lane`) and lane moves are gated
+    per team, which a generic setter would quietly bypass.
+    """
+    task = find_task(tasks_dir, task_id)
+    if task is None:
+        raise ValueError(f"Task not found: {task_id}")
+    if title is not _UNSET:
+        cleaned = str(title).strip()
+        if not cleaned:
+            raise ValueError("Title cannot be empty")
+        task.title = cleaned
+    if description is not _UNSET:
+        task.description = None if description is None else str(description)
+    if assignee is not _UNSET:
+        # "" clears the assignee; the CLI passes None to mean "leave alone".
+        cleaned = None if assignee is None else str(assignee).strip()
+        task.assignee = cleaned or None
+    task.updated_at = now_iso()
+    write_task(tasks_dir, task)
+    return task
+
+
 def pending_summary(tasks_dir: Path) -> tuple[list[str], int]:
     """(sorted assignees with pending tasks, count of pending tasks), computed
     from the index alone — no task-file reads. For the supervisor tick."""
