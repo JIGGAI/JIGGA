@@ -19,8 +19,14 @@ from typing import Any
 from jigga.core.config import load_teams
 from jigga.core.io import append_jsonl
 from jigga.core.models import TeamConfig, now_iso
-from jigga.runtime.audit import append_event
-from jigga.runtime.tasks import find_task, list_tasks, write_task
+from jigga.runtime.audit import actor_context, append_event
+from jigga.runtime.tasks import (
+    archive_task,
+    destroy_task,
+    find_task,
+    list_tasks,
+    write_task,
+)
 from jigga.runtime.workspaces import workspace_dir
 
 DEFAULT_LANES: list[dict[str, str]] = [
@@ -170,6 +176,77 @@ def move_task_lane(
     append_event(logs_dir, "team.ticket.moved", team=team_id, task_id=task.id,
                  from_lane=from_lane, to_lane=to_lane, actor=actor)
     return task
+
+
+def _retire_ticket(
+    home: Path, tasks_dir: Path, logs_dir: Path, teams_dir: Path,
+    task_id: str, *, actor: str | None, destroy: bool,
+) -> Any:
+    """Shared body of archive/delete: enforce the lane gate, then retire.
+
+    The gate is the point. If taking a ticket off the board were ungated, "QA
+    has not passed this yet" would be one click from "then get rid of it", and
+    the gate would bind only the people who move tickets the honest way. A task
+    with no team has no board and no gate, so it just goes.
+    """
+    task = find_task(tasks_dir, task_id)
+    archived_only = False
+    if task is None and destroy:
+        # Deleting something already archived: off the board, so no gate left
+        # to enforce — but still worth an audit line.
+        archived_only = True
+    elif task is None:
+        raise LaneError(f"Task not found: {task_id}")
+
+    team_id: str | None = None
+    if not archived_only and (task.metadata or {}).get("team_id"):
+        team_id, team = team_for_task(teams_dir, task)
+        current = next((lane for lane in team_lanes(team) if lane.id == task.lane), None)
+        if current and current.gate and current.gate not in _actor_identities(team, actor):
+            verb = "deleting" if destroy else "archiving"
+            raise LaneGateError(
+                f"Lane {task.lane!r} is gated by {current.gate!r}: only they take a ticket out of "
+                f"it, including by {verb} (actor={actor or 'unspecified'}). "
+                f"Pass --as {current.gate}.")
+
+    try:
+        task = destroy_task(tasks_dir, task_id) if destroy else archive_task(tasks_dir, task_id)
+    except ValueError as exc:
+        raise LaneError(str(exc)) from exc
+
+    event = "team.ticket.deleted" if destroy else "team.ticket.archived"
+    if team_id:
+        append_jsonl(tickets_log_path(home, team_id),
+                     {"time": now_iso(), "team": team_id, "task_id": task.id,
+                      "from": task.lane, "to": None, "actor": actor,
+                      "deleted" if destroy else "archived": True})
+    # Bind the actor for the event's top-level `actor` field, which is what
+    # `jigga audit --actor` filters on — `append_event` reads it from the
+    # context, not from a keyword. (`move_task_lane` above still records the
+    # actor only inside details; worth aligning separately.)
+    if actor:
+        with actor_context(actor):
+            append_event(logs_dir, event, team=team_id, task_id=task.id,
+                         lane=task.lane, title=task.title, actor=actor)
+    else:
+        append_event(logs_dir, event, team=team_id, task_id=task.id,
+                     lane=task.lane, title=task.title, actor=actor)
+    return task
+
+
+def archive_ticket(home: Path, tasks_dir: Path, logs_dir: Path, teams_dir: Path,
+                   task_id: str, *, actor: str | None = None) -> Any:
+    """Take a ticket off the board, keeping the file (recoverable)."""
+    return _retire_ticket(home, tasks_dir, logs_dir, teams_dir, task_id,
+                          actor=actor, destroy=False)
+
+
+def delete_ticket(home: Path, tasks_dir: Path, logs_dir: Path, teams_dir: Path,
+                  task_id: str, *, actor: str | None = None) -> Any:
+    """Delete a ticket outright. Nothing survives — see `archive_ticket` for the
+    recoverable version."""
+    return _retire_ticket(home, tasks_dir, logs_dir, teams_dir, task_id,
+                          actor=actor, destroy=True)
 
 
 def team_tickets(tasks_dir: Path, team_id: str) -> list[Any]:

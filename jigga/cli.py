@@ -1057,6 +1057,18 @@ def build_parser() -> argparse.ArgumentParser:
     task_update.add_argument("--as", dest="as_member",
                              help="Record this member/role as the editor in the audit log")
     task_update.add_argument("--json", action="store_true", dest="json_output")
+    task_archive = task_sub.add_parser(
+        "archive", help="Take a ticket off the board, keeping the file (recoverable)")
+    task_archive.add_argument("task_id")
+    task_archive.add_argument("--as", dest="as_member",
+                              help="Act as this member/role (required for a gated lane)")
+    task_archive.add_argument("--json", action="store_true", dest="json_output")
+    task_delete = task_sub.add_parser(
+        "delete", help="Delete a ticket outright — nothing survives (see: task archive)")
+    task_delete.add_argument("task_id")
+    task_delete.add_argument("--as", dest="as_member",
+                             help="Act as this member/role (required for a gated lane)")
+    task_delete.add_argument("--json", action="store_true", dest="json_output")
     task_list = task_sub.add_parser("list")
     task_list.add_argument("--lane", help="Only tasks in this ticket lane")
     task_list.add_argument("--json", action="store_true", dest="json_output")
@@ -3550,6 +3562,22 @@ def _cmd_task(args: argparse.Namespace) -> int:
                 print(f"{task['id']}\t{task['state']}\t{task.get('assignee') or '-'}{lane}\t{task['title']}")
     elif args.task_command == "set-state":
         print_json(set_task_state(paths.tasks, args.task_id, args.state).to_dict())
+    elif args.task_command in ("archive", "delete"):
+        from jigga.runtime.lanes import LaneError, LaneGateError, archive_ticket, delete_ticket
+
+        destroy = args.task_command == "delete"
+        retire = delete_ticket if destroy else archive_ticket
+        try:
+            task = retire(paths.home, paths.tasks, paths.logs, paths.teams,
+                          args.task_id, actor=args.as_member)
+        except (LaneError, LaneGateError) as exc:
+            print(str(exc))
+            return 1
+        result = {"task": task.id, "title": task.title, "lane": task.lane,
+                  "action": args.task_command}
+        if not destroy:
+            result["archived_to"] = str(paths.tasks / "archive" / f"{task.id}.json")
+        print_json(result)
     elif args.task_command == "move":
         from jigga.runtime.lanes import LaneError, LaneGateError, move_task_lane
 

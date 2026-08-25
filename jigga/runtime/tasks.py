@@ -15,6 +15,7 @@ path that wants every task.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from jigga.core.io import ensure_dir, read_json, write_json
@@ -141,6 +142,49 @@ def pending_summary(tasks_dir: Path) -> tuple[list[str], int]:
     pending = [meta for meta in index.values() if meta.get("state") == "pending"]
     targets = sorted({meta["assignee"] for meta in pending if meta.get("assignee")})
     return targets, len(pending)
+
+
+def _archived_path(tasks_dir: Path, task_id: str) -> Path:
+    return Path(tasks_dir) / "archive" / f"{task_id}.json"
+
+
+def archive_task(tasks_dir: Path, task_id: str) -> Task:
+    """Take a task out of the live set, keeping the file.
+
+    The same retirement compaction already performs on old finished tasks:
+    the file moves to `tasks/archive/` and the id leaves the index, so it stops
+    appearing on boards and in `list_tasks` but is still on disk to restore.
+    """
+    task = find_task(tasks_dir, task_id)
+    if task is None:
+        raise ValueError(f"Task not found: {task_id}")
+    source = Path(tasks_dir) / f"{task.id}.json"
+    if source.exists():
+        destination = _archived_path(tasks_dir, task.id)
+        ensure_dir(destination.parent)
+        shutil.move(str(source), str(destination))
+    forget_tasks(tasks_dir, [task.id])
+    return task
+
+
+def destroy_task(tasks_dir: Path, task_id: str) -> Task:
+    """Delete a task's file outright. Unlike `archive_task`, nothing survives.
+
+    Accepts an already-archived id as well as a live one — otherwise archiving
+    would be a one-way door and `tasks/archive/` could only ever be emptied by
+    hand.
+    """
+    task = find_task(tasks_dir, task_id)
+    path = Path(tasks_dir) / f"{task_id}.json"
+    if task is None:
+        archived = _archived_path(tasks_dir, task_id)
+        if not archived.exists():
+            raise ValueError(f"Task not found: {task_id}")
+        task = Task.from_dict(read_json(archived))
+        path = archived
+    path.unlink(missing_ok=True)
+    forget_tasks(tasks_dir, [task_id])
+    return task
 
 
 def forget_tasks(tasks_dir: Path, task_ids: list[str]) -> None:
