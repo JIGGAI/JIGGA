@@ -15,6 +15,7 @@ path that wants every task.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -251,3 +252,36 @@ def _ensure_index(tasks_dir: Path) -> dict:
         # truth) rather than crash the supervisor's per-tick lookups
         return rebuild_index(tasks_dir)
     return rebuild_index(tasks_dir)
+
+
+# --- ticket-level approval opt-in ------------------------------------------
+
+# A ticket writer asks for a human gate by putting a directive line in the
+# ticket body. Everything else runs on its own — the pipeline should not stop
+# for work nobody asked to review.
+#
+# Matched on its own line so ordinary prose ("ask the client for approval")
+# cannot accidentally park a ticket. The value must be an affirmative word;
+# `Approval: not required` reads as a deliberate opt-OUT and is honoured.
+_APPROVAL_DIRECTIVE = re.compile(
+    r"^\s*approval\s*:\s*(?P<value>[a-z ]+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_AFFIRMATIVE = {"required", "yes", "true", "needed", "require"}
+
+
+def task_requires_approval(task) -> bool:
+    """True when this ticket's writer explicitly asked for a human gate.
+
+    Read at gate time rather than at creation time so it works no matter how
+    the ticket was filed — CLI, web board, or an agent creating one — without
+    every creation path having to know about it.
+    """
+    metadata = getattr(task, "metadata", None) or {}
+    if metadata.get("requires_approval"):
+        return True
+    description = getattr(task, "description", None) or ""
+    for match in _APPROVAL_DIRECTIVE.finditer(description):
+        if match.group("value").strip().lower() in _AFFIRMATIVE:
+            return True
+    return False

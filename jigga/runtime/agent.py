@@ -26,7 +26,7 @@ from jigga.runtime.model_router import (
 )
 from jigga.runtime.policy import NON_EXECUTING_MODES, granted_actions, resolve_permission_mode
 from jigga.runtime.handoffs import fire_handoffs
-from jigga.runtime.tasks import set_task_state, tasks_for_agent
+from jigga.runtime.tasks import set_task_state, task_requires_approval, tasks_for_agent
 from jigga.runtime.context_pack import assemble_agent_context
 from jigga.runtime.mailbox import mark_read, unread_messages
 from jigga.runtime.workspaces import (
@@ -146,18 +146,57 @@ def _gate_tool_call(
     capability: CapabilityManifest,
     agent: AgentConfig,
     effective_mode: str,
+    force_approval: bool = False,
 ) -> tuple[str, str | None]:
     """Decide whether a tool call may execute. Mirrors the workflow step gate:
     - capability permission deny → ("deny", reason)
+    - ticket asked for approval → ("needs_approval", reason), whatever the mode
     - medium/high risk and mode != autonomous → ("needs_approval", reason)
     - otherwise ("allow", None)
+
+    `force_approval` carries the ticket writer's explicit request for a human
+    gate. It escalates only: a ticket can ask for review that the mode would
+    have skipped, but it can never wave through something policy denies, which
+    is why the permission check stays first.
     """
     decision = evaluate_capability_permissions(capability, agent)
     if decision.status != "allow":
         return ("deny", decision.reason or decision.permission)
+    if force_approval:
+        return ("needs_approval", "ticket requested approval")
     if capability.risk_level in RISKY_RISK_LEVELS and effective_mode != "autonomous":
         return ("needs_approval", f"capability.risk_level={capability.risk_level}")
     return ("allow", None)
+
+
+def _default_notify_target(home: Path) -> tuple[str | None, object | None]:
+    """Where to announce an approval for a task with no channel of its own.
+
+    Prefers an explicit `approvals.notify_channel` / `notify_chat_id`, then the
+    configured default channel and its first allowed chat id. Returns
+    (None, None) when nothing is configured — the caller logs that rather than
+    failing the run.
+    """
+    config = load_runtime_config(home)
+    approvals_cfg = config.get("approvals") or {}
+    channel = approvals_cfg.get("notify_channel")
+    conversation_id = approvals_cfg.get("notify_chat_id")
+    if channel and conversation_id is not None:
+        return (str(channel), conversation_id)
+
+    channels = config.get("channels") or {}
+    channel = channel or channels.get("default")
+    if not channel:
+        return (None, None)
+    settings = channels.get(str(channel)) or {}
+    if not settings.get("enabled", False):
+        return (None, None)
+    if conversation_id is None:
+        allowed = settings.get("allowed_chat_ids") or []
+        conversation_id = allowed[0] if allowed else None
+    if conversation_id is None:
+        return (None, None)
+    return (str(channel), conversation_id)
 
 
 def _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action: str, reason: str | None) -> None:
@@ -166,6 +205,12 @@ def _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action
     metadata = task.metadata or {}
     channel = metadata.get("channel")
     conversation_id = metadata.get("chat_id")
+    if channel is None or conversation_id is None:
+        # A ticket filed on the board carries no channel, so the original code
+        # parked the approval and told nobody — the request sat pending
+        # indefinitely while the board looked merely stalled. Fall back to a
+        # configured destination so a gate is always announced somewhere.
+        channel, conversation_id = _default_notify_target(home)
     record = request_approval(
         approvals_dir, agent_id=agent.id, task_id=task.id, action=action, reason=reason,
         channel=channel, conversation_id=conversation_id,
@@ -173,13 +218,21 @@ def _request_channel_approval(approvals_dir, logs_dir, home, agent, task, action
     append_event(logs_dir, "approval.requested", status="ask", agent=agent.id, task_id=task.id,
                  action=action, code=record["code"], channel=channel)
     adapter = ADAPTERS.get(channel) if channel else None
-    if adapter is not None and conversation_id is not None:
-        text = (f"Approval needed to run {action}.\nReason: {reason}\n\n"
-                f"Reply: approve {record['code']}   or   deny {record['code']}")
-        try:
-            adapter.send(home, conversation_id=conversation_id, text=text)
-        except Exception as exc:  # noqa: BLE001 — a notify failure must not break the run
-            append_event(logs_dir, "approval.notify_failed", status="error", code=record["code"], error=str(exc))
+    if adapter is None or conversation_id is None:
+        # Nowhere to deliver. Say so loudly: a silent pending approval is the
+        # failure mode this whole path exists to prevent. `jigga approvals list`
+        # is the recovery.
+        append_event(logs_dir, "approval.unnotified", status="ask", agent=agent.id, task_id=task.id,
+                     action=action, code=record["code"],
+                     reason="no channel configured; approve via `jigga approvals`")
+        return
+    text = (f"Approval needed to run {action}.\nReason: {reason}\n\n"
+            f"Task: {task.title}\n"
+            f"Reply: approve {record['code']}   or   deny {record['code']}")
+    try:
+        adapter.send(home, conversation_id=conversation_id, text=text)
+    except Exception as exc:  # noqa: BLE001 — a notify failure must not break the run
+        append_event(logs_dir, "approval.notify_failed", status="error", code=record["code"], error=str(exc))
 
 
 # --- the per-task tool-use loop --------------------------------------------
@@ -239,6 +292,9 @@ def _run_task_loop(
     name_map = {_to_tool_name(a): a for a in tool_actions}
     tools = _build_tool_schemas(tool_actions, registry) or None
     approvals_dir = home / "approvals"
+    # Resolved once per task rather than per tool call: the writer's request
+    # applies to the whole ticket, not to one action within it.
+    ticket_gate = task_requires_approval(task)
 
     task_dict = task.to_dict()
     body = task_dict.get("description") or task_dict.get("title") or "No task description."
@@ -313,7 +369,8 @@ def _run_task_loop(
                 continue
 
             capability = registry.resolve_action(action)
-            verdict, reason = _gate_tool_call(capability, agent, effective_mode)
+            verdict, reason = _gate_tool_call(capability, agent, effective_mode,
+                                              force_approval=ticket_gate)
             # A human may have approved this exact action via a channel (B6) — if
             # so, consume the approval (once) and let it through.
             if verdict == "needs_approval" and consume_if_approved(approvals_dir, task_id=task.id, action=action):
