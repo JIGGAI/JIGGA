@@ -191,7 +191,9 @@ def test_max_iterations_halt_is_explicit(tmp_path: Path) -> None:
     with patch("jigga.runtime.agent.call_model", _scripted_call_model(sequence)):
         run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "looper")
 
-    assert list_tasks(paths.tasks)[0].state == "completed"
+    # Running out of iterations is a failure, not a finished job. This used to
+    # read "completed" purely because the last model call returned ok.
+    assert list_tasks(paths.tasks)[0].state == "failed"
     halted = [e for e in _events(paths) if e["type"] == "agent.loop.halted"]
     assert halted
     assert halted[-1]["details"]["reason"] == "max_iterations=1"
@@ -226,3 +228,31 @@ def test_model_failure_marks_task_failed(tmp_path: Path) -> None:
     with patch("jigga.runtime.agent.call_model", _scripted_call_model([failing])):
         run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "worker")
     assert list_tasks(paths.tasks)[0].state == "failed"
+
+
+def test_max_tool_calls_halt_also_fails_the_task(tmp_path: Path) -> None:
+    """The other bound must report the same way — a run stopped by the call cap
+    has not done the work either."""
+    paths = init_runtime(tmp_path, examples=True)
+    _write_agent(paths, "looper", tools=["spawn_subagent"], permission_mode="autonomous")
+    _set_loop_limits(paths, max_tool_calls=1)
+    create_task(paths.tasks, "loop", assignee="looper")
+    call = ModelToolCall(id="c", name="spawn_subagent", arguments={})
+    sequence = [_result(tool_calls=[call]), _result(tool_calls=[call])]
+    with patch("jigga.runtime.agent.call_model", _scripted_call_model(sequence)), patch(
+        "jigga.runtime.agent.dispatch_action", return_value={"ok": True}
+    ):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "looper")
+
+    assert list_tasks(paths.tasks)[0].state == "failed"
+
+
+def test_normal_completion_still_completes(tmp_path: Path) -> None:
+    """Guard the change: a run that finishes on its own is untouched."""
+    paths = init_runtime(tmp_path, examples=True)
+    _write_agent(paths, "looper", tools=["calendar.list_events"], permission_mode="autonomous")
+    create_task(paths.tasks, "easy", assignee="looper")
+    with patch("jigga.runtime.agent.call_model", _scripted_call_model([_result(content="all done")])):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "looper")
+
+    assert list_tasks(paths.tasks)[0].state == "completed"
