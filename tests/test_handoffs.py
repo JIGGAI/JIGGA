@@ -185,6 +185,12 @@ def test_a_lane_managed_team_does_not_spawn_handoff_tickets(tmp_path: Path) -> N
     assert created == []
     assert len(list_tasks(paths.tasks)) == before
 
+    # the skip is audited, not silent
+    skipped = [e for e in _events(paths) if e["type"] == "team.handoff.skipped"]
+    assert skipped and skipped[0]["details"]["team"] == "eng"
+    assert skipped[0]["details"]["from_member"] == "eng-dev"
+    assert skipped[0]["details"]["reason"] == "lane-managed team hands off by reassigning the ticket"
+
 
 def test_malformed_routing_does_not_crash(tmp_path: Path) -> None:
     """A bad team YAML (handoffs not a list, non-dict entries, routing not a
