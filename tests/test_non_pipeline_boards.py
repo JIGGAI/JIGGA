@@ -136,7 +136,10 @@ def test_an_engineering_team_still_stands_its_handoffs_down(tmp_path: Path) -> N
         run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
 
     assert len(list_tasks(paths.tasks)) == 1         # one row, still
-    assert [e["type"] for e in _events(paths) if e["type"] == "team.handoff.skipped"]
+    # No spawned ticket, by either route: the bounced ticket never reaches the
+    # completion side effects at all, and fire_handoffs stands itself down for
+    # this team anyway (test_handoffs.py covers that skip and its audit event).
+    assert not [e for e in _events(paths) if e["type"] == "team.handoff.fired"]
     ticket = list_tasks(paths.tasks)[0]
     assert (ticket.state, ticket.lane, ticket.assignee) == ("pending", "backlog", "eng-lead")
 

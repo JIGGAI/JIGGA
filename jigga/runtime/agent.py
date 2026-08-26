@@ -634,10 +634,19 @@ def _run_agent(
             "trace_id": current_trace_id(),
         }
         write_json(run_dir / f"{task.id}.json", artifact)
-        completed = _apply_ticket_outcome(home, tasks_dir, logs_dir, task, agent_id, loop["state"])
-        processed.append(completed.to_dict())
+        resolved = _apply_ticket_outcome(home, tasks_dir, logs_dir, task, agent_id, loop["state"])
+        processed.append(resolved.to_dict())
 
-        if loop["state"] == "completed":
+        # What follows announces the TASK as finished — the audit events, the
+        # workspace output, the daily breadcrumb, the inbox mark-read. Keying
+        # them on the run's own state is the same lie this feature removes from
+        # task state: a run that just bounced or blocked its ticket would still
+        # log `task.completed`, and `runtime/inference.py` mines
+        # `agent.task_completed` to learn what finished work looks like — so
+        # unfinished work taught the pattern miner. The resolved outcome is the
+        # authority. For a plain task the outcome IS the run state, so nothing
+        # about a non-team task changes.
+        if resolved.state == "completed":
             append_event(logs_dir, "task.completed", agent=agent_id, task_id=task.id, title=task.title, run_id=run_id)
             append_event(logs_dir, "agent.task_completed", agent_id=agent_id, task_id=task.id,
                          title=task.title, run_id=run_id)

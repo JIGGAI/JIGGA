@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import json
+
 from jigga.commands.init import init_runtime
 from jigga.core.io import write_yaml
 from jigga.runtime.agent import run_agent
@@ -113,3 +115,74 @@ def test_a_plain_task_is_untouched_by_any_of_this(tmp_path: Path) -> None:
     ticket = list_tasks(paths.tasks)[0]
     assert ticket.state == "completed"
     assert ticket.assignee == "eng-dev"
+
+
+def _events(paths) -> list[dict]:
+    path = paths.logs / "events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
+def test_a_bounced_ticket_is_not_announced_as_completed(tmp_path: Path) -> None:
+    """`task.completed` / `agent.task_completed` were keyed on the RUN's state,
+    so a run that had just bounced its ticket back to backlog still announced it
+    as completed in the audit log — and `runtime/inference.py` mines
+    `agent.task_completed`, so unfinished work fed the pattern miner as
+    finished."""
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    create_task(paths.tasks, "ship it", assignee="eng-dev", lane="in-progress",
+                metadata={"team_id": "eng"})
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    ticket = list_tasks(paths.tasks)[0]
+    assert ticket.state == "pending" and ticket.lane == "backlog"   # it bounced
+    types = [e["type"] for e in _events(paths)]
+    assert "ticket.bounced" in types
+    assert "task.completed" not in types
+    assert "agent.task_completed" not in types
+
+
+def test_a_blocked_ticket_is_not_announced_as_completed(tmp_path: Path) -> None:
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    create_task(paths.tasks, "looping", assignee="eng-dev", lane="in-progress",
+                metadata={"team_id": "eng", "bounces": 3})
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    assert list_tasks(paths.tasks)[0].state == "blocked"
+    types = [e["type"] for e in _events(paths)]
+    assert "task.completed" not in types
+    assert "agent.task_completed" not in types
+
+
+def test_a_plain_task_is_still_announced_as_completed(tmp_path: Path) -> None:
+    # No lane, no board: the run state IS the outcome, exactly as before.
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    create_task(paths.tasks, "plain", assignee="eng-dev")
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    types = [e["type"] for e in _events(paths)]
+    assert "task.completed" in types
+    assert "agent.task_completed" in types
+
+
+def test_a_closed_ticket_is_announced_as_completed(tmp_path: Path) -> None:
+    # The event still fires where it is true: the lane says the work is done.
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    ticket = create_task(paths.tasks, "shipped", assignee="eng-dev", lane="ready-for-pr",
+                         metadata={"team_id": "eng"})
+    _close(paths, "eng-lead", ticket.id)
+    set_task_state(paths.tasks, ticket.id, "pending")
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    assert "task.completed" in [e["type"] for e in _events(paths)]
