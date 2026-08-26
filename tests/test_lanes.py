@@ -97,6 +97,10 @@ def test_handoff_does_not_create_a_task_on_a_lifecycle_managed_team(tmp_path: Pa
         "routing": {"default_assignee": "lead",
                     "handoffs": [{"from": "lead", "to": "dev", "when": "ready"}]},
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "done"}],
+        # Lifecycle-managed is now something a team DECLARES; core supplies
+        # no default shape, so the table is what makes this a board team.
+        "lane_transitions": {"rules": [{"from": "lead", "to": "dev", "lane": "in-progress"}],
+                             "bounce_lane": "backlog"},
     })
     created = fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
                             team_id="ct", from_member="lead")

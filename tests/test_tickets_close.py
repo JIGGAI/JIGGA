@@ -15,6 +15,16 @@ from jigga.core.models import AgentConfig
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, find_task
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 
 def _cap():
     return next(c for c in bundled_capabilities() if "tickets.close" in c.actions)
@@ -33,6 +43,7 @@ def _setup(tmp_path: Path):
                    {"id": "eng-test", "role": "test"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
     })
     return paths
 

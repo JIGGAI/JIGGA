@@ -14,6 +14,16 @@ from jigga.runtime.handlers import _tickets_handler
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, find_task
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 
 def _cap():
     return next(c for c in bundled_capabilities() if "tickets.handoff" in c.actions)
@@ -32,6 +42,7 @@ def _setup(tmp_path: Path):
                    {"id": "eng-test", "role": "test"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
     })
     return paths
 
@@ -112,6 +123,7 @@ def test_a_handoff_resets_the_bounce_budget(tmp_path: Path) -> None:
         "id": "eng", "name": "Eng",
         "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
                    {"id": "eng-test", "role": "test"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}]})
 

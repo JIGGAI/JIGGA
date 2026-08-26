@@ -340,13 +340,12 @@ def render_lanes(team: TeamConfig) -> str:
 # `done`. "Assign to lead" therefore does not identify a lane; "test handed it
 # to lead" does.
 
-DEFAULT_LANE_TRANSITIONS: list[dict[str, str]] = [
-    {"from": "lead", "to": "dev", "lane": "in-progress"},
-    {"from": "dev", "to": "test", "lane": "testing"},
-    {"from": "test", "to": "dev", "lane": "in-progress"},    # QA rejected
-    {"from": "test", "to": "lead", "lane": "ready-for-pr"},  # QA passed
-]
-DEFAULT_BOUNCE_LANE = "backlog"
+# No default transition table. A board's shape is the team's to declare, not
+# core's to assume — the previous defaults were one team's pipeline
+# (lead/dev/test over in-progress/testing/ready-for-pr) written into the
+# runtime, which silently gave every other board nothing it could use. A team
+# that declares no rules is simply not lifecycle-managed and keeps the plain
+# task behaviour.
 # Used only when a team declares no `-> lead` rule to derive its close lane from.
 DEFAULT_CLOSE_LANE = "ready-for-pr"
 
@@ -361,23 +360,27 @@ def role_of(team: TeamConfig, agent_id: str) -> str | None:
 
 
 def lane_transitions(team: TeamConfig) -> dict[str, Any]:
-    """The team's transition table, defaulted to the standard pipeline.
+    """The team's declared transition table.
 
-    Defaults are filtered against the team's actual lanes — a board without a
-    `testing` lane must not be handed one — and a team that declares its own
-    `rules` replaces the defaults outright rather than merging, so a custom
-    board is exactly what it says it is.
+    Everything here comes from the team's own config. Core does not supply a
+    default shape: a board is the team's to describe, and assuming one meant
+    every team that did not match it got a table full of lanes it does not
+    have. A team that declares nothing gets an empty table and is therefore not
+    lifecycle-managed — which is the honest answer, not a broken pipeline.
+
+    Rules are still filtered against the team's actual lanes, so a typo names a
+    lane that does not exist and is dropped rather than sending tickets into a
+    column nobody can see.
     """
     known = {lane.id for lane in team_lanes(team)}
     declared = getattr(team, "lane_transitions", None)
     declared = declared if isinstance(declared, dict) else {}
 
     rules = declared.get("rules")
-    if not isinstance(rules, list):
-        rules = DEFAULT_LANE_TRANSITIONS
-    rules = [r for r in rules if isinstance(r, dict) and r.get("lane") in known]
+    rules = [r for r in rules if isinstance(r, dict) and r.get("lane") in known] \
+        if isinstance(rules, list) else []
 
-    bounce = declared.get("bounce_lane", DEFAULT_BOUNCE_LANE)
+    bounce = declared.get("bounce_lane")
     if bounce not in known:
         bounce = None
     return {"rules": rules, "bounce_lane": bounce}
@@ -415,31 +418,6 @@ def is_lifecycle_managed(team: TeamConfig) -> bool:
         return False
     transitions = lane_transitions(team)
     return bool(transitions["rules"]) and bool(transitions["bounce_lane"])
-
-
-def next_hop(team: TeamConfig, from_agent: str) -> tuple[str, str] | None:
-    """The (assignee, lane) a role's work moves to when the agent did not say.
-
-    Only when the answer is not a judgment call. A role with exactly one
-    outgoing transition has nowhere else its work can go, so the runtime can
-    make the move itself. A role with several — QA, which either passes a
-    ticket on or sends it back — is deciding something, and "the run ended" is
-    not evidence for either branch. Those still bounce to the lead.
-
-    Returns None when the role has no outgoing rule, more than one, or the
-    destination role has no agent on this team.
-    """
-    from_role = role_of(team, from_agent)
-    if not from_role:
-        return None
-    rules = [r for r in lane_transitions(team)["rules"] if r.get("from") == from_role]
-    if len(rules) != 1:
-        return None
-    rule = rules[0]
-    for member in team.agents or []:
-        if isinstance(member, dict) and member.get("role") == rule.get("to") and member.get("id"):
-            return (str(member["id"]), str(rule["lane"]))
-    return None
 
 
 def derive_lane(team: TeamConfig, from_agent: str | None, to_agent: str) -> str | None:

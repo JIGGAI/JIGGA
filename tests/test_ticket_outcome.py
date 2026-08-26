@@ -3,11 +3,22 @@ from __future__ import annotations
 from jigga.core.models import Task, TeamConfig
 from jigga.runtime.ticket_outcome import resolve_ticket_outcome
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 TEAM = TeamConfig.from_dict({
     "id": "eng", "name": "Eng",
     "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"}],
     "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
               {"id": "ready-for-pr"}, {"id": "done"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
 })
 
 
@@ -27,28 +38,7 @@ def test_an_unhandled_ticket_with_no_running_agent_bounces_to_the_lead() -> None
     # No `ran_as` means nothing to advance from.
     out = resolve_ticket_outcome(_ticket(), TEAM, run_state="completed")
     assert out == {"state": "pending", "lane": "backlog", "assignee": "eng-lead",
-                   "bounced": True, "advanced": False}
-
-
-def test_a_dev_that_finishes_without_handing_off_advances_to_qa() -> None:
-    """The ordinary case this change exists for.
-
-    A push pipeline only moves when the holder hands the ticket on, and agents
-    kept not doing it — the work stopped and the ticket bounced until it
-    blocked. dev has exactly one outgoing transition, so there is no judgment
-    to make and the runtime makes the move.
-    """
-    full = TeamConfig.from_dict({
-        "id": "eng", "name": "Eng",
-        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
-                   {"id": "eng-test", "role": "test"}],
-        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
-                  {"id": "ready-for-pr"}, {"id": "done"}],
-    })
-    out = resolve_ticket_outcome(_ticket(assignee="eng-dev", lane="in-progress"),
-                                 full, run_state="completed", ran_as="eng-dev")
-    assert out == {"state": "pending", "lane": "testing", "assignee": "eng-test",
-                   "bounced": False, "advanced": True}
+                   "bounced": True}
 
 
 def test_a_ticket_in_done_completes() -> None:
@@ -64,7 +54,7 @@ def test_a_ticket_waiting_in_the_close_lane_does_not_bounce() -> None:
     ticket = _ticket(lane="ready-for-pr", assignee="eng-lead")
     out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-lead")
     assert out == {"state": "pending", "lane": "ready-for-pr",
-                   "assignee": "eng-lead", "bounced": False, "advanced": False}
+                   "assignee": "eng-lead", "bounced": False}
 
 
 def test_waiting_in_the_close_lane_never_reaches_the_bounce_guard() -> None:
@@ -93,7 +83,7 @@ def test_the_close_lane_follows_the_teams_own_rules() -> None:
 
 def test_a_failed_run_fails_the_ticket_and_moves_nothing() -> None:
     out = resolve_ticket_outcome(_ticket(), TEAM, run_state="failed")
-    assert out == {"state": "failed", "lane": "in-progress", "assignee": "eng-dev", "bounced": False, "advanced": False}
+    assert out == {"state": "failed", "lane": "in-progress", "assignee": "eng-dev", "bounced": False}
 
 
 def test_an_approval_park_is_left_alone() -> None:
@@ -107,14 +97,14 @@ def test_an_unassigned_ticket_is_not_a_handoff_and_bounces() -> None:
     # unassigned; an unset assignee is never a handoff, so it must bounce.
     ticket = _ticket(assignee=None)
     out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-dev")
-    assert out == {"state": "pending", "lane": "backlog", "assignee": "eng-lead", "bounced": True, "advanced": False}
+    assert out == {"state": "pending", "lane": "backlog", "assignee": "eng-lead", "bounced": True}
 
 
 def test_a_reassigned_ticket_is_not_a_bounce() -> None:
     # The agent handed it on during the run; the ticket already moved.
     ticket = _ticket(assignee="eng-test", lane="testing")
     out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-dev")
-    assert out == {"state": "pending", "lane": "testing", "assignee": "eng-test", "bounced": False, "advanced": False}
+    assert out == {"state": "pending", "lane": "testing", "assignee": "eng-test", "bounced": False}
 
 
 def test_the_bounce_guard_blocks_after_three() -> None:
@@ -128,43 +118,3 @@ def test_a_team_without_a_bounce_lane_blocks_instead() -> None:
                                  "lanes": [{"id": "a"}, {"id": "done"}]})
     out = resolve_ticket_outcome(_ticket(lane="a"), team, run_state="completed")
     assert out["state"] == "blocked"
-
-
-def test_qa_is_never_advanced_because_passing_and_rejecting_are_a_judgment() -> None:
-    """test has two outgoing transitions — pass to the lead, or send it back to
-    the dev. "The run ended" is not evidence for either, so it still bounces."""
-    team = TeamConfig.from_dict({
-        "id": "eng", "name": "Eng",
-        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
-                   {"id": "eng-test", "role": "test"}],
-        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
-                  {"id": "ready-for-pr"}, {"id": "done"}],
-    })
-    out = resolve_ticket_outcome(_ticket(assignee="eng-test", lane="testing"),
-                                 team, run_state="completed", ran_as="eng-test")
-    assert out["advanced"] is False
-    assert out["bounced"] is True
-    assert out["assignee"] == "eng-lead"
-
-
-def test_a_role_with_no_outgoing_rule_bounces() -> None:
-    # devops has no transition of its own; nothing to advance to.
-    team = TeamConfig.from_dict({
-        "id": "eng", "name": "Eng",
-        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-ops", "role": "devops"}],
-        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
-                  {"id": "ready-for-pr"}, {"id": "done"}],
-    })
-    out = resolve_ticket_outcome(_ticket(assignee="eng-ops", lane="in-progress"),
-                                 team, run_state="completed", ran_as="eng-ops")
-    assert out["advanced"] is False
-    assert out["bounced"] is True
-
-
-def test_no_agent_fills_the_destination_role_so_nothing_is_advanced() -> None:
-    """TEAM has a dev but no test agent. There is nowhere for the work to go,
-    so the runtime must not invent an assignee."""
-    out = resolve_ticket_outcome(_ticket(assignee="eng-dev", lane="in-progress"),
-                                 TEAM, run_state="completed", ran_as="eng-dev")
-    assert out["advanced"] is False
-    assert out["bounced"] is True
