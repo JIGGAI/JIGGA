@@ -495,6 +495,7 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
     to an agent that has finished with it.
     """
     from jigga.core.config import load_teams
+    from jigga.runtime.lanes import is_lifecycle_managed
     from jigga.runtime.ticket_outcome import resolve_ticket_outcome
 
     fresh = find_task(tasks_dir, task.id) or task      # the run may have moved it
@@ -513,6 +514,15 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
                      task_id=fresh.id, lane=fresh.lane, team_id=team_id,
                      reason=f"team {team_id!r} referenced by this ticket could not be resolved")
         return update_task(tasks_dir, task.id, state="blocked")
+
+    if not is_lifecycle_managed(team):
+        # A board is not automatically this lifecycle. marketing-team's lanes
+        # are brief/drafting/review/published: no transition rule can target
+        # one of them, there is no bounce lane and no terminal `done`, so every
+        # rule below would resolve to `blocked` on the FIRST run and the ticket
+        # could never reach `completed` again. Such a team keeps exactly the
+        # behaviour it had before this feature existed.
+        return set_task_state(tasks_dir, task.id, run_state)
 
     outcome = resolve_ticket_outcome(fresh, team, run_state=run_state, ran_as=agent_id)
     metadata = dict(fresh.metadata or {})

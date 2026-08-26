@@ -400,7 +400,7 @@ def _tickets_handler(
     # Same dispatch trap as tickets.handoff above: a dispatcher-routed call
     # carries "tickets.close" on the step, not in the payload's "action" field.
     if action == "close" or (_step is not None and _step.action == "tickets.close"):
-        from jigga.runtime.lanes import role_of, team_for_task
+        from jigga.runtime.lanes import close_lane, role_of, team_for_task
         from jigga.runtime.tasks import find_task, update_task
 
         task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
@@ -418,10 +418,15 @@ def _tickets_handler(
             append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
                          task_id=task.id, reason="not the team lead")
             raise PermissionError("Only the team lead closes a ticket.")
-        if task.lane != "ready-for-pr":
+        # `ready-for-pr` is engineering-team's name for "QA passed", not a
+        # universal one — derive it from the team's own transition table (the
+        # lane a `-> lead` rule targets) so a board that renames it does not
+        # lose its only exit, and fall back only when nothing is derivable.
+        expected = close_lane(team) or "ready-for-pr"
+        if task.lane != expected:
             append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
-                         task_id=task.id, reason=f"lane={task.lane!r}, expected 'ready-for-pr'")
-            raise ValueError(f"A ticket closes from 'ready-for-pr', not {task.lane!r}.")
+                         task_id=task.id, reason=f"lane={task.lane!r}, expected {expected!r}")
+            raise ValueError(f"A ticket closes from {expected!r}, not {task.lane!r}.")
 
         updated = update_task(tasks_dir, task_id, lane="done", state="completed")
         append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id)

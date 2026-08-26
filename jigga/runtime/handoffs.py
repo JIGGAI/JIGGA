@@ -90,12 +90,15 @@ def fire_handoffs(
     if team is None:
         return []
 
-    # A lane-managed team hands work on by reassigning the ticket it already
-    # has (tickets.handoff), so spawning a second task for the same work would
-    # fragment the board — one request produced four tickets before this. The
-    # mechanism stays for teams with no lanes.
-    from jigga.runtime.lanes import team_lanes
-    if team_lanes(team):
+    # A team running the ticket lifecycle hands work on by reassigning the
+    # ticket it already has (tickets.handoff), so spawning a second task for the
+    # same work would fragment the board — one request produced four tickets
+    # before this. The mechanism stays for every other team: merely HAVING lanes
+    # is not the same as running this lifecycle, and a board like marketing's
+    # (brief/drafting/review/published) has no tickets.handoff route to replace
+    # what it would lose.
+    from jigga.runtime.lanes import is_lifecycle_managed
+    if is_lifecycle_managed(team):
         append_event(logs_dir, "team.handoff.skipped", team=team_id, from_member=from_member,
                      reason="lane-managed team hands off by reassigning the ticket")
         return []
