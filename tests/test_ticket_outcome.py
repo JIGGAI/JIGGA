@@ -34,6 +34,40 @@ def test_a_ticket_in_done_completes() -> None:
     assert out["bounced"] is False
 
 
+def test_a_ticket_waiting_in_the_close_lane_does_not_bounce() -> None:
+    # QA passed; it sits in ready-for-pr until the lead confirms the merge and
+    # closes it. The lead's first run without a merge must not send finished
+    # work back to backlog — three of those would block it.
+    ticket = _ticket(lane="ready-for-pr", assignee="eng-lead")
+    out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-lead")
+    assert out == {"state": "pending", "lane": "ready-for-pr",
+                   "assignee": "eng-lead", "bounced": False}
+
+
+def test_waiting_in_the_close_lane_never_reaches_the_bounce_guard() -> None:
+    # Even at the ceiling: waiting is not looping, so it must not block either.
+    ticket = _ticket(lane="ready-for-pr", assignee="eng-lead", metadata={"bounces": 3})
+    out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-lead")
+    assert out["state"] == "pending"
+
+
+def test_the_close_lane_follows_the_teams_own_rules() -> None:
+    team = TeamConfig.from_dict({
+        "id": "eng", "name": "Eng",
+        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"}],
+        "lanes": [{"id": "backlog"}, {"id": "building"}, {"id": "awaiting-merge"}, {"id": "done"}],
+        "lane_transitions": {"rules": [{"from": "dev", "to": "lead", "lane": "awaiting-merge"}],
+                             "bounce_lane": "backlog"},
+    })
+    waiting = resolve_ticket_outcome(_ticket(lane="awaiting-merge", assignee="eng-lead"),
+                                     team, run_state="completed", ran_as="eng-lead")
+    assert waiting["state"] == "pending" and waiting["bounced"] is False
+    # ready-for-pr is not this board's close lane, so it has no special standing.
+    other = resolve_ticket_outcome(_ticket(lane="building", assignee="eng-lead"),
+                                   team, run_state="completed", ran_as="eng-lead")
+    assert other["bounced"] is True
+
+
 def test_a_failed_run_fails_the_ticket_and_moves_nothing() -> None:
     out = resolve_ticket_outcome(_ticket(), TEAM, run_state="failed")
     assert out == {"state": "failed", "lane": "in-progress", "assignee": "eng-dev", "bounced": False}

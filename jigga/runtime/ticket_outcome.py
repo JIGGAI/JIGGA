@@ -14,7 +14,12 @@ from __future__ import annotations
 from typing import TypedDict
 
 from jigga.core.models import Task, TeamConfig
-from jigga.runtime.lanes import DONE_LANE, lane_transitions
+from jigga.runtime.lanes import (
+    DEFAULT_CLOSE_LANE,
+    DONE_LANE,
+    close_lane,
+    lane_transitions,
+)
 
 # How many times a ticket may return to the lead unhandled before it stops.
 # Bouncing is how unowned work finds an owner, but a lead that reassigns
@@ -58,6 +63,15 @@ def resolve_ticket_outcome(
     # Handed on during the run: the ticket already moved, so re-queue it for
     # whoever holds it now.
     if ran_as is not None and task.assignee is not None and task.assignee != ran_as:
+        return {**keep, "state": "pending"}
+
+    # A ticket that has passed QA waits in the close lane for the lead to
+    # confirm the merge, and waiting is not failing. Bouncing it would send
+    # finished work back to `backlog` on the lead's first run without a merge,
+    # and three such runs would block it outright — the exact opposite of the
+    # "tickets sit in ready-for-pr until the lead closes them" the design
+    # promises.
+    if task.lane and task.lane == (close_lane(team) or DEFAULT_CLOSE_LANE):
         return {**keep, "state": "pending"}
 
     # Nobody has it next. Bounce it to the lead so it lands somewhere visible

@@ -313,6 +313,8 @@ DEFAULT_LANE_TRANSITIONS: list[dict[str, str]] = [
     {"from": "test", "to": "lead", "lane": "ready-for-pr"},  # QA passed
 ]
 DEFAULT_BOUNCE_LANE = "backlog"
+# Used only when a team declares no `-> lead` rule to derive its close lane from.
+DEFAULT_CLOSE_LANE = "ready-for-pr"
 
 
 def role_of(team: TeamConfig, agent_id: str) -> str | None:
