@@ -106,3 +106,35 @@ def test_a_fragment_of_an_error_sentence_finds_it(tmp_path: Path, needle: str) -
     # was in or what the event was called.
     logs = _log(tmp_path)
     assert [e["type"] for e in query_events(logs, contains=needle)] == ["channel.ingest_error"]
+
+
+def test_a_surrogate_id_never_makes_an_unrelated_event_match(tmp_path: Path) -> None:
+    """`contains` searches content, not bookkeeping.
+
+    Event ids are random hex. When one happened to contain the digits a person
+    was searching for, an unrelated event matched and the search returned two
+    hits instead of one — a real CI flake, hit twice in one evening on branches
+    that never touched the audit log. `trace` is how you look up an id; `since`
+    is how you filter by time.
+    """
+    logs = tmp_path / "logs"
+    append_event(logs, "channel.ingest_error", status="error",
+                 error="Telegram getUpdates failed: HTTP 409 Conflict")
+    append_event(logs, "model.call.failed", status="error", error="rate limited")
+
+    # Forge the collision the random generator produces on its own ~0.3% of the
+    # time, so this is deterministic rather than a dice roll.
+    path = logs / "events.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    lines[1]["id"] = "evt_deadbeef409f"
+    lines[1]["time"] = "2026-08-26T04:09:09.409000+00:00"
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+    assert [e["type"] for e in query_events(logs, contains="409")] == ["channel.ingest_error"]
+
+
+def test_the_error_sentence_is_still_searchable(tmp_path: Path) -> None:
+    """Guard the narrowing: dropping id/time must not cost content matches."""
+    logs = _log(tmp_path)
+    for needle in ("409", "conflict", "getupdates", "telegram"):
+        assert [e["type"] for e in query_events(logs, contains=needle)] == ["channel.ingest_error"], needle

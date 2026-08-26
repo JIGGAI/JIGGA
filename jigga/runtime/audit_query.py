@@ -104,15 +104,28 @@ def _matches_actor(event: dict[str, Any], actor: str) -> bool:
     return value == actor or value.startswith(f"{actor}:")
 
 
+# Structural fields that carry no content a person would search for, and that
+# have their own query paths: `id` is a surrogate key (use `trace`), `time` is
+# a timestamp (use `since`). They are excluded from the content search because
+# including them produces false positives by construction — a random hex event
+# id or a microsecond field that happens to contain the needle makes an
+# unrelated event match. That is not hypothetical: `evt_...409...` ids made
+# tests/test_audit_search.py fail on roughly 1 CI run in 60, twice in one
+# evening, on branches that had nothing to do with the audit log.
+_NON_CONTENT_FIELDS = ("id", "time")
+
+
 def _matches_text(event: dict[str, Any], needle: str) -> bool:
-    """Case-insensitive substring match over the whole event.
+    """Case-insensitive substring match over the event's content.
 
     Searching the serialised event rather than a chosen set of fields, because
     the useful needle is usually in `details` — an error sentence, a file path,
     a conversation id — and which key holds it differs per event type. A search
-    that only looked at `type` would miss every one of those.
+    that only looked at `type` would miss every one of those. Surrogate and
+    timestamp fields are dropped first: see `_NON_CONTENT_FIELDS`.
     """
-    return needle in json.dumps(event, default=str).lower()
+    content = {k: v for k, v in event.items() if k not in _NON_CONTENT_FIELDS}
+    return needle in json.dumps(content, default=str).lower()
 
 
 def query_events(
