@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,11 @@ from jigga.runtime.tasks import create_task, find_task
 
 def _cap():
     return next(c for c in bundled_capabilities() if "tickets.close" in c.actions)
+
+def _events(paths) -> list[dict]:
+    path = paths.logs / "events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
 
 
 def _setup(tmp_path: Path):
@@ -70,3 +77,19 @@ def test_a_ticket_must_reach_ready_for_pr_first(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         _close(paths, "eng-lead", {"ticket": t.id})
     assert find_task(paths.tasks, t.id).state != "completed"
+
+
+def test_the_close_comment_reaches_the_audit_event(tmp_path: Path) -> None:
+    """Declared on tickets.close, read nowhere. Closing is the one irreversible
+    step on the board, so "how the work was confirmed done" is exactly the note
+    that must not be dropped."""
+    paths = _setup(tmp_path)
+    ticket = create_task(paths.tasks, "shipped", assignee="eng-lead", lane="ready-for-pr",
+                         metadata={"team_id": "eng"})
+
+    result = _close(paths, "eng-lead", {"ticket": ticket.id, "comment": "PR #412 merged."})
+
+    closed = [e for e in _events(paths) if e["type"] == "team.ticket.closed"]
+    assert len(closed) == 1
+    assert closed[0]["details"]["comment"] == "PR #412 merged."
+    assert result["comment"] == "PR #412 merged."

@@ -18,6 +18,11 @@ from jigga.runtime.tasks import create_task, find_task
 def _cap():
     return next(c for c in bundled_capabilities() if "tickets.handoff" in c.actions)
 
+def _events(paths) -> list[dict]:
+    path = paths.logs / "events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+
+
 
 def _setup(tmp_path: Path):
     paths = init_runtime(tmp_path)
@@ -122,3 +127,30 @@ def test_a_handoff_resets_the_bounce_budget(tmp_path: Path) -> None:
     assert fresh.metadata["team_id"] == "eng"
     # ...and it is no longer one run away from blocked.
     assert resolve_ticket_outcome(fresh, team, run_state="completed")["state"] == "pending"
+
+
+def test_the_handoff_comment_reaches_the_audit_event(tmp_path: Path) -> None:
+    """`comment` is declared on tickets.handoff in capabilities.py and every
+    engineering role is instructed to write one — and the handler read it
+    nowhere. This codebase has already shipped a production bug of exactly that
+    shape (a declared field silently discarded)."""
+    paths = _setup(tmp_path)
+    ticket = create_task(paths.tasks, "ship it", assignee="eng-dev", lane="in-progress",
+                         metadata={"team_id": "eng"})
+
+    result = _handoff(paths, "eng-dev", {"ticket": ticket.id, "assignee": "eng-test",
+                                         "comment": "Rewrote the parser; run pytest -q."})
+
+    handoffs = [e for e in _events(paths) if e["type"] == "team.ticket.handoff"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["details"]["comment"] == "Rewrote the parser; run pytest -q."
+    assert result["comment"] == "Rewrote the parser; run pytest -q."
+
+
+def test_a_handoff_without_a_comment_records_none(tmp_path: Path) -> None:
+    paths = _setup(tmp_path)
+    ticket = create_task(paths.tasks, "ship it", assignee="eng-dev", lane="in-progress",
+                         metadata={"team_id": "eng"})
+    _handoff(paths, "eng-dev", {"ticket": ticket.id, "assignee": "eng-test"})
+    handoffs = [e for e in _events(paths) if e["type"] == "team.ticket.handoff"]
+    assert handoffs[0]["details"]["comment"] is None

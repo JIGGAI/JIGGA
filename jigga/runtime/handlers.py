@@ -376,6 +376,12 @@ def _tickets_handler(
 
         task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
         assignee = str(payload.get("assignee") or "").strip()
+        # `comment` is declared to the model in capabilities.py and the role
+        # instructions ask every agent for one. Reading it nowhere would repeat
+        # the shipped bug where a declared field was silently discarded — the
+        # model is told to write it, so it has to land somewhere. Until
+        # Task.comments exists (a later stage), the audit event is where.
+        comment = str(payload.get("comment") or "").strip() or None
         if not task_id or not assignee:
             raise ValueError("tickets.handoff needs a 'ticket' id and an 'assignee'.")
         task = find_task(tasks_dir, task_id)
@@ -401,9 +407,9 @@ def _tickets_handler(
         updated = update_task(tasks_dir, task_id, assignee=assignee, state="pending",
                               metadata=metadata, **({"lane": lane} if lane else {}))
         append_event(runtime.logs_dir, "team.ticket.handoff", agent=actor, task_id=task.id,
-                     to=assignee, lane=updated.lane)
+                     to=assignee, lane=updated.lane, comment=comment)
         return {"source": "capability.tickets", "ticket": task.id, "assignee": assignee,
-                "lane": updated.lane, "lane_derived": lane is not None}
+                "lane": updated.lane, "lane_derived": lane is not None, "comment": comment}
 
     # Same dispatch trap as tickets.handoff above: a dispatcher-routed call
     # carries "tickets.close" on the step, not in the payload's "action" field.
@@ -417,6 +423,7 @@ def _tickets_handler(
         from jigga.runtime.tasks import find_task, update_task
 
         task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        comment = str(payload.get("comment") or "").strip() or None   # see tickets.handoff
         if not task_id:
             raise ValueError("tickets.close needs a 'ticket' id.")
         task = find_task(tasks_dir, task_id)
@@ -442,9 +449,10 @@ def _tickets_handler(
             raise ValueError(f"A ticket closes from {expected!r}, not {task.lane!r}.")
 
         updated = update_task(tasks_dir, task_id, lane="done", state="completed")
-        append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id)
+        append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id,
+                     comment=comment)
         return {"source": "capability.tickets", "ticket": updated.id, "lane": "done",
-                "state": "completed"}
+                "state": "completed", "comment": comment}
 
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
