@@ -29,6 +29,11 @@ from jigga.runtime.tasks import (
 )
 from jigga.runtime.workspaces import workspace_dir
 
+# The terminal lane. `lane == DONE_LANE` is what makes a ticket `completed`
+# (see runtime/ticket_outcome.py), so it is the one lane an ordinary move may
+# not target — `tickets.close` is its only door.
+DONE_LANE = "done"
+
 DEFAULT_LANES: list[dict[str, str]] = [
     {"id": "backlog", "description": "Triaged and ready to pick up."},
     {"id": "working", "description": "Actively in progress."},
@@ -160,6 +165,20 @@ def move_task_lane(
         raise LaneError(
             f"Unknown lane {to_lane!r} for team {team_id!r}. Lanes: {', '.join(lane.id for lane in lanes)}")
 
+    # `done` is deliberately not assignment-driven: reaching it is what marks a
+    # ticket `completed`, so an ordinary move into it would be a second, ungated
+    # door into completion — no lead check, no ready-for-pr check. A dev holding
+    # `tickets.move` walked straight through it in production. `tickets.close`
+    # is the only route, and it audits its own refusals.
+    if to_lane == DONE_LANE and is_lifecycle_managed(team):
+        append_event(logs_dir, "team.ticket.move.refused", status="deny", team=team_id,
+                     task_id=task.id, from_lane=task.lane, to_lane=to_lane, actor=actor,
+                     reason="done is reached by closing a ticket, not by moving it")
+        raise LaneGateError(
+            f"Lane {DONE_LANE!r} is not reachable by a move: it is what marks a ticket "
+            f"completed. Use tickets.close (team lead, from the close lane) instead "
+            f"(actor={actor or 'unspecified'}).")
+
     from_lane = task.lane
     current = next((lane for lane in lanes if lane.id == from_lane), None)
     if current and current.gate and current.gate not in _actor_identities(team, actor):
@@ -277,3 +296,104 @@ def render_lanes(team: TeamConfig) -> str:
         meaning = f" — {lane.description}" if lane.description else ""
         lines.append(f"- {lane.id}{meaning}{suffix}")
     return "\n".join(lines)
+
+
+# --- lane transitions -------------------------------------------------------
+#
+# The destination lane is derived from the TRANSITION (who handed the ticket to
+# whom), not from the target role alone, because a role can own several lanes:
+# the lead owns `backlog` (work bounced back), `ready-for-pr` (QA passed) and
+# `done`. "Assign to lead" therefore does not identify a lane; "test handed it
+# to lead" does.
+
+DEFAULT_LANE_TRANSITIONS: list[dict[str, str]] = [
+    {"from": "lead", "to": "dev", "lane": "in-progress"},
+    {"from": "dev", "to": "test", "lane": "testing"},
+    {"from": "test", "to": "dev", "lane": "in-progress"},    # QA rejected
+    {"from": "test", "to": "lead", "lane": "ready-for-pr"},  # QA passed
+]
+DEFAULT_BOUNCE_LANE = "backlog"
+# Used only when a team declares no `-> lead` rule to derive its close lane from.
+DEFAULT_CLOSE_LANE = "ready-for-pr"
+
+
+def role_of(team: TeamConfig, agent_id: str) -> str | None:
+    """The team role (`dev`, `test`, `lead`, ...) for an agent id."""
+    for member in team.agents or []:
+        if isinstance(member, dict) and member.get("id") == agent_id:
+            role = member.get("role")
+            return str(role) if role else None
+    return None
+
+
+def lane_transitions(team: TeamConfig) -> dict[str, Any]:
+    """The team's transition table, defaulted to the standard pipeline.
+
+    Defaults are filtered against the team's actual lanes — a board without a
+    `testing` lane must not be handed one — and a team that declares its own
+    `rules` replaces the defaults outright rather than merging, so a custom
+    board is exactly what it says it is.
+    """
+    known = {lane.id for lane in team_lanes(team)}
+    declared = getattr(team, "lane_transitions", None)
+    declared = declared if isinstance(declared, dict) else {}
+
+    rules = declared.get("rules")
+    if not isinstance(rules, list):
+        rules = DEFAULT_LANE_TRANSITIONS
+    rules = [r for r in rules if isinstance(r, dict) and r.get("lane") in known]
+
+    bounce = declared.get("bounce_lane", DEFAULT_BOUNCE_LANE)
+    if bounce not in known:
+        bounce = None
+    return {"rules": rules, "bounce_lane": bounce}
+
+
+def close_lane(team: TeamConfig) -> str | None:
+    """The lane a ticket closes FROM — the one a `-> lead` rule targets.
+
+    Derived rather than hardcoded: `ready-for-pr` is `engineering-team`'s name
+    for "QA passed", not a universal one, and a team that renames it must not
+    lose its only exit.
+    """
+    for rule in lane_transitions(team)["rules"]:
+        if rule.get("to") == "lead" and rule.get("lane"):
+            return str(rule["lane"])
+    return None
+
+
+def is_lifecycle_managed(team: TeamConfig) -> bool:
+    """Whether this team's board can actually run the ticket lifecycle.
+
+    The lifecycle needs all four parts: a board, at least one usable transition
+    rule to move a ticket along it, a bounce lane to catch unhandled work, and
+    the terminal `done` lane that means `completed`. A lane-bearing team missing
+    any of them (a marketing board of brief/drafting/review/published; the
+    `lanes: true` shorthand, whose defaults share no lane with the pipeline
+    rules) is NOT running this lifecycle, and the runtime must leave it on its
+    previous behaviour rather than half-applying rules its board cannot satisfy
+    — which would send every completed run straight to `blocked`.
+    """
+    lanes = team_lanes(team)
+    if not lanes:
+        return False
+    if not any(lane.id == DONE_LANE for lane in lanes):
+        return False
+    transitions = lane_transitions(team)
+    return bool(transitions["rules"]) and bool(transitions["bounce_lane"])
+
+
+def derive_lane(team: TeamConfig, from_agent: str | None, to_agent: str) -> str | None:
+    """The lane a handoff moves the ticket into, or None when no rule matches.
+
+    None is not an error — the caller leaves the lane alone and says so, rather
+    than guessing a destination.
+    """
+    from_role = role_of(team, from_agent) if from_agent else None
+    to_role = role_of(team, to_agent)
+    if not to_role:
+        return None
+    for rule in lane_transitions(team)["rules"]:
+        if rule.get("to") == to_role and (rule.get("from") in (None, from_role)):
+            return str(rule["lane"])
+    return None

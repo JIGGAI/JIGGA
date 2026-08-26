@@ -365,6 +365,95 @@ def _tickets_handler(
                     "assignee": t.assignee} for t in team_tickets(tasks_dir, team_id)]
         return {"source": "capability.tickets", "team": team_id, "lanes": lanes, "tickets": tickets}
 
+    # `action` is the payload's explicit "action" field (see tickets.list above),
+    # defaulted to "move" for the untagged legacy call shape. A tool call routed
+    # through the dispatcher instead carries the real action on the step itself
+    # (`tickets.handoff`), with no "action" key in its arguments — so handoff
+    # routing also accepts that shape rather than requiring both.
+    if action == "handoff" or (_step is not None and _step.action == "tickets.handoff"):
+        from jigga.runtime.lanes import derive_lane, team_for_task
+        from jigga.runtime.tasks import find_task, update_task
+
+        task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        assignee = str(payload.get("assignee") or "").strip()
+        # `comment` is declared to the model in capabilities.py and the role
+        # instructions ask every agent for one. Reading it nowhere would repeat
+        # the shipped bug where a declared field was silently discarded — the
+        # model is told to write it, so it has to land somewhere. Until
+        # Task.comments exists (a later stage), the audit event is where.
+        comment = str(payload.get("comment") or "").strip() or None
+        if not task_id or not assignee:
+            raise ValueError("tickets.handoff needs a 'ticket' id and an 'assignee'.")
+        task = find_task(tasks_dir, task_id)
+        if task is None:
+            raise ValueError(f"Ticket not found: {task_id}")
+
+        _team_id, team = team_for_task(teams_dir, task)
+        lane = derive_lane(team, actor, assignee)
+        if lane is None:
+            # No rule covers this transition. Leave the lane where it is and say
+            # so — guessing a destination would put the board somewhere nobody
+            # asked for, and silence is what made earlier losses invisible.
+            append_event(runtime.logs_dir, "ticket.lane.underived", status="ask",
+                         agent=actor, task_id=task.id, to=assignee, lane=task.lane)
+        # `bounces` counts a ticket looping back to the lead unowned, and at
+        # MAX_BOUNCES the ticket is blocked for good. Left unreset it was a
+        # LIFETIME budget: a ticket that bounced three times across its whole
+        # history stayed permanently one non-handoff run away from blocked,
+        # recoverable only by hand-editing its JSON. A ticket that just found an
+        # owner is not looping, so the count starts over.
+        metadata = dict(task.metadata or {})
+        metadata["bounces"] = 0
+        updated = update_task(tasks_dir, task_id, assignee=assignee, state="pending",
+                              metadata=metadata, **({"lane": lane} if lane else {}))
+        append_event(runtime.logs_dir, "team.ticket.handoff", agent=actor, task_id=task.id,
+                     to=assignee, lane=updated.lane, comment=comment)
+        return {"source": "capability.tickets", "ticket": task.id, "assignee": assignee,
+                "lane": updated.lane, "lane_derived": lane is not None, "comment": comment}
+
+    # Same dispatch trap as tickets.handoff above: a dispatcher-routed call
+    # carries "tickets.close" on the step, not in the payload's "action" field.
+    if action == "close" or (_step is not None and _step.action == "tickets.close"):
+        from jigga.runtime.lanes import (
+            DEFAULT_CLOSE_LANE,
+            close_lane,
+            role_of,
+            team_for_task,
+        )
+        from jigga.runtime.tasks import find_task, update_task
+
+        task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        comment = str(payload.get("comment") or "").strip() or None   # see tickets.handoff
+        if not task_id:
+            raise ValueError("tickets.close needs a 'ticket' id.")
+        task = find_task(tasks_dir, task_id)
+        if task is None:
+            raise ValueError(f"Ticket not found: {task_id}")
+        _team_id, team = team_for_task(teams_dir, task)
+
+        # Closing is what makes a ticket complete, so it is the one action that
+        # must not be reachable by accident: the lead owns it, and only from the
+        # lane that means QA has passed.
+        if role_of(team, actor or "") != "lead":
+            append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
+                         task_id=task.id, reason="not the team lead")
+            raise PermissionError("Only the team lead closes a ticket.")
+        # `ready-for-pr` is engineering-team's name for "QA passed", not a
+        # universal one — derive it from the team's own transition table (the
+        # lane a `-> lead` rule targets) so a board that renames it does not
+        # lose its only exit, and fall back only when nothing is derivable.
+        expected = close_lane(team) or DEFAULT_CLOSE_LANE
+        if task.lane != expected:
+            append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
+                         task_id=task.id, reason=f"lane={task.lane!r}, expected {expected!r}")
+            raise ValueError(f"A ticket closes from {expected!r}, not {task.lane!r}.")
+
+        updated = update_task(tasks_dir, task_id, lane="done", state="completed")
+        append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id,
+                     comment=comment)
+        return {"source": "capability.tickets", "ticket": updated.id, "lane": "done",
+                "state": "completed", "comment": comment}
+
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
     if not task_id or not to_lane:

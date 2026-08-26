@@ -82,7 +82,32 @@ def test_team_lanes_rejects_gate_naming_non_member() -> None:
 # --- default lane on team-task creation ------------------------------------
 
 
-def test_handoff_task_lands_on_first_lane(tmp_path: Path) -> None:
+def test_handoff_does_not_create_a_task_on_a_lifecycle_managed_team(tmp_path: Path) -> None:
+    """fire_handoffs used to spawn a second ticket that landed on the team's
+    first lane; a team running the ticket lifecycle now hands work on by
+    reassigning the ticket it already has (tickets.handoff, Task 4), so a
+    second spawned ticket would just fragment the board. See test_handoffs.py
+    for the fire_handoffs-level coverage of this no-op (including the skip
+    audit event) — this test guards that the "lands on first lane" behaviour
+    this file used to assert is gone, not merely renamed."""
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.teams / "ct.yaml", {
+        "id": "ct", "name": "Content Team",
+        "agents": [{"id": "lead", "role": "lead"}, {"id": "dev", "role": "dev"}],
+        "routing": {"default_assignee": "lead",
+                    "handoffs": [{"from": "lead", "to": "dev", "when": "ready"}]},
+        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "done"}],
+    })
+    created = fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
+                            team_id="ct", from_member="lead")
+    assert created == []
+
+
+def test_handoff_still_creates_a_task_on_a_board_that_is_not_the_pipeline(tmp_path: Path) -> None:
+    """Having lanes is not the same as running the lifecycle. A brief/drafting
+    board has no transition rule, no bounce lane and no `done`, so it has no
+    tickets.handoff route to replace what standing handoffs down would take —
+    it would simply stop. It keeps firing, exactly as before this feature."""
     paths = init_runtime(tmp_path)
     write_yaml(paths.teams / "ct.yaml", {
         "id": "ct", "name": "Content Team",
@@ -93,7 +118,8 @@ def test_handoff_task_lands_on_first_lane(tmp_path: Path) -> None:
     })
     created = fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
                             team_id="ct", from_member="strategist")
-    assert created[0]["lane"] == "brief"  # first declared lane
+    assert [t["assignee"] for t in created] == ["writer"]
+    assert created[0]["lane"] == "brief"   # new tickets land on the first lane
 
 
 # --- move + gate enforcement -----------------------------------------------

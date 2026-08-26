@@ -262,10 +262,25 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "name": "tickets",
         "version": "0.1.0",
         "summary": "Move a team ticket across its board lanes, or list the team's tickets by lane (file-first, audited).",
-        "actions": ["tickets.move", "tickets.list"],
+        "actions": ["tickets.move", "tickets.list", "tickets.handoff", "tickets.close"],
         "permissions": {"tickets": "move"},
         "risk_level": "low",
         "handler": "runtime.tickets",
+        "action_inputs": {
+            "tickets.handoff": {
+                "ticket": {"type": "string", "required": True,
+                           "description": "Id of the EXISTING ticket to hand on. Do not create a new one."},
+                "assignee": {"type": "string", "required": True,
+                             "description": "Agent id taking the ticket next."},
+                "comment": {"type": "string",
+                            "description": "What you did and what the next agent needs to know."},
+            },
+            "tickets.close": {
+                "ticket": {"type": "string", "required": True,
+                           "description": "Id of the ticket to close. Lead only, and only from ready-for-pr."},
+                "comment": {"type": "string", "description": "How the work was confirmed done."},
+            },
+        },
     },
     {
         "name": "summarization",

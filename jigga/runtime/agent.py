@@ -26,7 +26,13 @@ from jigga.runtime.model_router import (
 )
 from jigga.runtime.policy import NON_EXECUTING_MODES, granted_actions, resolve_permission_mode
 from jigga.runtime.handoffs import fire_handoffs
-from jigga.runtime.tasks import set_task_state, task_requires_approval, tasks_for_agent
+from jigga.runtime.tasks import (
+    find_task,
+    set_task_state,
+    task_requires_approval,
+    tasks_for_agent,
+    update_task,
+)
 from jigga.runtime.context_pack import assemble_agent_context
 from jigga.runtime.mailbox import mark_read, unread_messages
 from jigga.runtime.workspaces import (
@@ -479,6 +485,58 @@ def run_agent(
         return _run_agent(home, logs_dir, tasks_dir, agents_dir, agent_id, dry_run_model)
 
 
+def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
+                          agent_id: str, run_state: str):
+    """Write the run's outcome onto the task.
+
+    For a plain task that is just the run state, exactly as before. For a
+    lane-managed ticket the lane decides: only `done` completes, and a ticket
+    nobody picked up bounces to the lead instead of sitting silently assigned
+    to an agent that has finished with it.
+    """
+    from jigga.core.config import load_teams
+    from jigga.runtime.lanes import is_lifecycle_managed
+    from jigga.runtime.ticket_outcome import resolve_ticket_outcome
+
+    fresh = find_task(tasks_dir, task.id) or task      # the run may have moved it
+    if fresh.lane is None:
+        return set_task_state(tasks_dir, task.id, run_state)
+
+    team_id = (fresh.metadata or {}).get("team_id")
+    team = load_teams(home / "teams").get(team_id) if team_id else None
+    if team is None:
+        # A ticket that HAS a lane can only reach `completed` from `done`, and
+        # we cannot reason about that at all without its team (yaml deleted,
+        # renamed, typo). Defaulting to plain-path completion here would
+        # silently reopen the exact bug this task exists to fix — so block,
+        # loudly, instead of guessing.
+        append_event(logs_dir, "ticket.team_unresolved", status="ask", agent=agent_id,
+                     task_id=fresh.id, lane=fresh.lane, team_id=team_id,
+                     reason=f"team {team_id!r} referenced by this ticket could not be resolved")
+        return update_task(tasks_dir, task.id, state="blocked")
+
+    if not is_lifecycle_managed(team):
+        # A board is not automatically this lifecycle. marketing-team's lanes
+        # are brief/drafting/review/published: no transition rule can target
+        # one of them, there is no bounce lane and no terminal `done`, so every
+        # rule below would resolve to `blocked` on the FIRST run and the ticket
+        # could never reach `completed` again. Such a team keeps exactly the
+        # behaviour it had before this feature existed.
+        return set_task_state(tasks_dir, task.id, run_state)
+
+    outcome = resolve_ticket_outcome(fresh, team, run_state=run_state, ran_as=agent_id)
+    metadata = dict(fresh.metadata or {})
+    if outcome["bounced"]:
+        metadata["bounces"] = int(metadata.get("bounces") or 0) + 1
+        append_event(logs_dir, "ticket.bounced", status="ask", agent=agent_id, task_id=fresh.id,
+                     to=outcome["assignee"], lane=outcome["lane"], bounces=metadata["bounces"])
+    if outcome["state"] == "blocked":
+        append_event(logs_dir, "ticket.blocked", status="ask", agent=agent_id, task_id=fresh.id,
+                     reason="nobody picked this ticket up and it has bounced too often")
+    return update_task(tasks_dir, task.id, state=outcome["state"], lane=outcome["lane"],
+                       assignee=outcome["assignee"], metadata=metadata)
+
+
 def _run_agent(
     home: Path,
     logs_dir: Path,
@@ -576,10 +634,19 @@ def _run_agent(
             "trace_id": current_trace_id(),
         }
         write_json(run_dir / f"{task.id}.json", artifact)
-        completed = set_task_state(tasks_dir, task.id, loop["state"])
-        processed.append(completed.to_dict())
+        resolved = _apply_ticket_outcome(home, tasks_dir, logs_dir, task, agent_id, loop["state"])
+        processed.append(resolved.to_dict())
 
-        if loop["state"] == "completed":
+        # What follows announces the TASK as finished — the audit events, the
+        # workspace output, the daily breadcrumb, the inbox mark-read. Keying
+        # them on the run's own state is the same lie this feature removes from
+        # task state: a run that just bounced or blocked its ticket would still
+        # log `task.completed`, and `runtime/inference.py` mines
+        # `agent.task_completed` to learn what finished work looks like — so
+        # unfinished work taught the pattern miner. The resolved outcome is the
+        # authority. For a plain task the outcome IS the run state, so nothing
+        # about a non-team task changes.
+        if resolved.state == "completed":
             append_event(logs_dir, "task.completed", agent=agent_id, task_id=task.id, title=task.title, run_id=run_id)
             append_event(logs_dir, "agent.task_completed", agent_id=agent_id, task_id=task.id,
                          title=task.title, run_id=run_id)
