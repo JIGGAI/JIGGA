@@ -45,6 +45,14 @@ def test_an_approval_park_is_left_alone() -> None:
     assert out["bounced"] is False
 
 
+def test_an_unassigned_ticket_is_not_a_handoff_and_bounces() -> None:
+    # None != ran_as would read as "handed on mid-run" and leave it silently
+    # unassigned; an unset assignee is never a handoff, so it must bounce.
+    ticket = _ticket(assignee=None)
+    out = resolve_ticket_outcome(ticket, TEAM, run_state="completed", ran_as="eng-dev")
+    assert out == {"state": "pending", "lane": "backlog", "assignee": "eng-lead", "bounced": True}
+
+
 def test_a_reassigned_ticket_is_not_a_bounce() -> None:
     # The agent handed it on during the run; the ticket already moved.
     ticket = _ticket(assignee="eng-test", lane="testing")

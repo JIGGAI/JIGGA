@@ -59,7 +59,7 @@ def resolve_ticket_outcome(
 
     # Handed on during the run: the ticket already moved, so re-queue it for
     # whoever holds it now.
-    if ran_as is not None and task.assignee != ran_as:
+    if ran_as is not None and task.assignee is not None and task.assignee != ran_as:
         return {**keep, "state": "pending"}
 
     # Nobody has it next. Bounce it to the lead so it lands somewhere visible
