@@ -261,7 +261,15 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
     {
         "name": "tickets",
         "version": "0.1.0",
-        "summary": "Move a team ticket across its board lanes, or list the team's tickets by lane (file-first, audited).",
+        "summary": "Work a team ticket through its board: hand it to the next agent "
+                   "(tickets.handoff), close it when it is done (tickets.close), move it "
+                   "between lanes by hand (tickets.move), or list the board (tickets.list). "
+                   "File-first, audited.",
+        "when_to_use": "Whenever you are passing along, finishing, or inspecting a ticket that "
+                       "ALREADY EXISTS. tickets.handoff is how work moves between agents — it "
+                       "reassigns the ticket you were given and moves its lane for you. Never "
+                       "use task.assign to pass a ticket along; that creates a second ticket for "
+                       "the same work and abandons the one you hold.",
         "actions": ["tickets.move", "tickets.list", "tickets.handoff", "tickets.close"],
         "permissions": {"tickets": "move"},
         "risk_level": "low",
@@ -496,9 +504,13 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
     {
         "name": "team-orchestration",
         "version": "0.1.0",
-        "summary": "Dispatch work across the org: run a team (team.run) or assign a task to any "
-                   "agent (task.assign). Commands flow through the task queue + audit log, so they "
-                   "stay file-first and auditable. For the default/chief agent.",
+        "summary": "Dispatch NEW work across the org: run a team (team.run) or create a brand-new "
+                   "task for an agent (task.assign). Commands flow through the task queue + audit "
+                   "log, so they stay file-first and auditable. For the default/chief agent.",
+        "when_to_use": "Only for work that has no ticket yet. task.assign CREATES a task — it is "
+                       "not how you hand an existing one on. If you are holding a ticket and want "
+                       "another agent to take it, use tickets.handoff instead; task.assign would "
+                       "leave your ticket behind and put a duplicate on the board.",
         "actions": ["team.run", "task.assign"],
         "risk_level": "medium",
         # Declared shapes. Without them task.assign was advertised as taking an
@@ -511,7 +523,8 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
                 "assignee": {"type": "string", "required": True,
                              "description": "Agent id to assign the task to."},
                 "title": {"type": "string", "required": True,
-                          "description": "Short one-line summary. Not the brief — put that in description."},
+                          "description": "Short one-line summary for a NEW ticket. If the work "
+                                         "already has a ticket, stop and use tickets.handoff."},
                 "description": {"type": "string", "required": True,
                                 "description": "The full brief the assignee needs to do the work without "
                                                "asking: requirements, acceptance check, and what happens next."},
