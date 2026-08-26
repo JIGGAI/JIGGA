@@ -498,10 +498,21 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
     from jigga.runtime.ticket_outcome import resolve_ticket_outcome
 
     fresh = find_task(tasks_dir, task.id) or task      # the run may have moved it
+    if fresh.lane is None:
+        return set_task_state(tasks_dir, task.id, run_state)
+
     team_id = (fresh.metadata or {}).get("team_id")
     team = load_teams(home / "teams").get(team_id) if team_id else None
-    if fresh.lane is None or team is None:
-        return set_task_state(tasks_dir, task.id, run_state)
+    if team is None:
+        # A ticket that HAS a lane can only reach `completed` from `done`, and
+        # we cannot reason about that at all without its team (yaml deleted,
+        # renamed, typo). Defaulting to plain-path completion here would
+        # silently reopen the exact bug this task exists to fix — so block,
+        # loudly, instead of guessing.
+        append_event(logs_dir, "ticket.team_unresolved", status="ask", agent=agent_id,
+                     task_id=fresh.id, lane=fresh.lane, team_id=team_id,
+                     reason=f"team {team_id!r} referenced by this ticket could not be resolved")
+        return update_task(tasks_dir, task.id, state="blocked")
 
     outcome = resolve_ticket_outcome(fresh, team, run_state=run_state, ran_as=agent_id)
     metadata = dict(fresh.metadata or {})

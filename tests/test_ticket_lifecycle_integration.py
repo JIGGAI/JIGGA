@@ -56,6 +56,24 @@ def test_a_ticket_in_done_completes(tmp_path: Path) -> None:
     assert list_tasks(paths.tasks)[0].state == "completed"
 
 
+def test_a_ticket_whose_team_cannot_be_resolved_does_not_complete(tmp_path: Path) -> None:
+    # A lane means the lane must decide, and that requires the team. A yaml
+    # deleted out from under a lane-managed ticket must not silently reopen
+    # the plain-completion bug this task exists to fix.
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    create_task(paths.tasks, "orphaned", assignee="eng-dev", lane="in-progress",
+                metadata={"team_id": "does-not-exist"})
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    ticket = list_tasks(paths.tasks)[0]
+    assert ticket.state == "blocked"
+    assert ticket.lane == "in-progress"          # left alone
+    assert ticket.assignee == "eng-dev"          # left alone
+
+
 def test_a_plain_task_is_untouched_by_any_of_this(tmp_path: Path) -> None:
     # No lane means no board; today's behaviour must survive exactly.
     paths = init_runtime(tmp_path, examples=True)
