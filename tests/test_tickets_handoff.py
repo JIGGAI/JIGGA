@@ -89,3 +89,36 @@ def test_handoff_requires_a_ticket_and_an_assignee(tmp_path: Path) -> None:
     paths = _setup(tmp_path)
     with pytest.raises(ValueError):
         _handoff(paths, "eng-dev", {"ticket": "task_x"})
+
+
+def test_a_handoff_resets_the_bounce_budget(tmp_path: Path) -> None:
+    """`bounces` was written once and never cleared, making it a LIFETIME
+    budget: a ticket that bounced three times across its whole history was
+    permanently one non-handoff run from `blocked`, recoverable only by
+    hand-editing JSON. Finding an owner is not looping."""
+    from jigga.core.models import TeamConfig
+    from jigga.runtime.ticket_outcome import resolve_ticket_outcome
+
+    paths = _setup(tmp_path)
+    ticket = create_task(paths.tasks, "much-travelled", assignee="eng-lead",
+                         lane="backlog", metadata={"team_id": "eng", "bounces": 3,
+                                                   "keep": "me"})
+    team = TeamConfig.from_dict({
+        "id": "eng", "name": "Eng",
+        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
+                   {"id": "eng-test", "role": "test"}],
+        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
+                  {"id": "ready-for-pr"}, {"id": "done"}]})
+
+    # At the ceiling, the next unowned run blocks it for good.
+    assert resolve_ticket_outcome(find_task(paths.tasks, ticket.id), team,
+                                  run_state="completed")["state"] == "blocked"
+
+    _handoff(paths, "eng-lead", {"ticket": ticket.id, "assignee": "eng-dev"})
+
+    fresh = find_task(paths.tasks, ticket.id)
+    assert fresh.metadata["bounces"] == 0
+    assert fresh.metadata["keep"] == "me"          # nothing else in metadata is lost
+    assert fresh.metadata["team_id"] == "eng"
+    # ...and it is no longer one run away from blocked.
+    assert resolve_ticket_outcome(fresh, team, run_state="completed")["state"] == "pending"

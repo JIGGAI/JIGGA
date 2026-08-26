@@ -390,8 +390,16 @@ def _tickets_handler(
             # asked for, and silence is what made earlier losses invisible.
             append_event(runtime.logs_dir, "ticket.lane.underived", status="ask",
                          agent=actor, task_id=task.id, to=assignee, lane=task.lane)
+        # `bounces` counts a ticket looping back to the lead unowned, and at
+        # MAX_BOUNCES the ticket is blocked for good. Left unreset it was a
+        # LIFETIME budget: a ticket that bounced three times across its whole
+        # history stayed permanently one non-handoff run away from blocked,
+        # recoverable only by hand-editing its JSON. A ticket that just found an
+        # owner is not looping, so the count starts over.
+        metadata = dict(task.metadata or {})
+        metadata["bounces"] = 0
         updated = update_task(tasks_dir, task_id, assignee=assignee, state="pending",
-                              **({"lane": lane} if lane else {}))
+                              metadata=metadata, **({"lane": lane} if lane else {}))
         append_event(runtime.logs_dir, "team.ticket.handoff", agent=actor, task_id=task.id,
                      to=assignee, lane=updated.lane)
         return {"source": "capability.tickets", "ticket": task.id, "assignee": assignee,
