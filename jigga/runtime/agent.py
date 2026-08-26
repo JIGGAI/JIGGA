@@ -308,6 +308,13 @@ def _run_task_loop(
 
     task_dict = task.to_dict()
     body = task_dict.get("description") or task_dict.get("title") or "No task description."
+    # An agent could not see its own ticket's id. QA verified a deliverable,
+    # reached a verdict, and then said: "No ticket ID was provided, so I could
+    # not hand it off with tickets.handoff." It had the tool, the permission and
+    # the right answer, and no way to name the thing it was holding. Every
+    # tickets.* call takes that id, so a board ticket now says what it is.
+    if task.lane is not None:
+        body = f"Ticket: {task.id}  (lane: {task.lane})\n\n{body}"
     # The assembled context pack (identity / persona / role / tools / memory /
     # team) becomes the system prompt; fall back to the minimal identity prompt
     # if no context was assembled (e.g. a direct _run_task_loop test call).
