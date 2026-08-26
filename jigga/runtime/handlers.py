@@ -77,6 +77,10 @@ def _team_insight_handler(
     return {"statuses": statuses}
 
 
+# Every top-level key task.assign understands. Anything else is reported.
+_TASK_ASSIGN_FIELDS = {"assignee", "agent", "title", "description", "context", "team_id"}
+
+
 def _team_orchestration_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,
@@ -107,10 +111,34 @@ def _team_orchestration_handler(
         meta = {"assigned_by": runtime.agent.id if runtime.agent else None}
         if payload.get("team_id"):
             meta["team_id"] = payload["team_id"]
+        # The delegating agent's structured handoff. Previously ignored, so
+        # everything a lead worked out — requirements, acceptance check, who
+        # picks the ticket up next — died at this boundary and the assignee
+        # started from a bare title.
+        context = payload.get("context")
+        if isinstance(context, dict) and context:
+            meta["context"] = context
+        description = payload.get("description")
         task = create_task(home / "tasks", title=str(title),
-                           description=payload.get("description"),
+                           description=str(description) if description else None,
                            assignee=str(assignee), metadata=meta)
-        return {"assigned": task.id, "assignee": assignee, "title": title}
+        # Anything we did not read is a handoff the assignee will never see.
+        # Say so rather than dropping it silently — that silence is what made
+        # the original loss invisible.
+        unread = sorted(set(payload) - _TASK_ASSIGN_FIELDS)
+        if unread:
+            from jigga.runtime.audit import append_event
+            append_event(runtime.logs_dir, "capability.input.ignored", status="ask",
+                         agent=runtime.agent.id if runtime.agent else None,
+                         action="task.assign", task_id=task.id, fields=unread)
+        if not description:
+            from jigga.runtime.audit import append_event
+            append_event(runtime.logs_dir, "task.assigned_without_brief", status="ask",
+                         agent=runtime.agent.id if runtime.agent else None,
+                         action="task.assign", task_id=task.id, title=str(title))
+        return {"assigned": task.id, "assignee": assignee, "title": title,
+                "description_set": bool(description), "context_stored": "context" in meta,
+                "ignored_fields": unread}
     raise ValueError(f"Unsupported orchestration action: {step.action}")
 
 
