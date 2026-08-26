@@ -10,7 +10,7 @@ from jigga.core.io import read_yaml, write_yaml
 from jigga.runtime.agent import run_agent
 from jigga.runtime.handoffs import fire_handoffs, read_decision_log
 from jigga.runtime.model_router import ModelCallResult
-from jigga.runtime.tasks import create_task, tasks_for_agent
+from jigga.runtime.tasks import create_task, list_tasks, tasks_for_agent
 from jigga.runtime.workspaces import scaffold_workspace
 
 
@@ -161,6 +161,29 @@ def test_cli_team_handoff_and_decisions(tmp_path: Path, capsys) -> None:
     assert main(["--home", str(tmp_path), "team", "decisions", "ct", "--json"]) == 0
     log = json.loads(capsys.readouterr().out)
     assert log and log[0]["from"] == "strategist" and log[0]["to"] == "writer"
+
+
+def test_a_lane_managed_team_does_not_spawn_handoff_tickets(tmp_path: Path) -> None:
+    """One ticket travels the board. The 2026-08-26 end-to-end produced four
+    tickets for one request, three of them handoff spawn."""
+    paths = init_runtime(tmp_path)
+    # `handoffs` nests under `routing`, matching `eligible_handoffs` (which reads
+    # `team.routing["handoffs"]`) and this file's `_team` helper above — a
+    # top-level `handoffs:` key is dropped by TeamConfig.from_dict's field
+    # filter and would make this test pass trivially, before any fix.
+    write_yaml(paths.teams / "eng.yaml", {
+        "id": "eng", "name": "Eng",
+        "agents": [{"id": "eng-dev", "role": "dev"}, {"id": "eng-test", "role": "test"}],
+        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"}, {"id": "done"}],
+        "routing": {"handoffs": [{"from": "eng-dev", "to": "eng-test", "when": "verify"}]},
+    })
+    before = len(list_tasks(paths.tasks))
+
+    created = fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
+                            team_id="eng", from_member="eng-dev")
+
+    assert created == []
+    assert len(list_tasks(paths.tasks)) == before
 
 
 def test_malformed_routing_does_not_crash(tmp_path: Path) -> None:

@@ -82,7 +82,14 @@ def test_team_lanes_rejects_gate_naming_non_member() -> None:
 # --- default lane on team-task creation ------------------------------------
 
 
-def test_handoff_task_lands_on_first_lane(tmp_path: Path) -> None:
+def test_handoff_does_not_create_a_task_on_a_lane_managed_team(tmp_path: Path) -> None:
+    """fire_handoffs used to spawn a second ticket that landed on the team's
+    first lane; a lane-managed team now hands work on by reassigning the
+    ticket it already has (tickets.handoff, Task 4), so a second spawned
+    ticket would just fragment the board. See test_handoffs.py for the
+    fire_handoffs-level coverage of this no-op (including the skip audit
+    event) — this test guards that the "lands on first lane" behaviour this
+    file used to assert is gone, not merely renamed."""
     paths = init_runtime(tmp_path)
     write_yaml(paths.teams / "ct.yaml", {
         "id": "ct", "name": "Content Team",
@@ -93,7 +100,7 @@ def test_handoff_task_lands_on_first_lane(tmp_path: Path) -> None:
     })
     created = fire_handoffs(paths.home, paths.logs, paths.tasks, paths.teams,
                             team_id="ct", from_member="strategist")
-    assert created[0]["lane"] == "brief"  # first declared lane
+    assert created == []
 
 
 # --- move + gate enforcement -----------------------------------------------
