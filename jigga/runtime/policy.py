@@ -312,13 +312,32 @@ def evaluate_network(agent: AgentConfig, target: str | None = None) -> PolicyDec
     return PolicyDecision("deny", "Network access is denied for this agent.", "network")
 
 
-def evaluate_filesystem(agent: AgentConfig, path: str | Path, operation: str = "read") -> PolicyDecision:
+def _is_within(path: str, root: str | Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).expanduser().resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def evaluate_filesystem(agent: AgentConfig, path: str | Path, operation: str = "read",
+                        workspace_root: str | Path | None = None) -> PolicyDecision:
     fs = agent.permissions.get("filesystem") if isinstance(agent.permissions, dict) else {}
     allow = list(fs.get("allow", [])) if isinstance(fs, dict) else []
     deny = list(fs.get("deny", [])) if isinstance(fs, dict) else []
     raw = str(Path(path).expanduser())
     if _matches_any(raw, deny):
         return PolicyDecision("deny", f"Filesystem {operation} denied by deny rule: {raw}", f"filesystem.{operation}")
+    # An agent's own workspace is its working area by definition — the runtime
+    # provisions it for exactly this and `ensure_agent_workspace` describes it
+    # as the place to "bind its reads/writes to". Requiring a separate
+    # allow-list entry for a directory the runtime itself creates is ceremony
+    # everyone forgets: the whole engineering team shipped with filesystem
+    # tools and no allow-list, so every read and write was denied and each
+    # ticket produced nothing. Deny rules are checked first and still win, so
+    # this widens the working area without widening what is protected.
+    if workspace_root and _is_within(raw, workspace_root):
+        return PolicyDecision("allow")
     if allow and _matches_any(raw, allow):
         return PolicyDecision("allow")
     if allow:

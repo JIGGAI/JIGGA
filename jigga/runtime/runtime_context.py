@@ -18,6 +18,11 @@ class RuntimeContext:
     home: Path
     logs_dir: Path
     sessions_dir: Path
+    # The workspace this run is bound to. Relative filesystem paths resolve
+    # against it, so `shared-context/plan.md` means the same thing to an agent
+    # as it does in its own prompt. None (workflows, triggers) keeps the old
+    # process-cwd behaviour.
+    workspace_id: str | None = None
 
 
 Handler = Callable[

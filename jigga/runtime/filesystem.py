@@ -55,21 +55,44 @@ class FilesystemPolicyError(RuntimeError):
     specifically as `policy.denied` rather than generic step failure."""
 
 
-def _require_path(input_value: Any, action: str) -> str:
+def _workspace_root(runtime) -> Path | None:
+    """The directory a relative path is interpreted against, or None when this
+    run isn't bound to a workspace (workflows, triggers, direct handler tests)."""
+    home = getattr(runtime, "home", None)
+    workspace_id = getattr(runtime, "workspace_id", None)
+    if home is None or not workspace_id:
+        return None
+    from jigga.runtime.workspaces import workspace_dir
+    return workspace_dir(Path(home), str(workspace_id))
+
+
+def _require_path(input_value: Any, action: str, runtime: Any = None) -> str:
     if not isinstance(input_value, dict):
         raise ValueError(f"{action} requires a dict input with 'path'")
     raw = input_value.get("path")
     if not raw or not isinstance(raw, str):
         raise ValueError(f"{action} requires non-empty 'path' string in input")
+    expanded = Path(raw).expanduser()
+    # Relative paths are workspace-relative. Agents are told about their
+    # workspace in their own context ("read shared-context/priorities.md"), so
+    # they ask for exactly that — and it used to be resolved against whatever
+    # the supervisor's cwd happened to be, then policy-checked as a bare
+    # relative string that no absolute allow-list could ever match. Every such
+    # read and write was refused.
+    if not expanded.is_absolute():
+        root = _workspace_root(runtime)
+        if root is not None:
+            expanded = root / expanded
     # Canonicalize `..`/`.` so the path that's policy-checked is the same one
     # that's read/written (no traversal between the gate and the IO).
-    return os.path.normpath(str(Path(raw).expanduser()))
+    return os.path.normpath(str(expanded))
 
 
 def _check_policy(runtime, path: str, operation: str, action: str) -> None:
     if runtime.agent is None:
         raise ValueError(f"{action} requires an executing agent")
-    decision = evaluate_filesystem(runtime.agent, path, operation=operation)
+    decision = evaluate_filesystem(runtime.agent, path, operation=operation,
+                                   workspace_root=_workspace_root(runtime))
     if decision.status != "allow":
         raise FilesystemPolicyError(
             f"Agent {runtime.agent.id} cannot {operation} {path}: "
@@ -84,7 +107,7 @@ def _read_file(
     _memory_context: dict[str, Any],
     runtime,
 ) -> Any:
-    path = _require_path(resolved_input, step.action)
+    path = _require_path(resolved_input, step.action, runtime)
     _check_policy(runtime, path, "read", step.action)
     file_path = Path(path)
     if not file_path.exists():
@@ -122,7 +145,7 @@ def _write_file(
 ) -> Any:
     if not isinstance(resolved_input, dict):
         raise ValueError(f"{step.action} requires a dict input with 'path' and 'content'")
-    path = _require_path(resolved_input, step.action)
+    path = _require_path(resolved_input, step.action, runtime)
     content = resolved_input.get("content")
     if content is None:
         raise ValueError(f"{step.action} requires 'content' in input")
@@ -162,7 +185,7 @@ def _list_directory(
     _memory_context: dict[str, Any],
     runtime,
 ) -> Any:
-    path = _require_path(resolved_input, step.action)
+    path = _require_path(resolved_input, step.action, runtime)
     _check_policy(runtime, path, "read", step.action)
     dir_path = Path(path)
     if not dir_path.exists():
@@ -215,7 +238,7 @@ def _search_files(
 ) -> Any:
     if not isinstance(resolved_input, dict):
         raise ValueError(f"{step.action} requires a dict input with 'path' and 'pattern'")
-    path = _require_path(resolved_input, step.action)
+    path = _require_path(resolved_input, step.action, runtime)
     pattern = resolved_input.get("pattern")
     if not pattern or not isinstance(pattern, str):
         raise ValueError(f"{step.action} requires non-empty 'pattern' string in input")
