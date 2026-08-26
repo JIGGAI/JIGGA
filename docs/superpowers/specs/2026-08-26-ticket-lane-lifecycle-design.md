@@ -123,15 +123,55 @@ the refusal is loud rather than silent if it happens.
 
 ### Comments
 
-`Task.comments: list[{author, at, text}]`, written two ways:
+Comments are a first-class part of a ticket, readable and writable by both
+agents and people — the same thing ClawKitchen tickets have, where a ticket
+carries a `## Comments` section and the detail view offers an author field, a
+body box, and the running thread.
 
-- **Automatic.** The agent's closing summary is appended at the end of every
-  run on a lane-managed ticket. It is the text already being written to
-  `agent-outputs`, so this costs nothing and cannot be forgotten.
-- **Explicit.** `tickets.comment` for richer or mid-run notes. Role
-  instructions ask for what changed, how to verify it, and what is left.
+**Shape.** `Task.comments: list[{id, at, author, author_role, body}]`, stored on
+the task JSON. JIGGA tickets are JSON, so this is a list rather than
+ClawKitchen's markdown section — that project parses comments back out of
+prose with a hundred lines of regex precisely because its tickets are files.
+The rendered result matches: chronological thread, author and role, timestamp,
+markdown body. Append-only, in both products: a ticket's comment history is an
+audit trail, and rewriting it would defeat the point of having one.
 
-A comment failure is logged and never fails the run.
+**Written four ways, one of which cannot be skipped.**
+
+| writer | how | when |
+|---|---|---|
+| runtime | automatic | end of every run on a lane-managed ticket |
+| agent | `tickets.comment(ticket_id, text)` | any time, for richer or mid-run notes |
+| person | `jigga task comment <id> --body ... [--as NAME]` | CLI |
+| person | ticket dialog in jiggaview | UI |
+
+The automatic one is the guarantee. It records the agent's closing summary —
+the text already being written to `agent-outputs` — so a ticket always shows
+what was done to it even if the agent never calls the tool. Role instructions
+still ask for detail: what changed, how to verify it, what is left.
+
+**Attribution.** `author` is the agent id for agent-written comments and a
+person's name for human ones; `author_role` carries the team role where known
+(`dev`, `test`, `lead`). The CLI's existing `--as` flag already records a member
+as the author in the audit log, so human attribution reuses it rather than
+inventing a second convention.
+
+**Layering.** jiggaview shells out to the `jigga` CLI for every mutation
+(`/api/tickets/update` → `jigga task update`), so comments follow the same
+path and the CLI stays the single writer:
+
+```
+ticket dialog  ->  POST /api/tickets/comment  ->  jigga task comment  ->  task JSON
+agent          ->  tickets.comment capability  ------------------------^
+runtime        ->  end-of-run auto-comment     ------------------------^
+```
+
+The UI section mirrors ClawKitchen's: a comment count, the thread newest-last,
+and an add form with optional author plus body. Posting is disabled while a
+request is in flight or the body is empty.
+
+A comment failure is logged and never fails the run — a lost note is bad, a
+lost run is worse.
 
 ### Bounce guard
 
@@ -156,7 +196,10 @@ mechanism stays for non-lane teams; it is the ticket-spawning that stops.
 | `jigga/runtime/handlers.py` | `tickets.handoff` / `.comment` / `.close` |
 | `jigga/runtime/handoffs.py` | early return for lane-managed teams |
 | `jigga/runtime/capabilities.py` | declare the three actions + `action_inputs` |
+| `jigga/cli.py` | `jigga task comment` |
 | `~/.jigga/teams/engineering-team.yaml` + recipes | `lane_transitions`, role instructions |
+| `jiggaview/src/app/api/tickets/comment/route.ts` | new route, shells to the CLI |
+| `jiggaview/src/app/tickets/ticket-dialog.tsx` | comment thread + add form |
 
 ## Testing
 
@@ -169,8 +212,14 @@ lands on every run; `tickets.close` refuses a non-lead and a ticket outside
 Integration: one ticket walks backlog → in-progress → testing → ready-for-pr →
 done, carrying a comment from each agent, and **no second ticket is created**.
 
+Comments: append-only ordering; automatic comment lands on every run; agent,
+CLI and UI writes all reach the same list; attribution records agent id versus
+person; a comment failure does not fail the run. jiggaview route tested the way
+its siblings are (argument construction + CLI failure surfaces as an error).
+
 Live: re-run the 2026-08-26 end-to-end and assert the board shows one row, not
-four.
+four, carrying a comment from each agent — then add one from the UI and confirm
+it lands in the same thread.
 
 ## Consequences
 
