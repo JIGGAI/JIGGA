@@ -486,6 +486,29 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
                    "stay file-first and auditable. For the default/chief agent.",
         "actions": ["team.run", "task.assign"],
         "risk_level": "medium",
+        # Declared shapes. Without them task.assign was advertised as taking an
+        # open object, so a lead delegating work invented `task` and `context`
+        # for its brief and handoff notes. The handler reads `title` and
+        # `description`, so both were dropped without comment and the assignee
+        # received a six-word title and an empty description.
+        "action_inputs": {
+            "task.assign": {
+                "assignee": {"type": "string", "required": True,
+                             "description": "Agent id to assign the task to."},
+                "title": {"type": "string", "required": True,
+                          "description": "Short one-line summary. Not the brief — put that in description."},
+                "description": {"type": "string", "required": True,
+                                "description": "The full brief the assignee needs to do the work without "
+                                               "asking: requirements, acceptance check, and what happens next."},
+                "context": {"type": "object",
+                            "description": "Optional structured handoff (requirements, handoff_to, "
+                                           "acceptance_check_needed). Stored on the task and shown to the assignee."},
+                "team_id": {"type": "string", "description": "Team whose board this ticket belongs to."},
+            },
+            "team.run": {
+                "team_id": {"type": "string", "required": True, "description": "Team to run."},
+            },
+        },
         "handler": "runtime.team_orchestration",
     },
 ]
