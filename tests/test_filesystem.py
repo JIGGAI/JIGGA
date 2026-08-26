@@ -490,12 +490,12 @@ def test_relative_path_resolves_into_the_workspace(tmp_path: Path) -> None:
 def test_own_workspace_is_writable_without_an_allow_list(tmp_path: Path) -> None:
     """The runtime provisions the workspace for the agent; needing a separate
     allow-list entry for it is the ceremony everyone forgot."""
-    agent = _ws_agent()
-    runtime = _ws_runtime(tmp_path, agent)
     from jigga.runtime.policy import evaluate_filesystem
 
-    target = str(tmp_path / "workspaces" / "team-x" / "shared-context" / "x.md")
+    agent = _ws_agent()
     root = tmp_path / "workspaces" / "team-x"
+    (root / "shared-context").mkdir(parents=True, exist_ok=True)
+    target = str(root / "shared-context" / "x.md")
     assert evaluate_filesystem(agent, target, "write").status != "allow"
     assert evaluate_filesystem(agent, target, "write", workspace_root=root).status == "allow"
 
