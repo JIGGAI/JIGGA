@@ -23,6 +23,10 @@ class RuntimeContext:
     # as it does in its own prompt. None (workflows, triggers) keeps the old
     # process-cwd behaviour.
     workspace_id: str | None = None
+    # The ticket this run is currently working, when there is one. A handler
+    # needs it to tell "file new work" apart from "pass along the thing I am
+    # holding" — the two look identical from inside task.assign otherwise.
+    task_id: str | None = None
 
 
 Handler = Callable[
