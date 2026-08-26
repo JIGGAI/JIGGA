@@ -70,3 +70,43 @@ def test_update_does_not_touch_state_or_lane(tmp_path: Path) -> None:
     updated = update_task(tmp_path, task.id, title="renamed")
     assert updated.lane == "testing"
     assert updated.state == task.state
+
+
+def test_update_leaves_state_lane_metadata_alone_when_omitted(tmp_path: Path) -> None:
+    # Same guarantee as above, extended to the new keyword-only fields: a
+    # caller that never mentions them must not have them change.
+    task = create_task(tmp_path, "T", lane="testing", metadata={"team_id": "t"})
+    updated = update_task(tmp_path, task.id, title="renamed")
+    assert updated.lane == "testing"
+    assert updated.state == task.state
+    assert updated.metadata == {"team_id": "t"}
+
+
+def test_update_can_set_state_lane_assignee_metadata_together(tmp_path: Path) -> None:
+    # The ticket-outcome path (runtime/agent.py) writes all four fields from
+    # one already-resolved outcome in a single call.
+    task = create_task(tmp_path, "T", assignee="dev", lane="testing",
+                       metadata={"team_id": "t", "bounces": 0})
+    updated = update_task(tmp_path, task.id, state="pending", lane="backlog",
+                          assignee="lead", metadata={"team_id": "t", "bounces": 1})
+    assert updated.state == "pending"
+    assert updated.lane == "backlog"
+    assert updated.assignee == "lead"
+    assert updated.metadata == {"team_id": "t", "bounces": 1}
+    persisted = find_task(tmp_path, task.id)
+    assert persisted.state == "pending"
+    assert persisted.lane == "backlog"
+    assert persisted.assignee == "lead"
+    assert persisted.metadata == {"team_id": "t", "bounces": 1}
+
+
+def test_update_lane_can_be_cleared_to_none(tmp_path: Path) -> None:
+    task = create_task(tmp_path, "T", lane="testing", metadata={"team_id": "t"})
+    updated = update_task(tmp_path, task.id, lane=None)
+    assert updated.lane is None
+
+
+def test_update_state_validates(tmp_path: Path) -> None:
+    task = create_task(tmp_path, "T")
+    with pytest.raises(ValueError, match="Invalid task state"):
+        update_task(tmp_path, task.id, state="not-a-real-state")

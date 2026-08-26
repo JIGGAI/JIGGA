@@ -110,12 +110,19 @@ def update_task(
     title: str | object = _UNSET,
     description: str | None | object = _UNSET,
     assignee: str | None | object = _UNSET,
+    state: str | object = _UNSET,
+    lane: str | None | object = _UNSET,
+    metadata: dict | object = _UNSET,
 ) -> Task:
-    """Edit a task's descriptive fields. Only the fields you pass change.
+    """Edit a task's fields. Only the fields you pass change.
 
-    `state` and `lane` are deliberately not editable here: they have their own
-    entry points (`set_task_state`, `move_task_lane`) and lane moves are gated
-    per team, which a generic setter would quietly bypass.
+    `state` and `lane` have their own gated entry points for ordinary callers
+    (`set_task_state`, `move_task_lane`) — lane moves in particular are gated
+    per team, and a generic setter must not become a quiet way around that
+    gate. `state`/`lane`/`metadata` are accepted here only for a caller that
+    has already resolved the destination itself (e.g. the ticket-outcome
+    helper in `runtime/agent.py`, which computes the gated transition before
+    calling this) and wants to write several fields as one update.
     """
     task = find_task(tasks_dir, task_id)
     if task is None:
@@ -131,6 +138,12 @@ def update_task(
         # "" clears the assignee; the CLI passes None to mean "leave alone".
         cleaned = None if assignee is None else str(assignee).strip()
         task.assignee = cleaned or None
+    if state is not _UNSET:
+        task.state = validate_task_state(state)
+    if lane is not _UNSET:
+        task.lane = None if lane is None else str(lane)
+    if metadata is not _UNSET:
+        task.metadata = dict(metadata) if metadata else {}
     task.updated_at = now_iso()
     write_task(tasks_dir, task)
     return task
