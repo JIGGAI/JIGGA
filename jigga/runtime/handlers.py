@@ -365,6 +365,38 @@ def _tickets_handler(
                     "assignee": t.assignee} for t in team_tickets(tasks_dir, team_id)]
         return {"source": "capability.tickets", "team": team_id, "lanes": lanes, "tickets": tickets}
 
+    # `action` is the payload's explicit "action" field (see tickets.list above),
+    # defaulted to "move" for the untagged legacy call shape. A tool call routed
+    # through the dispatcher instead carries the real action on the step itself
+    # (`tickets.handoff`), with no "action" key in its arguments — so handoff
+    # routing also accepts that shape rather than requiring both.
+    if action == "handoff" or (_step is not None and _step.action == "tickets.handoff"):
+        from jigga.runtime.lanes import derive_lane, team_for_task
+        from jigga.runtime.tasks import find_task, update_task
+
+        task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        assignee = str(payload.get("assignee") or "").strip()
+        if not task_id or not assignee:
+            raise ValueError("tickets.handoff needs a 'ticket' id and an 'assignee'.")
+        task = find_task(tasks_dir, task_id)
+        if task is None:
+            raise ValueError(f"Ticket not found: {task_id}")
+
+        _team_id, team = team_for_task(teams_dir, task)
+        lane = derive_lane(team, actor, assignee)
+        if lane is None:
+            # No rule covers this transition. Leave the lane where it is and say
+            # so — guessing a destination would put the board somewhere nobody
+            # asked for, and silence is what made earlier losses invisible.
+            append_event(runtime.logs_dir, "ticket.lane.underived", status="ask",
+                         agent=actor, task_id=task.id, to=assignee, lane=task.lane)
+        updated = update_task(tasks_dir, task_id, assignee=assignee, state="pending",
+                              **({"lane": lane} if lane else {}))
+        append_event(runtime.logs_dir, "team.ticket.handoff", agent=actor, task_id=task.id,
+                     to=assignee, lane=updated.lane)
+        return {"source": "capability.tickets", "ticket": task.id, "assignee": assignee,
+                "lane": updated.lane, "lane_derived": lane is not None}
+
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
     if not task_id or not to_lane:
