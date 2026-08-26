@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -301,6 +302,9 @@ def _run_task_loop(
     # Resolved once per task rather than per tool call: the writer's request
     # applies to the whole ticket, not to one action within it.
     ticket_gate = task_requires_approval(task)
+    # Per-task view of the frozen run context, so handlers can see which ticket
+    # is in hand without threading it through every call signature.
+    runtime = replace(runtime, task_id=task.id)
 
     task_dict = task.to_dict()
     body = task_dict.get("description") or task_dict.get("title") or "No task description."

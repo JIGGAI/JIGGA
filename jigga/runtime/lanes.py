@@ -286,7 +286,15 @@ def tickets_by_lane(team: TeamConfig, tasks_dir: Path) -> dict[str, list[Any]]:
 
 def render_lanes(team: TeamConfig) -> str:
     """A compact 'Ticket lanes' block for the team's agent context — each lane's
-    prose meaning + gate, so agents know what the columns mean."""
+    prose meaning + gate, so agents know what the columns mean, plus (for a
+    lifecycle-managed board) how work actually moves between them.
+
+    The rules are GENERATED from the team's own transition table rather than
+    written into a workspace file or a recipe, because an authored copy drifts:
+    it has to be re-stated per team, and it silently goes stale the moment a
+    team's roster or lanes change. Generating it means every board describes
+    itself, and a new team is correct on its first wake with nothing to sync.
+    """
     lanes = team_lanes(team)
     if not lanes:
         return ""
@@ -295,6 +303,32 @@ def render_lanes(team: TeamConfig) -> str:
         suffix = f"  [gate: {lane.gate}]" if lane.gate else ""
         meaning = f" — {lane.description}" if lane.description else ""
         lines.append(f"- {lane.id}{meaning}{suffix}")
+
+    if not is_lifecycle_managed(team):
+        return "\n".join(lines)
+
+    # How work moves. A lead holding a ticket reached for `task.assign` twice in
+    # a row and put duplicates on the board, because that is the familiar verb
+    # and nothing it was shown named the alternative at the point of decision.
+    by_role = {r: [] for r in {rule["from"] for rule in lane_transitions(team)["rules"]}}
+    for rule in lane_transitions(team)["rules"]:
+        by_role.setdefault(rule["from"], []).append(rule)
+    ids = {str(a.get("role")): str(a.get("id")) for a in (team.agents or [])
+           if isinstance(a, dict) and a.get("id") and a.get("role")}
+
+    lines.append("")
+    lines.append("One ticket per piece of work — it travels the whole board.")
+    lines.append("Hand it on with `tickets.handoff(ticket, assignee, comment)`; the lane moves")
+    lines.append("for you. Never use `task.assign` to pass along work that already has a")
+    lines.append("ticket — that abandons yours and puts a duplicate on the board.")
+    for role in sorted(by_role):
+        for rule in by_role[role]:
+            frm, to = ids.get(rule["from"], rule["from"]), ids.get(rule["to"], rule["to"])
+            lines.append(f"- {frm} -> {to}  lands in {rule['lane']}")
+    closer = ids.get("lead", "the lead")
+    lines.append(f"Only {closer} closes, with `tickets.close`, and only from "
+                 f"{close_lane(team) or DEFAULT_CLOSE_LANE}. Nothing else completes a ticket.")
+    lines.append("A run that ends without handing the ticket on bounces it back to the lead.")
     return "\n".join(lines)
 
 

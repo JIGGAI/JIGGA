@@ -81,6 +81,53 @@ def _team_insight_handler(
 _TASK_ASSIGN_FIELDS = {"assignee", "agent", "title", "description", "context", "team_id"}
 
 
+
+def _refuse_assign_that_should_be_a_handoff(runtime: RuntimeContext, assignee: str) -> None:
+    """Stop an agent passing along the ticket it holds by filing a new one.
+
+    A lead holding a ticket called task.assign twice in a row to give the work
+    to its dev. Each call put a second ticket on the board and left the original
+    to bounce until it blocked. Instruction alone did not fix it: the rule was
+    in the role string, the workspace plan and the assembled prompt, and the
+    model still reached for the familiar verb.
+
+    Narrow on purpose. It refuses only the case that is always wrong — you are
+    holding a lane-managed ticket and you are handing work to someone on that
+    same board. Filing genuinely new work, assigning outside the team, and every
+    non-board team are all untouched, because task.assign is still how new work
+    gets created.
+    """
+    from jigga.runtime.lanes import LaneError, is_lifecycle_managed, team_for_task
+    from jigga.runtime.tasks import find_task
+
+    if runtime.agent is None or not runtime.task_id:
+        return
+    held = find_task(runtime.home / "tasks", runtime.task_id)
+    if held is None or held.lane is None:
+        return
+    try:
+        _team_id, team = team_for_task(runtime.home / "teams", held)
+    except (LaneError, ValueError):
+        return
+    if team is None or not is_lifecycle_managed(team):
+        return
+    teammates = {str(a.get("id")) for a in (team.agents or [])
+                 if isinstance(a, dict) and a.get("id")}
+    if assignee not in teammates:
+        return
+
+    from jigga.runtime.audit import append_event
+    append_event(runtime.logs_dir, "task.assign.refused", status="deny",
+                 agent=runtime.agent.id, task_id=held.id, to=assignee,
+                 reason="use tickets.handoff to pass along a ticket you hold")
+    raise ValueError(
+        f"You are holding ticket {held.id} ({held.title!r}) and {assignee} is on that board. "
+        f"task.assign would create a SECOND ticket for the same work and leave yours behind. "
+        f"Use tickets.handoff(ticket=\"{held.id}\", assignee=\"{assignee}\", comment=...) instead. "
+        f"task.assign is only for work that has no ticket yet."
+    )
+
+
 def _team_orchestration_handler(
     step: WorkflowStep,
     _capability: CapabilityManifest,
@@ -108,6 +155,7 @@ def _team_orchestration_handler(
         title = payload.get("title")
         if not assignee or not title:
             raise ValueError("task.assign requires 'assignee' and 'title'")
+        _refuse_assign_that_should_be_a_handoff(runtime, str(assignee))
         meta = {"assigned_by": runtime.agent.id if runtime.agent else None}
         if payload.get("team_id"):
             meta["team_id"] = payload["team_id"]
