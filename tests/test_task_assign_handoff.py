@@ -36,7 +36,7 @@ def _runtime(paths) -> RuntimeContext:
 
 def _events(paths) -> list[dict]:
     path = paths.logs / "events.jsonl"
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()] if path.exists() else []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
 def _assign(paths, payload):
