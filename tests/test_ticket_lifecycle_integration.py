@@ -186,3 +186,56 @@ def test_a_closed_ticket_is_announced_as_completed(tmp_path: Path) -> None:
         run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
 
     assert "task.completed" in [e["type"] for e in _events(paths)]
+
+
+def test_a_ticket_that_has_bounced_too_often_blocks_through_a_real_run(tmp_path: Path) -> None:
+    """`blocked` is the one irreversible outcome on the board — the supervisor
+    stops waking anyone for it — and only the pure decider was covered. This
+    walks it through an actual run_agent: the audit event, the persisted state,
+    and the fact that the ticket is genuinely off the queue afterwards."""
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    ticket = create_task(paths.tasks, "ping-pong", assignee="eng-dev", lane="in-progress",
+                         metadata={"team_id": "eng", "bounces": 3})
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    fresh = find_task(paths.tasks, ticket.id)
+    assert fresh.state == "blocked"
+    assert fresh.lane == "in-progress"       # the board is left exactly as it was
+    assert fresh.assignee == "eng-dev"
+
+    blocked = [e for e in _events(paths) if e["type"] == "ticket.blocked"]
+    assert len(blocked) == 1
+    assert blocked[0]["status"] == "ask"     # it wants a human, loudly
+    assert blocked[0]["details"]["task_id"] == ticket.id
+    assert blocked[0]["details"]["agent"] == "eng-dev"
+
+    # It bounced nowhere and it did not silently re-bounce.
+    assert not [e for e in _events(paths) if e["type"] == "ticket.bounced"]
+    assert fresh.metadata["bounces"] == 3
+
+    # And it stays off the queue: the next run has nothing to pick up.
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        second = run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+    assert second["processed_tasks"] == []
+    assert find_task(paths.tasks, ticket.id).state == "blocked"
+    assert len([e for e in _events(paths) if e["type"] == "ticket.blocked"]) == 1
+
+
+def test_a_ticket_whose_team_vanished_blocks_through_a_real_run(tmp_path: Path) -> None:
+    # The other route into `blocked`: the lane cannot decide without the team,
+    # and guessing would reopen the completion bug this branch exists to fix.
+    paths = init_runtime(tmp_path, examples=True)
+    _team(paths)
+    ticket = create_task(paths.tasks, "orphaned", assignee="eng-dev", lane="in-progress",
+                         metadata={"team_id": "does-not-exist"})
+
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: _result()):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    assert find_task(paths.tasks, ticket.id).state == "blocked"
+    unresolved = [e for e in _events(paths) if e["type"] == "ticket.team_unresolved"]
+    assert unresolved and unresolved[0]["details"]["task_id"] == ticket.id
+    assert "task.completed" not in [e["type"] for e in _events(paths)]
