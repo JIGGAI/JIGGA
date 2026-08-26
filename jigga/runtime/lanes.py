@@ -29,6 +29,11 @@ from jigga.runtime.tasks import (
 )
 from jigga.runtime.workspaces import workspace_dir
 
+# The terminal lane. `lane == DONE_LANE` is what makes a ticket `completed`
+# (see runtime/ticket_outcome.py), so it is the one lane an ordinary move may
+# not target — `tickets.close` is its only door.
+DONE_LANE = "done"
+
 DEFAULT_LANES: list[dict[str, str]] = [
     {"id": "backlog", "description": "Triaged and ready to pick up."},
     {"id": "working", "description": "Actively in progress."},
@@ -159,6 +164,20 @@ def move_task_lane(
     if not any(lane.id == to_lane for lane in lanes):
         raise LaneError(
             f"Unknown lane {to_lane!r} for team {team_id!r}. Lanes: {', '.join(lane.id for lane in lanes)}")
+
+    # `done` is deliberately not assignment-driven: reaching it is what marks a
+    # ticket `completed`, so an ordinary move into it would be a second, ungated
+    # door into completion — no lead check, no ready-for-pr check. A dev holding
+    # `tickets.move` walked straight through it in production. `tickets.close`
+    # is the only route, and it audits its own refusals.
+    if to_lane == DONE_LANE and is_lifecycle_managed(team):
+        append_event(logs_dir, "team.ticket.move.refused", status="deny", team=team_id,
+                     task_id=task.id, from_lane=task.lane, to_lane=to_lane, actor=actor,
+                     reason="done is reached by closing a ticket, not by moving it")
+        raise LaneGateError(
+            f"Lane {DONE_LANE!r} is not reachable by a move: it is what marks a ticket "
+            f"completed. Use tickets.close (team lead, from the close lane) instead "
+            f"(actor={actor or 'unspecified'}).")
 
     from_lane = task.lane
     current = next((lane for lane in lanes if lane.id == from_lane), None)
@@ -326,6 +345,40 @@ def lane_transitions(team: TeamConfig) -> dict[str, Any]:
     if bounce not in known:
         bounce = None
     return {"rules": rules, "bounce_lane": bounce}
+
+
+def close_lane(team: TeamConfig) -> str | None:
+    """The lane a ticket closes FROM — the one a `-> lead` rule targets.
+
+    Derived rather than hardcoded: `ready-for-pr` is `engineering-team`'s name
+    for "QA passed", not a universal one, and a team that renames it must not
+    lose its only exit.
+    """
+    for rule in lane_transitions(team)["rules"]:
+        if rule.get("to") == "lead" and rule.get("lane"):
+            return str(rule["lane"])
+    return None
+
+
+def is_lifecycle_managed(team: TeamConfig) -> bool:
+    """Whether this team's board can actually run the ticket lifecycle.
+
+    The lifecycle needs all four parts: a board, at least one usable transition
+    rule to move a ticket along it, a bounce lane to catch unhandled work, and
+    the terminal `done` lane that means `completed`. A lane-bearing team missing
+    any of them (a marketing board of brief/drafting/review/published; the
+    `lanes: true` shorthand, whose defaults share no lane with the pipeline
+    rules) is NOT running this lifecycle, and the runtime must leave it on its
+    previous behaviour rather than half-applying rules its board cannot satisfy
+    — which would send every completed run straight to `blocked`.
+    """
+    lanes = team_lanes(team)
+    if not lanes:
+        return False
+    if not any(lane.id == DONE_LANE for lane in lanes):
+        return False
+    transitions = lane_transitions(team)
+    return bool(transitions["rules"]) and bool(transitions["bounce_lane"])
 
 
 def derive_lane(team: TeamConfig, from_agent: str | None, to_agent: str) -> str | None:

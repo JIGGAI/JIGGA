@@ -14,14 +14,12 @@ from __future__ import annotations
 from typing import TypedDict
 
 from jigga.core.models import Task, TeamConfig
-from jigga.runtime.lanes import lane_transitions
+from jigga.runtime.lanes import DONE_LANE, lane_transitions
 
 # How many times a ticket may return to the lead unhandled before it stops.
 # Bouncing is how unowned work finds an owner, but a lead that reassigns
 # blindly would ping-pong forever; this bounds it loudly instead.
 MAX_BOUNCES = 3
-
-DONE_LANE = "done"
 
 
 class TicketOutcome(TypedDict):
