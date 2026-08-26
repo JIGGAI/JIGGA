@@ -277,3 +277,68 @@ def render_lanes(team: TeamConfig) -> str:
         meaning = f" — {lane.description}" if lane.description else ""
         lines.append(f"- {lane.id}{meaning}{suffix}")
     return "\n".join(lines)
+
+
+# --- lane transitions -------------------------------------------------------
+#
+# The destination lane is derived from the TRANSITION (who handed the ticket to
+# whom), not from the target role alone, because a role can own several lanes:
+# the lead owns `backlog` (work bounced back), `ready-for-pr` (QA passed) and
+# `done`. "Assign to lead" therefore does not identify a lane; "test handed it
+# to lead" does.
+
+DEFAULT_LANE_TRANSITIONS: list[dict[str, str]] = [
+    {"from": "lead", "to": "dev", "lane": "in-progress"},
+    {"from": "dev", "to": "test", "lane": "testing"},
+    {"from": "test", "to": "dev", "lane": "in-progress"},    # QA rejected
+    {"from": "test", "to": "lead", "lane": "ready-for-pr"},  # QA passed
+]
+DEFAULT_BOUNCE_LANE = "backlog"
+
+
+def role_of(team: TeamConfig, agent_id: str) -> str | None:
+    """The team role (`dev`, `test`, `lead`, ...) for an agent id."""
+    for member in team.agents or []:
+        if isinstance(member, dict) and member.get("id") == agent_id:
+            role = member.get("role")
+            return str(role) if role else None
+    return None
+
+
+def lane_transitions(team: TeamConfig) -> dict[str, Any]:
+    """The team's transition table, defaulted to the standard pipeline.
+
+    Defaults are filtered against the team's actual lanes — a board without a
+    `testing` lane must not be handed one — and a team that declares its own
+    `rules` replaces the defaults outright rather than merging, so a custom
+    board is exactly what it says it is.
+    """
+    known = {lane.id for lane in team_lanes(team)}
+    declared = getattr(team, "lane_transitions", None)
+    declared = declared if isinstance(declared, dict) else {}
+
+    rules = declared.get("rules")
+    if not isinstance(rules, list):
+        rules = DEFAULT_LANE_TRANSITIONS
+    rules = [r for r in rules if isinstance(r, dict) and r.get("lane") in known]
+
+    bounce = declared.get("bounce_lane", DEFAULT_BOUNCE_LANE)
+    if bounce not in known:
+        bounce = None
+    return {"rules": rules, "bounce_lane": bounce}
+
+
+def derive_lane(team: TeamConfig, from_agent: str | None, to_agent: str) -> str | None:
+    """The lane a handoff moves the ticket into, or None when no rule matches.
+
+    None is not an error — the caller leaves the lane alone and says so, rather
+    than guessing a destination.
+    """
+    from_role = role_of(team, from_agent) if from_agent else None
+    to_role = role_of(team, to_agent)
+    if not to_role:
+        return None
+    for rule in lane_transitions(team)["rules"]:
+        if rule.get("to") == to_role and (rule.get("from") in (None, from_role)):
+            return str(rule["lane"])
+    return None

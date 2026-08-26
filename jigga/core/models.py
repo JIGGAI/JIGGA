@@ -86,6 +86,9 @@ class TeamConfig:
     # runtime/lanes.py). `True` = default lanes; a list = a custom vocabulary;
     # None/False = no board (tickets behave like plain tasks).
     lanes: Any = None
+    # Board transition table (raw passthrough; normalized by runtime/lanes.py).
+    # None = the standard pipeline, filtered to the lanes this team declares.
+    lane_transitions: Any = None
     source: str | None = None
 
     @classmethod
