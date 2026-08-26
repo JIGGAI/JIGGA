@@ -140,8 +140,12 @@ def test_an_engineering_team_still_stands_its_handoffs_down(tmp_path: Path) -> N
     # completion side effects at all, and fire_handoffs stands itself down for
     # this team anyway (test_handoffs.py covers that skip and its audit event).
     assert not [e for e in _events(paths) if e["type"] == "team.handoff.fired"]
+    # The one row moves ON rather than back: dev has a single outgoing
+    # transition, so the runtime makes the handoff the agent did not. This is
+    # the point of the whole board — the work reaches QA without a person.
     ticket = list_tasks(paths.tasks)[0]
-    assert (ticket.state, ticket.lane, ticket.assignee) == ("pending", "backlog", "eng-lead")
+    assert (ticket.state, ticket.lane, ticket.assignee) == ("pending", "testing", "eng-test")
+    assert [e["type"] for e in _events(paths) if e["type"] == "ticket.advanced"]
 
 
 # --- the close lane ---------------------------------------------------------

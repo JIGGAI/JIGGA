@@ -417,6 +417,31 @@ def is_lifecycle_managed(team: TeamConfig) -> bool:
     return bool(transitions["rules"]) and bool(transitions["bounce_lane"])
 
 
+def next_hop(team: TeamConfig, from_agent: str) -> tuple[str, str] | None:
+    """The (assignee, lane) a role's work moves to when the agent did not say.
+
+    Only when the answer is not a judgment call. A role with exactly one
+    outgoing transition has nowhere else its work can go, so the runtime can
+    make the move itself. A role with several — QA, which either passes a
+    ticket on or sends it back — is deciding something, and "the run ended" is
+    not evidence for either branch. Those still bounce to the lead.
+
+    Returns None when the role has no outgoing rule, more than one, or the
+    destination role has no agent on this team.
+    """
+    from_role = role_of(team, from_agent)
+    if not from_role:
+        return None
+    rules = [r for r in lane_transitions(team)["rules"] if r.get("from") == from_role]
+    if len(rules) != 1:
+        return None
+    rule = rules[0]
+    for member in team.agents or []:
+        if isinstance(member, dict) and member.get("role") == rule.get("to") and member.get("id"):
+            return (str(member["id"]), str(rule["lane"]))
+    return None
+
+
 def derive_lane(team: TeamConfig, from_agent: str | None, to_agent: str) -> str | None:
     """The lane a handoff moves the ticket into, or None when no rule matches.
 
