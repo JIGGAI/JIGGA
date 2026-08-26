@@ -397,6 +397,37 @@ def _tickets_handler(
         return {"source": "capability.tickets", "ticket": task.id, "assignee": assignee,
                 "lane": updated.lane, "lane_derived": lane is not None}
 
+    # Same dispatch trap as tickets.handoff above: a dispatcher-routed call
+    # carries "tickets.close" on the step, not in the payload's "action" field.
+    if action == "close" or (_step is not None and _step.action == "tickets.close"):
+        from jigga.runtime.lanes import role_of, team_for_task
+        from jigga.runtime.tasks import find_task, update_task
+
+        task_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        if not task_id:
+            raise ValueError("tickets.close needs a 'ticket' id.")
+        task = find_task(tasks_dir, task_id)
+        if task is None:
+            raise ValueError(f"Ticket not found: {task_id}")
+        _team_id, team = team_for_task(teams_dir, task)
+
+        # Closing is what makes a ticket complete, so it is the one action that
+        # must not be reachable by accident: the lead owns it, and only from the
+        # lane that means QA has passed.
+        if role_of(team, actor or "") != "lead":
+            append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
+                         task_id=task.id, reason="not the team lead")
+            raise PermissionError("Only the team lead closes a ticket.")
+        if task.lane != "ready-for-pr":
+            append_event(runtime.logs_dir, "ticket.close.refused", status="deny", agent=actor,
+                         task_id=task.id, reason=f"lane={task.lane!r}, expected 'ready-for-pr'")
+            raise ValueError(f"A ticket closes from 'ready-for-pr', not {task.lane!r}.")
+
+        updated = update_task(tasks_dir, task_id, lane="done", state="completed")
+        append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id)
+        return {"source": "capability.tickets", "ticket": updated.id, "lane": "done",
+                "state": "completed"}
+
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
     if not task_id or not to_lane:

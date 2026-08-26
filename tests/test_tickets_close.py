@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from jigga.core.models import WorkflowStep
+from jigga.runtime.capabilities import bundled_capabilities
+from jigga.runtime.handlers import _tickets_handler
+from jigga.commands.init import init_runtime
+from jigga.core.io import write_yaml
+from jigga.core.models import AgentConfig
+from jigga.runtime.runtime_context import RuntimeContext
+from jigga.runtime.tasks import create_task, find_task
+
+
+def _cap():
+    return next(c for c in bundled_capabilities() if "tickets.close" in c.actions)
+
+
+def _setup(tmp_path: Path):
+    paths = init_runtime(tmp_path)
+    write_yaml(paths.home / "teams" / "eng.yaml", {
+        "id": "eng", "name": "Eng",
+        "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
+                   {"id": "eng-test", "role": "test"}],
+        "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
+                  {"id": "ready-for-pr"}, {"id": "done"}],
+    })
+    return paths
+
+
+def _runtime(paths, agent_id: str) -> RuntimeContext:
+    agent = AgentConfig(id=agent_id, name=agent_id, role="r", memory_scope="task_only",
+                        tools=["tickets.close"], permissions={})
+    return RuntimeContext(agent=agent, home=paths.home, logs_dir=paths.logs,
+                          sessions_dir=paths.home / "sessions")
+
+
+def _close(paths, actor, payload):
+    return _tickets_handler(WorkflowStep(id="s", action="tickets.close", input={}),
+                            _cap(), payload, {}, _runtime(paths, actor))
+
+
+def test_the_lead_closes_a_ready_ticket(tmp_path: Path) -> None:
+    paths = _setup(tmp_path)
+    t = create_task(paths.tasks, "ship", assignee="eng-lead", lane="ready-for-pr",
+                    metadata={"team_id": "eng"})
+
+    _close(paths, "eng-lead", {"ticket": t.id})
+
+    fresh = find_task(paths.tasks, t.id)
+    assert fresh.lane == "done"
+    assert fresh.state == "completed"
+
+
+def test_only_the_lead_may_close(tmp_path: Path) -> None:
+    paths = _setup(tmp_path)
+    t = create_task(paths.tasks, "ship", assignee="eng-dev", lane="ready-for-pr",
+                    metadata={"team_id": "eng"})
+    with pytest.raises(PermissionError):
+        _close(paths, "eng-dev", {"ticket": t.id})
+    assert find_task(paths.tasks, t.id).state != "completed"
+
+
+def test_a_ticket_must_reach_ready_for_pr_first(tmp_path: Path) -> None:
+    paths = _setup(tmp_path)
+    t = create_task(paths.tasks, "ship", assignee="eng-lead", lane="in-progress",
+                    metadata={"team_id": "eng"})
+    with pytest.raises(ValueError):
+        _close(paths, "eng-lead", {"ticket": t.id})
+    assert find_task(paths.tasks, t.id).state != "completed"
