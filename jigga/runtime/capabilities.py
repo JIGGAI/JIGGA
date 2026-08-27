@@ -262,9 +262,10 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "name": "tickets",
         "version": "0.1.0",
         "summary": "Work a team ticket through its board: hand it to the next agent "
-                   "(tickets.handoff), close it when it is done (tickets.close), move it "
-                   "between lanes by hand (tickets.move), or list the board (tickets.list). "
-                   "File-first, audited.",
+                   "(tickets.handoff), split one too big for a single agent into story "
+                   "tickets (tickets.decompose), close it when it is done (tickets.close), "
+                   "move it between lanes by hand (tickets.move), or list the board "
+                   "(tickets.list). File-first, audited.",
         "when_to_use": "Whenever you are passing along, finishing, or inspecting a ticket that "
                        "ALREADY EXISTS. tickets.handoff is how work moves between agents — it "
                        "reassigns the ticket you were given and moves its lane for you. Never "
@@ -302,11 +303,31 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
                 "plan": {"type": "string", "required": True,
                          "description": "Path to the full plan you wrote, e.g. "
                                         "shared-context/plans/<name>.md"},
+                # `items` is not decoration: an array with no item shape tells
+                # the model nothing, so it invented one — `["Scaffold the app",
+                # "Build the nav"]` is what a bare array invites, and a list of
+                # strings carries no assignee and no brief at all.
                 "stories": {"type": "array", "required": True,
                             "description": "One entry per story: {title, description, assignee}. "
                                            "The description is the assignee's whole brief "
                                            "including its acceptance check — they will not read "
-                                           "the plan file."},
+                                           "the plan file.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string",
+                                              "description": "Short name for this piece of work."},
+                                    "description": {
+                                        "type": "string",
+                                        "description": "The assignee's whole brief, including "
+                                                       "the acceptance check. They will not read "
+                                                       "the plan file."},
+                                    "assignee": {"type": "string",
+                                                 "description": "Agent id on this team who "
+                                                                "builds it."},
+                                },
+                                "required": ["title", "description", "assignee"],
+                            }},
             },
         },
     },

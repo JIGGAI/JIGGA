@@ -119,6 +119,16 @@ def decompose(tasks_dir: Path, teams_dir: Path, *, ticket_id: str, actor: str | 
     members = {str(m.get("id")) for m in (team.agents or [])
                if isinstance(m, dict) and m.get("id")}
     for spec in stories:
+        # A story that is not an object at all. Without this the first
+        # `spec.get` raised AttributeError — not a DecomposeError, so the
+        # handler's `except DecomposeError` missed it and the refusal was
+        # never written to the audit log. Every guardrail here is auditable;
+        # this one has to be too.
+        if not isinstance(spec, dict):
+            raise DecomposeError(
+                f"Every story must be an object with title, description and assignee; got "
+                f"{type(spec).__name__} {spec!r}. A bare list of titles carries no assignee "
+                "and no brief.")
         if not str(spec.get("title") or "").strip():
             raise DecomposeError("Every story needs a title.")
         if not str(spec.get("description") or "").strip():
