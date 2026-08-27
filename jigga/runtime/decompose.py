@@ -1,0 +1,126 @@
+"""Break one complex ticket into linked story tickets.
+
+The lead had no way to split work. `tickets.handoff` gives the whole ticket to
+one agent; `task.assign` creates an unrelated ticket and is refused outright
+while the lead holds a lane-managed one — which is exactly this situation. So a
+complex ask went to a single dev as a single ticket, or nowhere.
+
+This is a separate verb rather than a hole in that refusal, because the refusal
+exists to remove a judgment call, and a carve-out would put it back at the
+moment the model is already reaching for the wrong tool.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from jigga.core.config import load_teams
+from jigga.runtime.lanes import derive_lane, is_lifecycle_managed, role_of, team_lanes
+from jigga.runtime.tasks import create_task, find_task, update_task
+
+# A confused lead should not be able to flood the board.
+MAX_STORIES = 20
+
+
+class DecomposeError(ValueError):
+    """A decomposition that must not happen. The message is shown to the agent."""
+
+
+def _lead_of(team) -> str | None:
+    for member in team.agents or []:
+        if isinstance(member, dict) and member.get("role") == "lead" and member.get("id"):
+            return str(member["id"])
+    return None
+
+
+def _first_dev(team) -> str | None:
+    for member in team.agents or []:
+        if isinstance(member, dict) and member.get("role") == "dev" and member.get("id"):
+            return str(member["id"])
+    return None
+
+
+def _work_lane(team) -> str | None:
+    """Where an epic sits while its stories are built.
+
+    Derived from the team's own lead-to-builder rule, never hardcoded: core
+    stopped asserting board shapes when DEFAULT_LANE_TRANSITIONS came out of
+    lanes.py, and writing "in-progress" here would put one straight back.
+    """
+    lead, dev = _lead_of(team), _first_dev(team)
+    if not lead or not dev:
+        return None
+    return derive_lane(team, lead, dev)
+
+
+def _render_epic(original: str | None, summary: str, plan: str,
+                 stories: list[tuple[str, dict]]) -> str:
+    """The epic reads as a status page: what the plan is, where the full one
+    lives, and what it was cut into. A path alone would make the board
+    unreadable without a second lookup, and the plan file is not injected into
+    anyone's context."""
+    lines = ["## Plan", summary.strip(), "", f"Full plan: {plan}", "", "## Stories"]
+    for sid, spec in stories:
+        lines.append(f"- {sid}  {spec['title']}  -> {spec['assignee']}")
+    if original and original.strip():
+        lines += ["", "## Original request", original.strip()]
+    return "\n".join(lines)
+
+
+def decompose(tasks_dir: Path, teams_dir: Path, *, ticket_id: str, actor: str | None,
+              summary: str, plan: str, stories: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create one story ticket per entry, link them to the epic, and park it."""
+    epic = find_task(tasks_dir, ticket_id)
+    if epic is None:
+        raise DecomposeError(f"Ticket not found: {ticket_id}")
+    team_id = (epic.metadata or {}).get("team_id")
+    team = load_teams(teams_dir).get(team_id) if team_id else None
+    if team is None or not is_lifecycle_managed(team):
+        raise DecomposeError(
+            f"Ticket {ticket_id} is not on a lifecycle-managed board; there is nothing to "
+            "decompose into.")
+    if role_of(team, actor or "") != "lead":
+        raise DecomposeError("Only the team lead decomposes a ticket.")
+    if (epic.metadata or {}).get("children"):
+        raise DecomposeError(f"Ticket {ticket_id} has already been decomposed.")
+    if not summary or not summary.strip():
+        raise DecomposeError("A plan summary is required — the epic has to read on its own.")
+    if not plan or not plan.strip():
+        raise DecomposeError("A path to the full plan is required.")
+    if not stories:
+        raise DecomposeError("Decomposing needs at least one story.")
+    if len(stories) > MAX_STORIES:
+        raise DecomposeError(f"At most {MAX_STORIES} stories; got {len(stories)}.")
+
+    members = {str(m.get("id")) for m in (team.agents or [])
+               if isinstance(m, dict) and m.get("id")}
+    for spec in stories:
+        if not str(spec.get("title") or "").strip():
+            raise DecomposeError("Every story needs a title.")
+        if not str(spec.get("description") or "").strip():
+            raise DecomposeError(
+                f"Story {spec.get('title')!r} needs a description: the brief the assignee "
+                "works from, with its acceptance check.")
+        if str(spec.get("assignee") or "") not in members:
+            raise DecomposeError(
+                f"Story {spec.get('title')!r} is assigned to {spec.get('assignee')!r}, "
+                "a stranger to this team.")
+
+    lanes = team_lanes(team)
+    first_lane = lanes[0].id if lanes else None
+    created: list[tuple[str, dict]] = []
+    for spec in stories:
+        story = create_task(
+            tasks_dir, str(spec["title"]), description=str(spec["description"]),
+            assignee=str(spec["assignee"]), lane=first_lane,
+            metadata={"team_id": team_id, "parent": epic.id, "assigned_by": actor})
+        created.append((story.id, spec))
+
+    metadata = dict(epic.metadata or {})
+    metadata["children"] = [sid for sid, _ in created]
+    metadata["plan"] = plan
+    lane = _work_lane(team)
+    update_task(tasks_dir, epic.id, state="waiting", metadata=metadata,
+                description=_render_epic(epic.description, summary, plan, created),
+                **({"lane": lane} if lane else {}))
+    return {"epic": epic.id, "stories": [sid for sid, _ in created], "lane": lane}
