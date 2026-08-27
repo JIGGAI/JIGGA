@@ -270,3 +270,68 @@ failure mode; finish Section 4 for that team.
 - `marketing-team` and `social_content_team` are untouched by all of the
   above. They are not lifecycle-managed, so their runs still complete
   their tasks and their `routing.handoffs` still fire.
+
+## 7. Grant `tickets.decompose` to the leads only (Task 6 deploy)
+
+**Status:** DEFERRED — same gating as Section 1: do not run any command in
+this section until `feat/lead-decomposes-complex-work` has been merged to
+the trunk branch `~/jigga-stable` tracks, `~/jigga-stable` has been moved to
+that merged commit, and `jigga-supervisor.service` has been restarted so the
+running process actually serves `tickets.decompose`. Running this against
+`~/.jigga` before then points a live lead at a capability the running
+process does not have — the same mistake this runbook exists to prevent for
+`tickets.handoff` and `tickets.close`.
+
+`tickets.decompose` is a lead-only verb: only the team lead may break a
+ticket into stories (`jigga.runtime.decompose.decompose` refuses any other
+actor). Grant it to **`engineering-team-lead`** and
+**`seven-development-team-lead`** only — not `-dev`, not `-test`.
+
+Read each lead's current `tools` list first and extend it — never replace
+it:
+
+```bash
+cd ~/JIGGA && source .venv/bin/activate
+for a in engineering-team-lead seven-development-team-lead; do
+  jigga agents get "$a" tools          # read, then append tickets.decompose to THIS list
+done
+```
+
+Apply the change with the existing list plus the new entry appended,
+exactly as Section 4 does for `tickets.handoff` and `tickets.close`:
+
+```bash
+jigga agents set <id> tools '<the existing list from `get` above, with tickets.decompose appended>' --recipe
+```
+
+**Warning:** `<the existing list>` must be the agent's own `tools` output
+from the `get` command above with `tickets.decompose` appended — never a
+fresh list containing only `tickets.decompose`. Replacing the list instead
+of extending it silently strips every tool the lead currently has,
+including `tickets.handoff` and `tickets.close`.
+
+### Verify the grant landed
+
+```bash
+for a in engineering-team-lead seven-development-team-lead; do
+  jigga agents tools "$a" | grep tickets      # expect ✓ for handoff, close AND decompose
+done
+jigga doctor | grep -i grant                  # expect no "grant(s) can't work" line
+```
+
+**Also re-check the permission, not just the tool grant.** `tickets.*`
+actions need `permissions.tickets: move` on the agent as well as the tool
+grant — `--recipe` regeneration has silently dropped that permission
+before. After running `jigga agents set ... --recipe` above, confirm it is
+still present:
+
+```bash
+for a in engineering-team-lead seven-development-team-lead; do
+  jigga agents get "$a" permissions | grep tickets   # expect: tickets: move (still present)
+done
+```
+
+If `permissions.tickets` is missing or no longer `move` for either lead,
+restore it explicitly — do not assume the tool grant alone is enough;
+`jigga agents tools` showing ✓ for `tickets.decompose` with the permission
+missing is exactly the "grant can't work" state `jigga doctor` flags.

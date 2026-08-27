@@ -321,6 +321,9 @@ def render_lanes(team: TeamConfig) -> str:
     lines.append("Hand it on with `tickets.handoff(ticket, assignee, comment)`; the lane moves")
     lines.append("for you. Never use `task.assign` to pass along work that already has a")
     lines.append("ticket — that abandons yours and puts a duplicate on the board.")
+    lines.append("When a ticket is too big for one agent, the lead breaks it up with")
+    lines.append("`tickets.decompose(ticket, summary, plan, stories)`: it creates a ticket per")
+    lines.append("story and the original waits until they are all finished.")
     for role in sorted(by_role):
         for rule in by_role[role]:
             frm, to = ids.get(rule["from"], rule["from"]), ids.get(rule["to"], rule["to"])
