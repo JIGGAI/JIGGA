@@ -60,6 +60,21 @@ def resolve_ticket_outcome(
     if task.lane == DONE_LANE:
         return {**keep, "state": "completed"}
 
+    # The run parked this ticket itself. `tickets.decompose` sets the epic to
+    # `waiting` mid-run, and the run that did it then reaches this function
+    # holding that same ticket — so without this the outcome resolution
+    # overwrites `waiting` and bounces the epic it just parked. Observed live:
+    # a lead decomposed a ticket into three stories correctly and the board
+    # still showed the epic back in `backlog` with `bounces: 1`.
+    #
+    # A waiting ticket is deliberately parked, not stalled: it is waiting on its
+    # children, and `release_parent_if_ready` is what wakes it. Nothing about
+    # the run that parked it should move it.
+    # `keep` carries the RUN's state, which is `completed` here — returning it
+    # unchanged would complete the epic. Keep the ticket's own state instead.
+    if task.state == "waiting":
+        return {**keep, "state": "waiting"}
+
     # Handed on during the run: the ticket already moved, so re-queue it for
     # whoever holds it now.
     if ran_as is not None and task.assignee is not None and task.assignee != ran_as:
