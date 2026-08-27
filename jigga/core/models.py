@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, get_args, Literal, TypeVar
 
 
-TaskState = Literal["pending", "claimed", "running", "blocked", "needs_approval", "failed", "completed", "archived"]
+TaskState = Literal["pending", "claimed", "running", "blocked", "waiting", "needs_approval", "failed", "completed", "archived"]
 PermissionMode = Literal["plan_only", "ask", "accept_edits", "autonomous", "locked_down"]
 T = TypeVar("T")
 
