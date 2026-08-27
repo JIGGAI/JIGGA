@@ -69,9 +69,26 @@ already carries `team_id`, `bounces` and `context`.
 
 ### Waiting
 
-The epic stays in the lane it was already in and takes a new task state,
-`waiting`, meaning "waiting on children". Lane says where the work is; state
-says whether anyone is acting on it — the same split the rest of the board uses. It costs almost
+`decompose` moves the epic into the **work lane** (`in-progress`) and gives it a
+new task state, `waiting`, meaning "waiting on children". The ask is genuinely
+being worked — by its stories — so the board should say so; leaving it in
+`backlog` would read as untouched.
+
+The lane is derived, not hardcoded: it is the lane the team's own rules use when
+the lead hands work to a builder, `derive_lane(team, <lead>, <dev>)`. Core
+stopped asserting board shapes when `DEFAULT_LANE_TRANSITIONS` came out of
+`lanes.py`, and this must not put one back. A team whose rules cannot derive it
+leaves the epic where it is and says so, the same way an underived handoff does.
+
+Lane says where the work is; state says whether anyone is acting on it directly.
+The pair reads correctly at every step:
+
+```
+backlog      pending     the ask arrives
+in-progress  waiting     decomposed; the stories are being built
+ready-for-pr pending     all children done; the lead verifies
+done         completed   the lead closed it
+``` It costs almost
 nothing: `tasks_for_agent` already selects only `pending`, so the supervisor
 skips a waiting epic for free — no wake, no bounce, no tokens. `blocked` was
 rejected for this: it means "bounced too often, a human must look", and
