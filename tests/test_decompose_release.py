@@ -12,7 +12,7 @@ from pathlib import Path
 from jigga.commands.init import init_runtime
 from jigga.core.io import write_yaml
 from jigga.runtime.decompose import decompose, release_parent_if_ready
-from jigga.runtime.tasks import create_task, find_task, set_task_state
+from jigga.runtime.tasks import archive_task, create_task, find_task, set_task_state
 
 PIPELINE = [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
             {"id": "ready-for-pr"}, {"id": "done"}]
@@ -91,6 +91,23 @@ def test_a_task_with_no_parent_releases_nothing(tmp_path: Path) -> None:
     orphan = create_task(paths.tasks, "orphan", assignee="eng-dev", lane="backlog",
                          metadata={"team_id": "eng"})
     assert release_parent_if_ready(paths.tasks, paths.teams, orphan.id) is None
+
+
+def test_a_gone_child_releases_the_epic_instead_of_parking_it_forever(tmp_path: Path) -> None:
+    """An archived (or deleted) child fires no future completion event. Treating
+    it as neither dead nor complete would park the epic forever — the exact
+    stall this function exists to remove."""
+    paths, epic_id, kids = _setup(tmp_path)
+    archive_task(paths.tasks, kids[0])
+    set_task_state(paths.tasks, kids[1], "completed")
+
+    released = release_parent_if_ready(paths.tasks, paths.teams, kids[1])
+
+    assert released is not None
+    assert kids[0] in released["reason"]
+    epic = find_task(paths.tasks, epic_id)
+    assert epic.state == "pending"
+    assert epic.assignee == "eng-lead"
 
 
 def test_releasing_twice_is_harmless(tmp_path: Path) -> None:

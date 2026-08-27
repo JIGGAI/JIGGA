@@ -175,11 +175,22 @@ def release_parent_if_ready(tasks_dir: Path, teams_dir: Path,
     if epic is None or epic.state != "waiting":
         return None      # already released; this runs on every child completion
 
-    children = [find_task(tasks_dir, cid) for cid in (epic.metadata or {}).get("children") or []]
-    dead = [c for c in children if c is not None and c.state in _DEAD_CHILD_STATES]
+    # (id, Task | None) — a missing task (archived or deleted) has no Task to
+    # read a state from, so the id has to travel alongside the lookup or it is
+    # lost the moment find_task returns None.
+    children = [(cid, find_task(tasks_dir, cid))
+                for cid in (epic.metadata or {}).get("children") or []]
+    dead = [(cid, task) for cid, task in children
+            if task is None or task.state in _DEAD_CHILD_STATES]
     if dead:
-        reason = f"{dead[0].id} ended {dead[0].state}"
-    elif all(c is not None and c.state == "completed" for c in children):
+        cid, task = dead[0]
+        # A gone child fires no future completion event, so treating it as
+        # anything but dead would park the epic forever — the exact stall
+        # this function exists to prevent. Releasing early is recoverable;
+        # the lead sees it and can hand it back. Waiting is not.
+        reason = f"{cid} is gone (archived or deleted)" if task is None \
+            else f"{cid} ended {task.state}"
+    elif all(task is not None and task.state == "completed" for _cid, task in children):
         reason = "children complete"
     else:
         return None
