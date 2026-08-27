@@ -118,3 +118,31 @@ def test_releasing_twice_is_harmless(tmp_path: Path) -> None:
     assert release_parent_if_ready(paths.tasks, paths.teams, kids[-1]) is not None
     assert release_parent_if_ready(paths.tasks, paths.teams, kids[-1]) is None
     assert find_task(paths.tasks, epic_id).state == "pending"
+
+
+def test_a_child_completing_through_a_real_run_releases_the_epic(tmp_path: Path) -> None:
+    """The wiring, not just the function: a story closing during an agent run
+    must wake its epic without anyone calling the helper by hand."""
+    from unittest.mock import patch
+
+    from jigga.runtime.agent import run_agent
+    from jigga.runtime.model_router import ModelCallResult
+
+    paths, epic_id, kids = _setup(tmp_path)
+    for aid in ("eng-lead", "eng-dev"):
+        write_yaml(paths.agents / f"{aid}.yaml", {
+            "id": aid, "name": aid, "role": "r", "memory_scope": "task_only",
+            "tools": [], "permissions": {}, "permission_mode": "autonomous"})
+    # First story already done; the second finishes in this run.
+    set_task_state(paths.tasks, kids[0], "completed")
+    from jigga.runtime.tasks import update_task
+    update_task(paths.tasks, kids[1], lane="done")
+
+    result = ModelCallResult(status="ok", provider="dry_run", model="m",
+                             content="done", dry_run=True, tool_calls=[])
+    with patch("jigga.runtime.agent.call_model", lambda *a, **k: result):
+        run_agent(paths.home, paths.logs, paths.tasks, paths.agents, "eng-dev")
+
+    epic = find_task(paths.tasks, epic_id)
+    assert epic.state == "pending", "the epic should have been woken by the run"
+    assert epic.lane == "ready-for-pr"

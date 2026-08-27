@@ -544,8 +544,17 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
     if outcome["state"] == "blocked":
         append_event(logs_dir, "ticket.blocked", status="ask", agent=agent_id, task_id=fresh.id,
                      reason="nobody picked this ticket up and it has bounced too often")
-    return update_task(tasks_dir, task.id, state=outcome["state"], lane=outcome["lane"],
-                       assignee=outcome["assignee"], metadata=metadata)
+    updated = update_task(tasks_dir, task.id, state=outcome["state"], lane=outcome["lane"],
+                          assignee=outcome["assignee"], metadata=metadata)
+    # A finished story may be the last one its epic was waiting for.
+    if outcome["state"] == "completed":
+        from jigga.runtime.decompose import release_parent_if_ready
+
+        released = release_parent_if_ready(tasks_dir, home / "teams", task.id)
+        if released:
+            append_event(logs_dir, "ticket.children_complete", agent=agent_id,
+                         task_id=released["epic"], child=task.id, reason=released["reason"])
+    return updated
 
 
 def _run_agent(
