@@ -499,8 +499,48 @@ def _tickets_handler(
         updated = update_task(tasks_dir, task_id, lane="done", state="completed")
         append_event(runtime.logs_dir, "team.ticket.closed", agent=actor, task_id=task.id,
                      comment=comment)
+        # This action is a THIRD writer of a terminal state, outside any run's
+        # outcome hook — which only ever sees the run's own ticket. A story
+        # closed here left its epic asleep unless the closed child happened to
+        # sit in that run's pending snapshot. Every writer releases.
+        try:
+            from jigga.runtime.decompose import release_parent_if_ready
+
+            released = release_parent_if_ready(tasks_dir, teams_dir, task.id)
+            if released:
+                append_event(runtime.logs_dir, "ticket.epic.released", agent=actor,
+                             task_id=released["epic"], child=task.id,
+                             child_state="completed", reason=released["reason"])
+        except Exception as exc:  # noqa: BLE001 — the close already happened and stands
+            # Waking the parent is a follow-on, not part of closing. Raising
+            # here would fail an action that has already written `done` to
+            # disk, so the caller would retry a close that cannot be redone.
+            append_event(runtime.logs_dir, "ticket.epic.release_failed", status="ask",
+                         agent=actor, task_id=task.id, reason=str(exc))
         return {"source": "capability.tickets", "ticket": updated.id, "lane": "done",
                 "state": "completed", "comment": comment}
+
+    # Same dispatch trap as tickets.handoff and tickets.close above: a
+    # dispatcher-routed call carries "tickets.decompose" on the step, not in
+    # the payload's "action" field.
+    if action == "decompose" or (_step is not None and _step.action == "tickets.decompose"):
+        from jigga.runtime.decompose import DecomposeError, decompose
+
+        ticket_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        stories = payload.get("stories")
+        if not ticket_id or not isinstance(stories, list):
+            raise ValueError("tickets.decompose needs a 'ticket' id and a 'stories' list.")
+        try:
+            result = decompose(tasks_dir, teams_dir, ticket_id=ticket_id, actor=actor,
+                               summary=str(payload.get("summary") or ""),
+                               plan=str(payload.get("plan") or ""), stories=stories)
+        except DecomposeError as exc:
+            append_event(runtime.logs_dir, "ticket.decompose.refused", status="deny",
+                         agent=actor, task_id=ticket_id, reason=str(exc))
+            raise
+        append_event(runtime.logs_dir, "ticket.decomposed", agent=actor, task_id=ticket_id,
+                     stories=result["stories"], lane=result["lane"])
+        return {"source": "capability.tickets", **result}
 
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()

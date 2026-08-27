@@ -262,15 +262,19 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
         "name": "tickets",
         "version": "0.1.0",
         "summary": "Work a team ticket through its board: hand it to the next agent "
-                   "(tickets.handoff), close it when it is done (tickets.close), move it "
-                   "between lanes by hand (tickets.move), or list the board (tickets.list). "
-                   "File-first, audited.",
+                   "(tickets.handoff), split one too big for a single agent into story "
+                   "tickets (tickets.decompose), close it when it is done (tickets.close), "
+                   "move it between lanes by hand (tickets.move), or list the board "
+                   "(tickets.list). File-first, audited.",
         "when_to_use": "Whenever you are passing along, finishing, or inspecting a ticket that "
                        "ALREADY EXISTS. tickets.handoff is how work moves between agents — it "
                        "reassigns the ticket you were given and moves its lane for you. Never "
                        "use task.assign to pass a ticket along; that creates a second ticket for "
-                       "the same work and abandons the one you hold.",
-        "actions": ["tickets.move", "tickets.list", "tickets.handoff", "tickets.close"],
+                       "the same work and abandons the one you hold. Use tickets.decompose when "
+                       "a ticket is too big for one agent: it creates a story ticket per piece "
+                       "and the original waits for them. Use tickets.handoff when one ticket "
+                       "moves to the next agent as-is.",
+        "actions": ["tickets.move", "tickets.list", "tickets.handoff", "tickets.close", "tickets.decompose"],
         "permissions": {"tickets": "move"},
         "risk_level": "low",
         "handler": "runtime.tickets",
@@ -287,6 +291,43 @@ BUILTIN_CAPABILITY_DATA: list[dict[str, Any]] = [
                 "ticket": {"type": "string", "required": True,
                            "description": "Id of the ticket to close. Lead only, and only from ready-for-pr."},
                 "comment": {"type": "string", "description": "How the work was confirmed done."},
+            },
+            "tickets.decompose": {
+                "ticket": {"type": "string", "required": True,
+                           "description": "Id of the complex ticket to break up. It waits "
+                                          "until every story you create is finished."},
+                "summary": {"type": "string", "required": True,
+                            "description": "A few lines: the approach, and why the work is cut "
+                                           "this way. This is written onto the ticket, so it has "
+                                           "to read on its own."},
+                "plan": {"type": "string", "required": True,
+                         "description": "Path to the full plan you wrote, e.g. "
+                                        "shared-context/plans/<name>.md"},
+                # `items` is not decoration: an array with no item shape tells
+                # the model nothing, so it invented one — `["Scaffold the app",
+                # "Build the nav"]` is what a bare array invites, and a list of
+                # strings carries no assignee and no brief at all.
+                "stories": {"type": "array", "required": True,
+                            "description": "One entry per story: {title, description, assignee}. "
+                                           "The description is the assignee's whole brief "
+                                           "including its acceptance check — they will not read "
+                                           "the plan file.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string",
+                                              "description": "Short name for this piece of work."},
+                                    "description": {
+                                        "type": "string",
+                                        "description": "The assignee's whole brief, including "
+                                                       "the acceptance check. They will not read "
+                                                       "the plan file."},
+                                    "assignee": {"type": "string",
+                                                 "description": "Agent id on this team who "
+                                                                "builds it."},
+                                },
+                                "required": ["title", "description", "assignee"],
+                            }},
             },
         },
     },
