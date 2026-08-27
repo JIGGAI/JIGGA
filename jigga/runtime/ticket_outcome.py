@@ -26,6 +26,11 @@ from jigga.runtime.lanes import (
 # blindly would ping-pong forever; this bounds it loudly instead.
 MAX_BOUNCES = 3
 
+# States a run deliberately set that the end of that same run must not overwrite.
+# `waiting` is set by `tickets.decompose`, `blocked` by the handoff loop guard
+# and by this function itself.
+PARKED_STATES = frozenset({"waiting", "blocked"})
+
 
 class TicketOutcome(TypedDict):
     state: str
@@ -60,20 +65,28 @@ def resolve_ticket_outcome(
     if task.lane == DONE_LANE:
         return {**keep, "state": "completed"}
 
-    # The run parked this ticket itself. `tickets.decompose` sets the epic to
-    # `waiting` mid-run, and the run that did it then reaches this function
-    # holding that same ticket — so without this the outcome resolution
-    # overwrites `waiting` and bounces the epic it just parked. Observed live:
-    # a lead decomposed a ticket into three stories correctly and the board
-    # still showed the epic back in `backlog` with `bounces: 1`.
+    # The run parked this ticket itself, and outcome resolution must not undo
+    # what the run's own tool calls decided. A run reaches this function still
+    # holding the ticket it just parked, so without this guard the last thing a
+    # run does is overwrite the thing it deliberately did.
     #
-    # A waiting ticket is deliberately parked, not stalled: it is waiting on its
-    # children, and `release_parent_if_ready` is what wakes it. Nothing about
-    # the run that parked it should move it.
-    # `keep` carries the RUN's state, which is `completed` here — returning it
-    # unchanged would complete the epic. Keep the ticket's own state instead.
-    if task.state == "waiting":
-        return {**keep, "state": "waiting"}
+    # Both parked states were found the same way — by watching a live board do
+    # the wrong thing:
+    #
+    # - `waiting`: a lead decomposed a ticket into three correct stories, and
+    #   the epic still ended in `backlog` with `bounces: 1`. `tickets.decompose`
+    #   parks the epic to wait on its children; `release_parent_if_ready` is
+    #   what wakes it, and nothing else should.
+    # - `blocked`: the handoff loop guard blocked a ticket two agents had passed
+    #   back and forth six times, and five seconds later this function un-blocked
+    #   it and bounced it to `backlog`. The loop resumed with a laundered ticket,
+    #   which is worse than never having caught it — the guard fires, logs, and
+    #   appears not to work.
+    #
+    # `keep` carries the RUN's state, which is `completed` here, so returning it
+    # unchanged would mark a parked ticket done. The ticket's own state wins.
+    if task.state in PARKED_STATES:
+        return {**keep, "state": task.state}
 
     # Handed on during the run: the ticket already moved, so re-queue it for
     # whoever holds it now.
