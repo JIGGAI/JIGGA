@@ -502,6 +502,28 @@ def _tickets_handler(
         return {"source": "capability.tickets", "ticket": updated.id, "lane": "done",
                 "state": "completed", "comment": comment}
 
+    # Same dispatch trap as tickets.handoff and tickets.close above: a
+    # dispatcher-routed call carries "tickets.decompose" on the step, not in
+    # the payload's "action" field.
+    if action == "decompose" or (_step is not None and _step.action == "tickets.decompose"):
+        from jigga.runtime.decompose import DecomposeError, decompose
+
+        ticket_id = str(payload.get("ticket") or payload.get("task") or "").strip()
+        stories = payload.get("stories")
+        if not ticket_id or not isinstance(stories, list):
+            raise ValueError("tickets.decompose needs a 'ticket' id and a 'stories' list.")
+        try:
+            result = decompose(tasks_dir, teams_dir, ticket_id=ticket_id, actor=actor,
+                               summary=str(payload.get("summary") or ""),
+                               plan=str(payload.get("plan") or ""), stories=stories)
+        except DecomposeError as exc:
+            append_event(runtime.logs_dir, "ticket.decompose.refused", status="deny",
+                         agent=actor, task_id=ticket_id, reason=str(exc))
+            raise
+        append_event(runtime.logs_dir, "ticket.decomposed", agent=actor, task_id=ticket_id,
+                     stories=result["stories"], lane=result["lane"])
+        return {"source": "capability.tickets", **result}
+
     task_id = str(payload.get("task") or payload.get("ticket") or "").strip()
     to_lane = str(payload.get("lane") or payload.get("to") or "").strip()
     if not task_id or not to_lane:
