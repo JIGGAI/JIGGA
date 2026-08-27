@@ -506,6 +506,7 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
     to an agent that has finished with it.
     """
     from jigga.core.config import load_teams
+    from jigga.runtime.decompose import TERMINAL_CHILD_STATES
     from jigga.runtime.lanes import is_lifecycle_managed
     from jigga.runtime.ticket_outcome import resolve_ticket_outcome
 
@@ -546,14 +547,23 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
                      reason="nobody picked this ticket up and it has bounced too often")
     updated = update_task(tasks_dir, task.id, state=outcome["state"], lane=outcome["lane"],
                           assignee=outcome["assignee"], metadata=metadata)
-    # A finished story may be the last one its epic was waiting for.
-    if outcome["state"] == "completed":
+    # A story that has finished ANY way may be the last one its epic was
+    # waiting for. `completed` alone was not enough: a failed run, a story past
+    # MAX_BOUNCES and the stale sweeper all write `failed`/`blocked`, and
+    # nothing ever moves such a ticket again, so the epic waited for a
+    # completion event that could never arrive — the silent stall this whole
+    # feature exists to remove.
+    if outcome["state"] in TERMINAL_CHILD_STATES:
         from jigga.runtime.decompose import release_parent_if_ready
 
         released = release_parent_if_ready(tasks_dir, home / "teams", task.id)
         if released:
-            append_event(logs_dir, "ticket.children_complete", agent=agent_id,
-                         task_id=released["epic"], child=task.id, reason=released["reason"])
+            # Not "children_complete": the epic now also wakes because a child
+            # DIED. The reason the release computed is the truthful one, and
+            # the child's own state says which kind of wake this was.
+            append_event(logs_dir, "ticket.epic.released", agent=agent_id,
+                         task_id=released["epic"], child=task.id,
+                         child_state=outcome["state"], reason=released["reason"])
     return updated
 
 

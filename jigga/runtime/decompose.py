@@ -153,6 +153,13 @@ def decompose(tasks_dir: Path, teams_dir: Path, *, ticket_id: str, actor: str | 
 # States a child can be in that mean it will never complete on its own.
 _DEAD_CHILD_STATES = {"failed", "blocked"}
 
+# Every state a run can leave a story in for good. The release has to fire on
+# ALL of them, not just `completed`: nothing ever moves a `failed` or `blocked`
+# ticket again — `tasks_for_agent` selects only `pending` and the stale sweep
+# only `claimed`/`running` — so an epic whose last story died would wait for a
+# completion event that can never arrive.
+TERMINAL_CHILD_STATES = {"completed"} | _DEAD_CHILD_STATES
+
 
 def release_parent_if_ready(tasks_dir: Path, teams_dir: Path,
                             child_id: str) -> dict[str, Any] | None:

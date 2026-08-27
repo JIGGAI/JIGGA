@@ -96,9 +96,16 @@ overloading it would make a healthy epic indistinguishable from a stuck ticket.
 
 ### Release
 
-When a story reaches `completed`, the runtime checks its parent. When every
-child is complete, the epic moves to the team's **close lane** (`ready-for-pr`)
-as `pending` to the lead, audited as `ticket.children_complete`.
+When a story reaches any terminal state — `completed`, `failed` or `blocked` —
+the runtime checks its parent. When every child is complete, or when one of
+them died, the epic moves to the team's **close lane** (`ready-for-pr`) as
+`pending` to the lead, audited as `ticket.epic.released` carrying the child's
+state and the reason for the wake.
+
+Every terminal state, not just `completed`: a failed run, a story past
+`MAX_BOUNCES` and the stale sweeper all write `failed`/`blocked`, and nothing
+ever moves such a ticket again — so an epic gated on `completed` would wait for
+an event that can never arrive.
 
 The close lane specifically, not wherever it was waiting: `tickets.close`
 refuses any ticket outside that lane, so an epic released into `in-progress`

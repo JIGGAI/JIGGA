@@ -31,6 +31,7 @@ from jigga.core.io import write_json
 from jigga.core.models import now_iso
 from jigga.core.paths import JiggaPaths
 from jigga.runtime.audit import append_event
+from jigga.runtime.decompose import release_parent_if_ready
 from jigga.runtime.tasks import list_tasks, set_task_state
 
 DEFAULT_MAX_STALE_MINUTES = 120
@@ -107,6 +108,13 @@ def sweep_stale(paths: JiggaPaths, *, now: datetime | None = None) -> dict[str, 
             set_task_state(paths.tasks, task.id, "failed")
             append_event(paths.logs, "task.recovered", status="failed", task_id=task.id,
                          agent=task.assignee, stale_state=task.state, stale_since=task.updated_at)
+            # A swept story is dead for good — nothing re-queues a `failed`
+            # task — so an epic waiting on it would wait forever unless the
+            # sweep releases it here, exactly as a finished run does.
+            released = release_parent_if_ready(paths.tasks, paths.teams, task.id)
+            if released:
+                append_event(paths.logs, "ticket.epic.released", task_id=released["epic"],
+                             child=task.id, child_state="failed", reason=released["reason"])
             recovered_tasks.append(task.id)
 
     recovered_nodes: list[str] = []
