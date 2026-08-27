@@ -16,6 +16,8 @@ from typing import Any
 
 from jigga.core.config import load_teams
 from jigga.runtime.lanes import (
+    DEFAULT_CLOSE_LANE,
+    close_lane,
     derive_lane,
     is_lifecycle_managed,
     lane_transitions,
@@ -146,3 +148,45 @@ def decompose(tasks_dir: Path, teams_dir: Path, *, ticket_id: str, actor: str | 
                 description=_render_epic(epic.description, summary, plan, created),
                 **({"lane": lane} if lane else {}))
     return {"epic": epic.id, "stories": [sid for sid, _ in created], "lane": lane}
+
+
+# States a child can be in that mean it will never complete on its own.
+_DEAD_CHILD_STATES = {"failed", "blocked"}
+
+
+def release_parent_if_ready(tasks_dir: Path, teams_dir: Path,
+                            child_id: str) -> dict[str, Any] | None:
+    """Wake a waiting epic when its children are finished, or one of them died.
+
+    Called whenever a task reaches a terminal state. Returns None when there is
+    nothing to do, which is the common case — most tasks have no parent.
+
+    A failed or blocked child releases the epic immediately rather than leaving
+    it asleep: one dead story would otherwise park the ask forever, and a
+    silently stalled ticket is the failure this whole design removes.
+    """
+    child = find_task(tasks_dir, child_id)
+    if child is None:
+        return None
+    parent_id = (child.metadata or {}).get("parent")
+    if not parent_id:
+        return None
+    epic = find_task(tasks_dir, parent_id)
+    if epic is None or epic.state != "waiting":
+        return None      # already released; this runs on every child completion
+
+    children = [find_task(tasks_dir, cid) for cid in (epic.metadata or {}).get("children") or []]
+    dead = [c for c in children if c is not None and c.state in _DEAD_CHILD_STATES]
+    if dead:
+        reason = f"{dead[0].id} ended {dead[0].state}"
+    elif all(c is not None and c.state == "completed" for c in children):
+        reason = "children complete"
+    else:
+        return None
+
+    team_id = (epic.metadata or {}).get("team_id")
+    team = load_teams(teams_dir).get(team_id) if team_id else None
+    lane = (close_lane(team) or DEFAULT_CLOSE_LANE) if team is not None else None
+    update_task(tasks_dir, epic.id, state="pending", assignee=_lead_of(team) if team else epic.assignee,
+                **({"lane": lane} if lane else {}))
+    return {"epic": epic.id, "reason": reason}
