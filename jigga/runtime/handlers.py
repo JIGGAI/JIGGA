@@ -437,6 +437,39 @@ def _tickets_handler(
             raise ValueError(f"Ticket not found: {task_id}")
 
         _team_id, team = team_for_task(teams_dir, task)
+
+        # Before deriving anything, ask whether this handoff is the next lap of a
+        # loop. `bounces` cannot answer that — every handoff resets it (below) —
+        # so pairs are counted separately. See handoff_loop for what this costs
+        # when it is missing.
+        from jigga.runtime.decompose import _lead_of
+        from jigga.runtime.handoff_loop import evaluate_handoff_loop, pair_key
+
+        loop_counts = dict((task.metadata or {}).get("handoff_pairs") or {})
+        escalated = list((task.metadata or {}).get("handoff_escalations") or [])
+        verdict = evaluate_handoff_loop(loop_counts, escalated, actor, assignee,
+                                        lead=_lead_of(team))
+        key = pair_key(actor, assignee)
+        loop_counts[key] = int(loop_counts.get(key) or 0) + 1
+
+        if verdict.block:
+            metadata = dict(task.metadata or {})
+            metadata["handoff_pairs"] = loop_counts
+            blocked = update_task(tasks_dir, task_id, state="blocked", metadata=metadata)
+            append_event(runtime.logs_dir, "ticket.handoff.loop", status="error",
+                         agent=actor, task_id=task.id, to=assignee, reason=verdict.reason)
+            return {"source": "capability.tickets", "ticket": task.id,
+                    "assignee": blocked.assignee, "lane": blocked.lane,
+                    "blocked": True, "reason": verdict.reason}
+
+        if verdict.redirect_to:
+            append_event(runtime.logs_dir, "ticket.handoff.loop", status="ask",
+                         agent=actor, task_id=task.id, to=assignee,
+                         redirected_to=verdict.redirect_to, reason=verdict.reason)
+            escalated.append(key)
+            assignee = verdict.redirect_to
+            comment = f"{comment}\n\n{verdict.reason}" if comment else verdict.reason
+
         lane = derive_lane(team, actor, assignee)
         if lane is None:
             # No rule covers this transition. Leave the lane where it is and say
@@ -452,6 +485,9 @@ def _tickets_handler(
         # owner is not looping, so the count starts over.
         metadata = dict(task.metadata or {})
         metadata["bounces"] = 0
+        metadata["handoff_pairs"] = loop_counts
+        if escalated:
+            metadata["handoff_escalations"] = escalated
         updated = update_task(tasks_dir, task_id, assignee=assignee, state="pending",
                               metadata=metadata, **({"lane": lane} if lane else {}))
         append_event(runtime.logs_dir, "team.ticket.handoff", agent=actor, task_id=task.id,
