@@ -15,6 +15,16 @@ from jigga.runtime.handlers import _tickets_handler
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, find_task, list_tasks, set_task_state
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 
 def _result(content="done") -> ModelCallResult:
     return ModelCallResult(status="ok", provider="dry_run", model="m",
@@ -38,6 +48,7 @@ def _team(paths) -> None:
         "agents": [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
     })
     for aid in ("eng-lead", "eng-dev"):
         write_yaml(paths.agents / f"{aid}.yaml", {

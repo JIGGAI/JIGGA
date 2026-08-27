@@ -175,6 +175,10 @@ def test_a_lane_managed_team_does_not_spawn_handoff_tickets(tmp_path: Path) -> N
         "id": "eng", "name": "Eng",
         "agents": [{"id": "eng-dev", "role": "dev"}, {"id": "eng-test", "role": "test"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"}, {"id": "done"}],
+        # Lifecycle-managed is now something a team DECLARES; core supplies
+        # no default shape, so the table is what makes this a board team.
+        "lane_transitions": {"rules": [{"from": "dev", "to": "test", "lane": "testing"}],
+                             "bounce_lane": "backlog"},
         "routing": {"handoffs": [{"from": "eng-dev", "to": "eng-test", "when": "verify"}]},
     })
     before = len(list_tasks(paths.tasks))

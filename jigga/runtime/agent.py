@@ -537,10 +537,6 @@ def _apply_ticket_outcome(home: Path, tasks_dir: Path, logs_dir: Path, task,
 
     outcome = resolve_ticket_outcome(fresh, team, run_state=run_state, ran_as=agent_id)
     metadata = dict(fresh.metadata or {})
-    if outcome.get("advanced"):
-        append_event(logs_dir, "ticket.advanced", agent=agent_id, task_id=fresh.id,
-                     to=outcome["assignee"], lane=outcome["lane"],
-                     reason="run ended without a handoff; the transition table left no choice")
     if outcome["bounced"]:
         metadata["bounces"] = int(metadata.get("bounces") or 0) + 1
         append_event(logs_dir, "ticket.bounced", status="ask", agent=agent_id, task_id=fresh.id,

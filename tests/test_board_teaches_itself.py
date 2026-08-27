@@ -23,6 +23,16 @@ from jigga.runtime.lanes import render_lanes
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, list_tasks
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 PIPELINE = [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
             {"id": "ready-for-pr"}, {"id": "done"}]
 ROSTER = [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
@@ -30,9 +40,12 @@ ROSTER = [{"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
 
 
 def _team(lanes=None, agents=None) -> TeamConfig:
-    return TeamConfig.from_dict({"id": "eng", "name": "Eng",
-                                 "agents": agents if agents is not None else ROSTER,
-                                 "lanes": lanes if lanes is not None else PIPELINE})
+    board = lanes if lanes is not None else PIPELINE
+    data = {"id": "eng", "name": "Eng",
+            "agents": agents if agents is not None else ROSTER, "lanes": board}
+    if any(x.get("id") == "ready-for-pr" for x in board):
+        data["lane_transitions"] = PIPELINE_TRANSITIONS
+    return TeamConfig.from_dict(data)
 
 
 # --- the board states its own rules -----------------------------------------
@@ -69,7 +82,8 @@ def test_a_team_with_no_board_renders_nothing() -> None:
 def _setup(tmp_path: Path):
     paths = init_runtime(tmp_path)
     write_yaml(paths.home / "teams" / "eng.yaml",
-               {"id": "eng", "name": "Eng", "agents": ROSTER, "lanes": PIPELINE})
+               {"id": "eng", "name": "Eng", "agents": ROSTER, "lanes": PIPELINE,
+                "lane_transitions": PIPELINE_TRANSITIONS})
     return paths
 
 

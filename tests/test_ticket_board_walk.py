@@ -16,6 +16,16 @@ from jigga.runtime.handlers import _tickets_handler
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, find_task, list_tasks
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 
 def _cap(action: str):
     return next(c for c in bundled_capabilities() if action in c.actions)
@@ -38,6 +48,7 @@ def test_one_ticket_walks_the_whole_board(tmp_path: Path) -> None:
                    {"id": "eng-test", "role": "test"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}],
+        "lane_transitions": PIPELINE_TRANSITIONS,
     })
     ticket = create_task(paths.tasks, "New website", assignee="eng-lead", lane="backlog",
                          metadata={"team_id": "eng"})
@@ -66,6 +77,10 @@ def test_qa_can_send_it_back(tmp_path: Path) -> None:
         "id": "eng", "name": "Eng",
         "agents": [{"id": "eng-dev", "role": "dev"}, {"id": "eng-test", "role": "test"}],
         "lanes": [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"}, {"id": "done"}],
+        # Lifecycle-managed is now something a team DECLARES; core supplies
+        # no default shape, so the table is what makes this a board team.
+        "lane_transitions": {"rules": [{"from": "test", "to": "dev", "lane": "in-progress"}],
+                             "bounce_lane": "backlog"},
     })
     ticket = create_task(paths.tasks, "broken", assignee="eng-test", lane="testing",
                          metadata={"team_id": "eng"})

@@ -29,6 +29,16 @@ from jigga.runtime.model_router import ModelCallResult
 from jigga.runtime.runtime_context import RuntimeContext
 from jigga.runtime.tasks import create_task, find_task, list_tasks
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 MARKETING_LANES = [{"id": "brief"}, {"id": "drafting"}, {"id": "review"}, {"id": "published"}]
 PIPELINE_LANES = [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
                   {"id": "ready-for-pr"}, {"id": "done"}]
@@ -48,6 +58,10 @@ def _write_team(paths, team_id, *, lanes, agents, routing=None, transitions=None
     data = {"id": team_id, "name": team_id, "agents": agents, "lanes": lanes}
     if routing is not None:
         data["routing"] = routing
+    if transitions is None and isinstance(lanes, list) and any(x.get("id") == "ready-for-pr" for x in lanes):
+        # Core declares no board shape, so a fixture wanting the pipeline
+        # has to say so — exactly what the live team configs do.
+        transitions = PIPELINE_TRANSITIONS
     if transitions is not None:
         data["lane_transitions"] = transitions
     write_yaml(paths.teams / f"{team_id}.yaml", data)
@@ -140,12 +154,12 @@ def test_an_engineering_team_still_stands_its_handoffs_down(tmp_path: Path) -> N
     # completion side effects at all, and fire_handoffs stands itself down for
     # this team anyway (test_handoffs.py covers that skip and its audit event).
     assert not [e for e in _events(paths) if e["type"] == "team.handoff.fired"]
-    # The one row moves ON rather than back: dev has a single outgoing
-    # transition, so the runtime makes the handoff the agent did not. This is
-    # the point of the whole board — the work reaches QA without a person.
+    # A dev that ends its run without handing the ticket on sends it back to
+    # the lead. The runtime does not make the move for it: a stalled ticket is
+    # information, and routing around it once hid a permission failure for a
+    # whole lap.
     ticket = list_tasks(paths.tasks)[0]
-    assert (ticket.state, ticket.lane, ticket.assignee) == ("pending", "testing", "eng-test")
-    assert [e["type"] for e in _events(paths) if e["type"] == "ticket.advanced"]
+    assert (ticket.state, ticket.lane, ticket.assignee) == ("pending", "backlog", "eng-lead")
 
 
 # --- the close lane ---------------------------------------------------------

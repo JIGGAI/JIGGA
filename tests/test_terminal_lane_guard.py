@@ -23,6 +23,16 @@ from jigga.runtime.lanes import (
 from jigga.runtime.tasks import create_task, find_task
 from jigga.runtime.workspaces import scaffold_workspace
 
+PIPELINE_TRANSITIONS = {
+    "rules": [
+        {"from": "lead", "to": "dev", "lane": "in-progress"},
+        {"from": "dev", "to": "test", "lane": "testing"},
+        {"from": "test", "to": "dev", "lane": "in-progress"},
+        {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+    ],
+    "bounce_lane": "backlog",
+}
+
 PIPELINE = [{"id": "backlog"}, {"id": "in-progress"}, {"id": "testing"},
             {"id": "ready-for-pr"}, {"id": "done"}]
 
@@ -32,13 +42,16 @@ def _events(paths) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
-def _team(paths, *, lanes, agents=None):
+def _team(paths, *, lanes, agents=None, transitions=None):
     write_yaml(paths.teams / "eng.yaml", {
         "id": "eng", "name": "Eng",
         "agents": agents if agents is not None else [
             {"id": "eng-lead", "role": "lead"}, {"id": "eng-dev", "role": "dev"},
             {"id": "eng-test", "role": "test"}],
         "lanes": lanes,
+        # Core declares no board shape; a fixture wanting the pipeline says so.
+        **({"lane_transitions": transitions or PIPELINE_TRANSITIONS}
+           if isinstance(lanes, list) and any(x.get("id") == "ready-for-pr" for x in lanes) else {}),
     })
     team = load_teams(paths.teams)["eng"]
     scaffold_workspace(paths.home, team)
