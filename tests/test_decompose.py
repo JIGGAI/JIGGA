@@ -163,3 +163,44 @@ def test_a_non_lifecycle_team_cannot_decompose(tmp_path: Path) -> None:
     epic = _epic(paths)
     with pytest.raises(DecomposeError, match="board"):
         _run(paths, epic.id)
+
+
+def test_the_work_lane_derives_from_a_non_dev_builder_role(tmp_path: Path) -> None:
+    """The builder role name is not hardcoded to "dev" — it's read off the
+    lead's own transition rule, so a team that calls it "builder" (or
+    "engineer", or anything else) still gets its epic parked correctly."""
+    agents = [{"id": "eng-lead", "role": "lead"}, {"id": "eng-builder", "role": "builder"},
+              {"id": "eng-test", "role": "test"}]
+    transitions = {
+        "rules": [
+            {"from": "lead", "to": "builder", "lane": "in-progress"},
+            {"from": "builder", "to": "test", "lane": "testing"},
+            {"from": "test", "to": "builder", "lane": "in-progress"},
+            {"from": "test", "to": "lead", "lane": "ready-for-pr"},
+        ],
+        "bounce_lane": "backlog",
+    }
+    stories = [{"title": "Scaffold the app", "description": "Full brief.",
+                "assignee": "eng-builder"}]
+    paths = _setup(tmp_path, transitions=transitions, agents=agents)
+    epic = _epic(paths)
+
+    result = _run(paths, epic.id, stories=stories)
+
+    assert find_task(paths.tasks, epic.id).lane == "in-progress"
+    assert result["lane"] == "in-progress"
+
+
+def test_a_bad_story_partway_through_the_list_creates_nothing(tmp_path: Path) -> None:
+    """Validation runs to completion before any ticket is created, so a
+    failure on story N does not leave stories 1..N-1 as orphans with no
+    parent to point back to."""
+    paths = _setup(tmp_path)
+    epic = _epic(paths)
+    stories = [
+        {"title": "Valid first story", "description": "Full brief.", "assignee": "eng-dev"},
+        {"title": "Missing its description", "assignee": "eng-dev"},
+    ]
+    with pytest.raises(DecomposeError, match="description"):
+        _run(paths, epic.id, stories=stories)
+    assert len(list_tasks(paths.tasks)) == 1

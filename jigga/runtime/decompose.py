@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from jigga.core.config import load_teams
-from jigga.runtime.lanes import derive_lane, is_lifecycle_managed, role_of, team_lanes
+from jigga.runtime.lanes import (
+    derive_lane,
+    is_lifecycle_managed,
+    lane_transitions,
+    role_of,
+    team_lanes,
+)
 from jigga.runtime.tasks import create_task, find_task, update_task
 
 # A confused lead should not be able to flood the board.
@@ -33,9 +39,25 @@ def _lead_of(team) -> str | None:
     return None
 
 
-def _first_dev(team) -> str | None:
+def _builder_of(team) -> str | None:
+    """The team's builder — not a hardcoded role name, but whoever the lead's
+    own transition rule hands off to. A team whose builder role is `engineer`
+    or `builder` derives its work lane exactly as well as one that calls it
+    `dev`: this is the same class of assumption `DEFAULT_LANE_TRANSITIONS`
+    was removed from lanes.py for, and hardcoding "dev" here would put it
+    right back."""
+    lead_id = _lead_of(team)
+    if not lead_id:
+        return None
+    lead_role = role_of(team, lead_id)
+    builder_role = next(
+        (rule.get("to") for rule in lane_transitions(team)["rules"]
+         if rule.get("from") == lead_role),
+        None)
+    if not builder_role:
+        return None
     for member in team.agents or []:
-        if isinstance(member, dict) and member.get("role") == "dev" and member.get("id"):
+        if isinstance(member, dict) and member.get("role") == builder_role and member.get("id"):
             return str(member["id"])
     return None
 
@@ -47,10 +69,10 @@ def _work_lane(team) -> str | None:
     stopped asserting board shapes when DEFAULT_LANE_TRANSITIONS came out of
     lanes.py, and writing "in-progress" here would put one straight back.
     """
-    lead, dev = _lead_of(team), _first_dev(team)
-    if not lead or not dev:
+    lead, builder = _lead_of(team), _builder_of(team)
+    if not lead or not builder:
         return None
-    return derive_lane(team, lead, dev)
+    return derive_lane(team, lead, builder)
 
 
 def _render_epic(original: str | None, summary: str, plan: str,
