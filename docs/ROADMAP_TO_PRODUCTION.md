@@ -41,6 +41,52 @@ Written 2026-05-29 against branch `refactor/extract-subprocess-sandbox` (122 pas
 
 ---
 
+## DeerFlow-Inspired Runtime Enhancements
+
+Context: after comparing JIGGA with
+[`bytedance/deer-flow`](https://github.com/bytedance/deer-flow), the right
+takeaway is not to copy DeerFlow's product shape. DeerFlow is a bundled
+LangGraph-centered super-agent app platform. JIGGA is a local-first app/platform
+runtime: the core harness owns orchestration, state, policy, memory, workflows,
+supervision, approvals, audit, and delegation, while plugins provide specialized
+app backends.
+
+The enhancement path is to borrow runtime mechanics that would make JIGGA more
+durable and observable without weakening the `~/.jigga` file-first control-plane
+model.
+
+| Enhancement | Why it matters | JIGGA-shaped direction |
+|---|---|---|
+| **Formal thread/run checkpoints** | Long-running tasks, channel conversations, workflow runs, and subagent sessions should resume from a precise state boundary instead of reconstructing everything from scattered files. | Keep checkpoint snapshots as local files under `~/.jigga/runs/` or `~/.jigga/sessions/`, with explicit schema versions and audit events for create/resume/compact. |
+| **Execution middleware pipeline** | Agent/model/tool execution needs a consistent place for memory injection, policy evaluation, approval checks, tracing, output validation, rate limits, and context compaction. | Add a lightweight Python middleware chain around `run_agent`, workflow-node execution, and capability dispatch; avoid a framework dependency unless the local runtime proves it needs one. |
+| **Stronger subagent session contracts** | Subagents already exist, but JIGGA should make parent/child accountability, result shape, limits, telemetry, and cancellation more explicit. | Extend `~/.jigga/sessions/<id>/session.json` with status lifecycle, parent trace, acceptance criteria, tool evidence, budget use, terminal reason, and bounded output summaries. |
+| **First-class streaming event contract** | UI, channels, logs, and long-running operators need the same live view of work instead of polling unrelated files and logs. | Define a stable JSONL/SSE-friendly event envelope for task, workflow, model, tool, approval, and subagent progress. Persist it locally first; adapters can stream it later. |
+| **Hardened sandbox provider abstraction** | Risky shell, MCP, browser, and plugin backend work needs a pluggable isolation boundary that can differ by platform. | Keep the existing sandbox seam, but formalize provider capability flags, virtual path mapping, network/egress policy, secret injection, and per-command provenance. |
+| **Cleaner core/app/plugin boundaries** | JIGGA should stay a reusable harness/control plane while UI, channels, and app backends evolve independently. | Separate core runtime modules from app surfaces and optional backends. Plugin capabilities should depend on the public runtime contract, not private internals. |
+| **Model/tool call provenance receipts** | Operators need to know exactly which tool call or model call produced a file, approval, memory write, or external side effect. | Stamp every produced artifact and state mutation with `trace_id`, `actor`, `capability`, input hash, output hash, and approval reference when present. |
+| **Per-workflow budgets and limits** | Per-agent budgets are useful, but business automation is often owned at the workflow/SOP level. | Add workflow-run cost rollups, optional per-run caps, per-node timeout defaults, and a clear terminal reason when a workflow stops due to budget or time. |
+| **Runtime capability behavior monitoring** | Static capability scans catch declared risk. Production needs to notice when a backend behaves outside its declared envelope. | Compare runtime behavior against manifests: unexpected domains, paths, subprocesses, secret requests, write targets, or message sends should emit warnings or require approval. |
+| **Session manager unification** | Agent runs, workflow runs, channel conversations, subagents, and long-running tools are related runtime sessions today, but not exposed through one operator model. | Promote the broader session manager spec into implementation: `jigga sessions list/inspect/cancel` should cover all run/session types with filters and artifact links. |
+
+Priority order:
+
+1. Streaming event contract.
+2. Subagent session contract expansion.
+3. Middleware pipeline around agent/model/tool execution.
+4. Formal checkpoint snapshots for runs and sessions.
+5. Sandbox provider hardening.
+6. Core/app/plugin boundary cleanup.
+7. Model/tool provenance receipts.
+8. Per-workflow budgets and limits.
+9. Runtime capability behavior monitoring.
+10. Unified session manager.
+
+These are runtime-strengthening items, not a product pivot. The design constraint
+is that every new abstraction must preserve local ownership, inspectable files,
+explicit policy, and plugin-driven app backends.
+
+---
+
 ## Where we are
 
 **Built and stable (the runtime spine):**
