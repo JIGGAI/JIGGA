@@ -66,7 +66,9 @@ def test_onboarding_creates_default_agent_and_user_md(tmp_path: Path) -> None:
     # silently discarded when the create-only write lost to the generic seed).
     ws = ensure_agent_workspace(paths.home, paths.teams, agent)
     soul = read_file(paths.home, ws, "roles/chief/SOUL.md") or ""
-    assert "Default to **delegating**" in soul          # archetype posture, not the generic seed
+    assert "Own each request end-to-end" in soul        # archetype posture, not the generic seed
+    assert "Delegation is a tool, not the default" in soul
+    assert "Default to **delegating**" not in soul
     assert "Communicate concisely" in soul              # style answer (1=concise) applied
 
 

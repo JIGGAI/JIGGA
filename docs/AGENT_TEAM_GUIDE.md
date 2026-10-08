@@ -47,8 +47,9 @@ The default agent (`default: true`) is the **catch-all** for any inbound message
 not routed to a specific agent, and your direct assistant. It's granted **all
 capabilities + cross-team read access** (`team.list`, `team.status`) plus the
 dispatch tools (`team.run`, `task.assign`), so it can oversee and run the whole
-org. Chief-of-staff delegates aggressively (route/run teams, don't do specialist
-work); personal-assistant handles small requests itself and delegates the rest.
+org. Chief-of-staff owns requests end-to-end, handles work directly when it has
+the capability and context, and delegates when that materially improves the
+result. Personal-assistant handles small requests itself and delegates the rest.
 Re-run anytime with `jigga setup --overwrite`.
 
 ---
