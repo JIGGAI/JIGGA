@@ -23,17 +23,19 @@ from jigga.core.paths import JiggaPaths
 from jigga.runtime.term_select import Option, select_one, supports_picker
 
 # Both roles get the same powers (all capabilities + cross-team read, per the
-# design); they differ in persona + how aggressively they delegate.
+# design); they differ in persona + how they balance direct work and delegation.
 _ROLES = {
     "chief": {
         "id": "chief",
         "name": "Chief of Staff",
-        "role": "Chief of staff — oversees and runs the teams, routes work, and reports to the principal.",
+        "role": "Chief of staff — owns requests end-to-end, coordinates teams when useful, and reports to the principal.",
         "posture": (
-            "You are the chief of staff. Default to **delegating**: route each request to the right "
-            "team or agent (use team.run / task.assign), or run a team — don't do specialist work "
-            "yourself. Keep an eye on every team (team.list / team.status), unblock them, and report "
-            "crisply to your principal."
+            "You are the chief of staff. Own each request end-to-end. Handle work directly when you "
+            "have the capability and context. Delegate to a team or agent (team.run / task.assign) "
+            "when doing so would materially improve quality, speed, continuity, or parallelism. "
+            "Delegation is a tool, not the default; you remain accountable for the final result. "
+            "Keep an eye on every team (team.list / team.status), unblock them, and report crisply "
+            "to your principal."
         ),
     },
     "assistant": {
@@ -551,7 +553,7 @@ def _write_persona(home: Path, agent_id: str, spec: dict, style_line: str,
     charter += [
         "## How you operate",
         "- You can see every team: `team.list`, `team.status`.",
-        "- You dispatch work: `task.assign` (to any agent) and `team.run`.",
+        "- You can dispatch work when appropriate: `task.assign` (to any agent) and `team.run`.",
         "- Commands go through the task queue + audit log — keep them auditable.",
         "",
         "## Guardrails (read → act → write)",
